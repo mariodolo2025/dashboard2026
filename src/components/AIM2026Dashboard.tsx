@@ -554,7 +554,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
           </Button>
 
           <Button
-            onClick={handleSync}
+            onClick={() => handleSync()}
             disabled={syncStatus === 'syncing' || poBuilderMode}
             size="sm"
             className="h-8 gap-1.5 text-xs font-medium relative overflow-hidden min-w-[160px]"
@@ -699,7 +699,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
             </p>
           </div>
           <Button
-            onClick={handleSync}
+            onClick={() => handleSync()}
             disabled={syncStatus === 'syncing'}
             size="sm"
             className="gap-1.5"

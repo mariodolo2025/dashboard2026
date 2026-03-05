@@ -48,6 +48,16 @@ export function generateMockSKURows(): SKURow[] {
     const marginPercent = p.marginPercent ?? randomBetween(15, 70);
     const avgSellingPrice = Math.round((landedCostAUD / (1 - marginPercent / 100)) * 100) / 100;
     const gmroi = randomBetween(0.5, 8);
+    const sohChinaVal = p.sohChina ?? Math.round(randomBetween(0, 200));
+    const container = Math.round(randomBetween(0, 150));
+    const dhl = Math.round(randomBetween(0, 50));
+    const onProduction = Math.round(randomBetween(0, 300));
+    const allocatedMainWHVal = Math.round(randomBetween(0, Math.min(sohMainWH, 100)));
+    const availableMainWHVal = Math.max(0, sohMainWH - Math.round(randomBetween(0, Math.min(sohMainWH, 100))));
+    const allocatedChinaVal = Math.round(randomBetween(0, Math.min(sohChinaVal, 100)));
+    const availableChinaVal = Math.max(0, sohChinaVal - allocatedChinaVal);
+    const targetStockLevel = reorderPoint + Math.round(safetyStock * 0.5);
+    const pipeline = container + dhl + onProduction;
 
     return {
       sku: p.sku!,
@@ -56,18 +66,24 @@ export function generateMockSKURows(): SKURow[] {
       supplier: pickRandom(['Pesado Factory', 'Artisan Barista Co', 'Tiamo', 'BWT', 'IMS']),
       abcClass: projectedDemand > 100 ? 'A' : projectedDemand > 30 ? 'B' : 'C',
       sohMainWH,
-      sohChina: p.sohChina ?? Math.round(randomBetween(0, 200)),
-      container: Math.round(randomBetween(0, 150)),
-      dhl: Math.round(randomBetween(0, 50)),
-      onProduction: Math.round(randomBetween(0, 300)),
-      allocatedMainWH: Math.round(randomBetween(0, Math.min(sohMainWH, 100))),
-      availableMainWH: Math.max(0, sohMainWH - Math.round(randomBetween(0, Math.min(sohMainWH, 100)))),
+      sohChina: sohChinaVal,
+      container,
+      dhl,
+      onProduction,
+      allocatedMainWH: allocatedMainWHVal,
+      availableMainWH: availableMainWHVal,
+      allocatedChina: allocatedChinaVal,
+      availableChina: availableChinaVal,
+      allocatedTotal: allocatedMainWHVal + allocatedChinaVal,
       projectedDemand,
       demandTrend: pickRandom(['up', 'down', 'stable'] as const),
       demandTrendPercent: randomBetween(-25, 40),
       reorderPoint,
       safetyStock,
+      targetStockLevel,
+      pipeline,
       suggestedQty,
+      softSuggestedQty: suggestedQty,
       daysOfCover: p.daysOfCover ?? randomBetween(0, 200),
       turnover,
       turnoverTrend: pickRandom(['up', 'down', 'stable'] as const),

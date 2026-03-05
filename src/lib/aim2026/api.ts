@@ -149,6 +149,7 @@ export async function loadFromCSV(
       soh: totals.soh,
       sales: totals.sales,
       purchase: totals.purchase,
+      assemblies: 0,
     },
     errors: allErrors,
     durationMs: totalDuration,
