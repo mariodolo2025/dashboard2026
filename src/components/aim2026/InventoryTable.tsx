@@ -128,6 +128,10 @@ interface InventoryTableProps {
   poBuilderMode?: boolean;
   poSelectedSKUs?: Set<string>;
   onSugQtyClick?: (row: SKURow) => void;
+  /** When true, table scroll container fills parent height (for maximized overlay) */
+  fullHeight?: boolean;
+  /** When true, data is already fully filtered (e.g. includes assembled filter); do not apply filters again */
+  dataIsFullyFiltered?: boolean;
 }
 
 export function InventoryTable({
@@ -139,6 +143,8 @@ export function InventoryTable({
   poBuilderMode = false,
   poSelectedSKUs,
   onSugQtyClick,
+  fullHeight = false,
+  dataIsFullyFiltered = false,
 }: InventoryTableProps) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'projectedDemand', desc: true },
@@ -149,6 +155,8 @@ export function InventoryTable({
   // ─── Filter data ─────────────────────────────────────────────────────────
 
   const filteredData = useMemo(() => {
+    if (dataIsFullyFiltered) return data;
+
     let result = data;
 
     if (filters.search) {
@@ -176,7 +184,7 @@ export function InventoryTable({
     }
 
     return result;
-  }, [data, filters]);
+  }, [data, filters, dataIsFullyFiltered]);
 
   // ─── Column definitions ──────────────────────────────────────────────────
 
@@ -654,12 +662,21 @@ export function InventoryTable({
   // This prevents SKU from hogging all extra width on wide screens
 
   return (
-    <div className="border rounded-lg overflow-hidden bg-card">
+    <div
+      className={cn(
+        'border rounded-lg overflow-hidden bg-card',
+        fullHeight && 'flex flex-col flex-1 min-h-0'
+      )}
+    >
       {/* Scrollable container */}
       <div
         ref={parentRef}
-        className="overflow-auto"
-        style={{ maxHeight: 'calc(100vh - 380px)', minHeight: '300px' }}
+        className={cn('overflow-auto', fullHeight && 'flex-1 min-h-0')}
+        style={
+          fullHeight
+            ? { minHeight: '200px' }
+            : { maxHeight: 'calc(100vh - 380px)', minHeight: '300px' }
+        }
       >
         {/* ── Sticky Header ──────────────────────────────────────── */}
         <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur-sm border-b">

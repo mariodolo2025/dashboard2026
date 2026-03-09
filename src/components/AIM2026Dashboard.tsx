@@ -74,6 +74,9 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
   const [qtyDialogOpen, setQtyDialogOpen] = useState(false);
   const [qtyDialogRow, setQtyDialogRow] = useState<SKURow | null>(null);
   const [poNotification, setPONotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [tableMaximized, setTableMaximized] = useState(false);
+  const [assembledProductSKUs, setAssembledProductSKUs] = useState<Set<string>>(new Set());
+  const [showAssembledProducts, setShowAssembledProducts] = useState(false);
 
   // ─── Load real data from Supabase ──────────────────────────────────────────
 
@@ -101,6 +104,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
             setKPISummary(data.kpiSummary);
             setValuation(data.valuation);
             setValuationHistory(data.valuationHistory);
+            setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
             setNeedsFirstSync(false);
           }
           setLoading(false);
@@ -142,6 +146,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
         if (data.rows.length > 0) {
           setSKUData(dedupeRowsBySKU(data.rows));
           setKPISummary(data.kpiSummary);
+          setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
         }
       }).catch(console.error);
       return;
@@ -164,6 +169,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
           setSKUData(dedupeRowsBySKU(result.rows));
           setValuation(data.valuation);
           setValuationHistory(data.valuationHistory);
+          setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
           // Preserve fixed inventory value — only update demand-dependent KPIs
           setKPISummary((prev) => {
             if (!prev) return result.kpiSummary;
@@ -237,6 +243,9 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
 
   const filteredData = useMemo(() => {
     let result = skuData;
+    if (!showAssembledProducts && assembledProductSKUs.size > 0) {
+      result = result.filter((r) => !assembledProductSKUs.has(r.sku));
+    }
     if (filters.search) {
       const term = filters.search.toLowerCase();
       result = result.filter(
@@ -248,7 +257,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
     if (filters.productGroup !== 'all') result = result.filter((r) => r.productGroup === filters.productGroup);
     if (filters.supplier !== 'all') result = result.filter((r) => r.supplier === filters.supplier);
     return result;
-  }, [skuData, filters]);
+  }, [skuData, filters, showAssembledProducts, assembledProductSKUs]);
 
   const filteredCount = filteredData.length;
 
@@ -304,6 +313,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
       setKPISummary(data.kpiSummary);
       setValuation(data.valuation);
       setValuationHistory(data.valuationHistory);
+      setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
       setNeedsFirstSync(false);
 
       if (filters.demandMode !== 'realDemand') {
@@ -430,6 +440,16 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
   const handlePOClear = useCallback(() => {
     setPOItems([]);
   }, []);
+
+  // Close maximized table on Escape
+  useEffect(() => {
+    if (!tableMaximized) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTableMaximized(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [tableMaximized]);
 
   const handleCreatePO = useCallback(async (customOrderStatus: string) => {
     if (poItems.length === 0) return;
@@ -727,6 +747,10 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
               suppliers={suppliers}
               totalCount={skuData.length}
               filteredCount={filteredCount}
+              showAssembledProducts={showAssembledProducts}
+              onShowAssembledProductsChange={setShowAssembledProducts}
+              assembledCount={assembledProductSKUs.size}
+              onMaximizeClick={() => setTableMaximized(true)}
             />
           </div>
 
@@ -802,7 +826,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
 
           {/* ─── Main Inventory Table ─────────────────────────────────────── */}
           <InventoryTable
-            data={skuData}
+            data={filteredData}
             filters={filters}
             loading={loading}
             onSKUClick={handleSKUClick}
@@ -810,9 +834,97 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
             poBuilderMode={poBuilderMode}
             poSelectedSKUs={poSelectedSKUs}
             onSugQtyClick={handleSugQtyClick}
+            dataIsFullyFiltered
           />
         </>
       )}
+
+      {/* ─── Maximized table overlay (FilterBar + valuation + table) ────────── */}
+      <AnimatePresence>
+        {tableMaximized && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-50 bg-background flex flex-col"
+          >
+            <div className="flex items-center gap-4 px-4 py-2 border-b bg-muted/30 shrink-0">
+              <span className="text-sm font-medium">AIM 2026 — Tabla principal</span>
+            </div>
+            <div className="flex-1 min-h-0 p-4 flex flex-col gap-3 overflow-auto">
+              <div className="bg-muted/20 rounded-lg border border-border/40 px-4 py-3 shrink-0">
+                <FilterBar
+                  filters={filters}
+                  onFiltersChange={setFilters}
+                  productGroups={productGroups}
+                  suppliers={suppliers}
+                  totalCount={skuData.length}
+                  filteredCount={filteredCount}
+                  showAssembledProducts={showAssembledProducts}
+                  onShowAssembledProductsChange={setShowAssembledProducts}
+                  assembledCount={assembledProductSKUs.size}
+                  onRestoreClick={() => setTableMaximized(false)}
+                  isMaximized
+                />
+              </div>
+              {filteredData.length > 0 && (
+                <div className="bg-muted/20 rounded-lg border border-border/40 px-4 py-2.5 shrink-0">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-muted-foreground mr-1">
+                      <Warehouse size={13} className="opacity-60" />
+                      <span className="text-[11px] font-medium uppercase tracking-wide">Stock Valuation</span>
+                      <span className="text-[10px] text-muted-foreground/60">
+                        ({filteredCount} {filteredCount === 1 ? 'product' : 'products'})
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 flex-wrap flex-1">
+                      {[
+                        { label: 'Main WH', value: filteredValuation.mainWH, color: 'text-blue-600 dark:text-blue-400' },
+                        { label: 'China', value: filteredValuation.china, color: 'text-purple-600 dark:text-purple-400' },
+                        { label: 'Container', value: filteredValuation.container, color: 'text-cyan-600 dark:text-cyan-400' },
+                        { label: 'DHL', value: filteredValuation.dhl, color: 'text-orange-600 dark:text-orange-400' },
+                        { label: 'Production', value: filteredValuation.onProduction, color: 'text-violet-600 dark:text-violet-400' },
+                      ].map((loc) => (
+                        <div key={loc.label} className="flex items-center gap-1">
+                          <span className="text-[10px] text-muted-foreground/70">{loc.label}</span>
+                          <span className={`text-xs font-semibold tabular-nums ${loc.color}`}>
+                            ${loc.value >= 1000 ? `${(loc.value / 1000).toFixed(1)}K` : loc.value.toFixed(0)}
+                          </span>
+                        </div>
+                      ))}
+                      <div className="flex items-center gap-1 ml-auto pl-3 border-l border-border/40">
+                        <span className="text-[10px] text-muted-foreground/70">Total</span>
+                        <span className="text-xs font-bold tabular-nums text-foreground">
+                          ${filteredValuation.total >= 1_000_000
+                            ? `${(filteredValuation.total / 1_000_000).toFixed(2)}M`
+                            : filteredValuation.total >= 1000
+                            ? `${(filteredValuation.total / 1000).toFixed(1)}K`
+                            : filteredValuation.total.toFixed(0)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="flex-1 min-h-0 flex flex-col">
+                <InventoryTable
+                  data={filteredData}
+                  filters={filters}
+                  loading={loading}
+                  onSKUClick={handleSKUClick}
+                  onDemandClick={handleDemandClick}
+                  poBuilderMode={poBuilderMode}
+                  poSelectedSKUs={poSelectedSKUs}
+                  onSugQtyClick={handleSugQtyClick}
+                  fullHeight
+                  dataIsFullyFiltered
+                />
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ─── Footer Status ──────────────────────────────────────────────────── */}
       {skuData.length > 0 && (

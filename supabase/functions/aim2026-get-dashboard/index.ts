@@ -66,6 +66,49 @@ function parseUnleashedDate(dateVal: any): string {
   try { return new Date(dateVal).toISOString().slice(0, 10); } catch { return ""; }
 }
 
+// ─── BOM fallback: read assembled SKUs from BillOfMaterialsList.csv in storage ─
+async function fetchAssembledFromBOM(supabase: any): Promise<string[]> {
+  const buckets = ["aim-csv-files", "csv-files"];
+  const names = ["BillOfMaterialsList.csv", "bom_cleaned_min.csv", "BOM.csv"];
+  let blob: Blob | null = null;
+  for (const name of names) {
+    for (const bucket of buckets) {
+      const { data, error } = await supabase.storage.from(bucket).download(name);
+      if (!error && data) {
+        blob = data;
+        break;
+      }
+    }
+    if (blob) break;
+  }
+  if (!blob) return [];
+
+  const text = await blob.text();
+  const rows = parseCsv(text, { skipFirstRow: false, lazyQuotes: true }) as string[][];
+  if (!rows || rows.length < 2) return [];
+
+  let headerIndex = -1;
+  let productCodeCol = -1;
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const vals = rows[i].map((v) => String(v || "").toLowerCase().trim());
+    if (vals.some((v) => v.includes("enquiry as of") || v.includes("report"))) continue;
+    const idx = vals.findIndex((v) => v.includes("product code") || v === "productcode" || v === "sku");
+    if (idx >= 0) {
+      headerIndex = i;
+      productCodeCol = idx;
+      break;
+    }
+  }
+  if (headerIndex < 0 || productCodeCol < 0) return [];
+
+  const skus = new Set<string>();
+  for (let i = headerIndex + 1; i < rows.length; i++) {
+    const sku = String(rows[i][productCodeCol] ?? "").trim();
+    if (sku) skus.add(sku);
+  }
+  return Array.from(skus);
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return jsonResponse(null, 200);
@@ -110,7 +153,24 @@ Deno.serve(async (req: Request) => {
       }
 
       console.log(`KPI cache: returned ${allData.length} rows (paginated)`);
-      return jsonResponse({ success: true, data: allData });
+
+      let assembledProductSKUs: string[] = [];
+      const { data: assembledRows, error: assembledErr } = await supabase
+        .from("aim2026_assembled_products")
+        .select("sku");
+      if (!assembledErr && assembledRows && assembledRows.length > 0) {
+        assembledProductSKUs = assembledRows.map((r: { sku: string }) => r.sku);
+      } else {
+        assembledProductSKUs = await fetchAssembledFromBOM(supabase);
+        if (assembledProductSKUs.length > 0) {
+          await supabase.from("aim2026_assembled_products").delete().gte("sku", "");
+          await supabase.from("aim2026_assembled_products").insert(
+            assembledProductSKUs.map((sku) => ({ sku }))
+          );
+        }
+      }
+
+      return jsonResponse({ success: true, data: allData, assembledProductSKUs });
     }
 
     // ─── Valuation History ────────────────────────────────────────

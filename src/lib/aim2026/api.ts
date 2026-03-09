@@ -471,6 +471,8 @@ export interface DashboardData {
   kpiSummary: KPISummary;
   valuation: StockValuationTotals;
   valuationHistory: StockValuationHistoryRecord[];
+  /** SKUs that are assembled products (have a BOM). Used to filter table by default. */
+  assembledProductSKUs: string[];
 }
 
 export async function fetchDashboardData(): Promise<DashboardData> {
@@ -479,11 +481,13 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     callFunction<{
       success: boolean;
       data: Array<{ sku: string; kpi_data: any; calculated_at: string }>;
+      assembledProductSKUs?: string[];
     }>('aim2026-get-dashboard', {}),
     fetchValuationHistory(10),
   ]);
 
   const kpiData = kpiResponse.data ?? [];
+  const assembledProductSKUs = kpiResponse.assembledProductSKUs ?? [];
 
   // Transform KPI cache rows into SKURow[]
   const rows: SKURow[] = kpiData.map((row) => {
@@ -583,7 +587,7 @@ export async function fetchDashboardData(): Promise<DashboardData> {
         totalInventory: 0,
       };
 
-  return { rows, kpiSummary, valuation, valuationHistory };
+  return { rows, kpiSummary, valuation, valuationHistory, assembledProductSKUs };
 }
 
 // ─── Date Range KPI Recalculation ─────────────────────────────────────────

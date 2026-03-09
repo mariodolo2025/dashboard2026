@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, X, Filter, SlidersHorizontal, Columns3 } from 'lucide-react';
+import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import type { AIM2026Filters, ABCClass, StockStatus } from '@/lib/aim2026/types';
 import { DEFAULT_FILTERS, TOGGLEABLE_COLUMNS, DEMAND_MODE_OPTIONS } from '@/lib/aim2026/types';
 
@@ -110,6 +111,12 @@ interface FilterBarProps {
   suppliers: string[];
   totalCount: number;
   filteredCount: number;
+  showAssembledProducts?: boolean;
+  onShowAssembledProductsChange?: (show: boolean) => void;
+  assembledCount?: number;
+  onMaximizeClick?: () => void;
+  onRestoreClick?: () => void;
+  isMaximized?: boolean;
 }
 
 export function FilterBar({
@@ -119,6 +126,12 @@ export function FilterBar({
   suppliers,
   totalCount,
   filteredCount,
+  showAssembledProducts = false,
+  onShowAssembledProductsChange,
+  assembledCount = 0,
+  onMaximizeClick,
+  onRestoreClick,
+  isMaximized = false,
 }: FilterBarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -237,8 +250,37 @@ export function FilterBar({
             {filteredCount === totalCount
               ? `${totalCount} products`
               : `${filteredCount} of ${totalCount}`}
+            {!showAssembledProducts && assembledCount > 0 && (
+              <span className="text-muted-foreground/80"> (excluding {assembledCount} assembled)</span>
+            )}
           </span>
         </div>
+
+        {/* Maximize / Restore */}
+        {isMaximized && onRestoreClick && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 gap-1.5 text-xs font-medium"
+            onClick={onRestoreClick}
+            title="Restaurar (Esc)"
+          >
+            <Minimize2 size={14} />
+            Restaurar
+          </Button>
+        )}
+        {!isMaximized && onMaximizeClick && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 gap-1.5 text-xs font-medium"
+            onClick={onMaximizeClick}
+            title="Maximizar tabla"
+          >
+            <Maximize2 size={14} />
+            Maximizar tabla
+          </Button>
+        )}
       </div>
 
       {/* Advanced filters row */}
@@ -353,6 +395,26 @@ export function FilterBar({
                     </SelectContent>
                   </Select>
                 </div>
+
+                {onShowAssembledProductsChange != null && (
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="show-assembled-aim2026"
+                      checked={showAssembledProducts}
+                      onCheckedChange={(checked) => onShowAssembledProductsChange(!!checked)}
+                    />
+                    <Label
+                      htmlFor="show-assembled-aim2026"
+                      className="text-xs font-normal text-muted-foreground cursor-pointer hover:text-foreground"
+                      title="Products built from a BOM (assembled). Uncheck to hide them from the table."
+                    >
+                      Show Assembled Products
+                      {assembledCount > 0 && (
+                        <span className="text-muted-foreground/70 ml-0.5">({assembledCount})</span>
+                      )}
+                    </Label>
+                  </div>
+                )}
               </div>
             </div>
           </motion.div>

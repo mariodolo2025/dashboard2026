@@ -109,17 +109,16 @@ const HEADER_KEYWORDS: Record<string, Record<string, string[]>> = {
     "Total Cost": ["total cost", "cost"],
   },
   bom: {
+    // Only need Product Code column for assembled list. BOM "List" format (Bill Number, Product Code, ...)
+    // has no Component/Quantity; BOM "Detail" format has all three.
     "Assembly Product Code": [
       "assembly product code",
       "assembly product",
       "assembly",
+      "product code",
+      "productcode",
+      "sku",
     ],
-    "Component Product Code": [
-      "component product code",
-      "component product",
-      "component",
-    ],
-    "Quantity": ["quantity", "qty"],
   },
 };
 
@@ -321,10 +320,15 @@ function loadBOM(bomText: string): Set<string> {
     const { headerIndex, headerMap } = findHeaderRow(rawData, "bom");
     const dataRows = rawData.slice(headerIndex + 1);
 
+    // Column may be "Assembly Product Code" or "Product Code" (keywords include both)
+    const colIndex = headerMap["Assembly Product Code"];
+    if (colIndex === undefined) {
+      console.warn("BOM: no Assembly Product Code / Product Code column found");
+      return assembledSKUs;
+    }
+
     for (const row of dataRows) {
-      const assemblySKU = String(
-        row[headerMap["Assembly Product Code"]] ?? ""
-      ).trim();
+      const assemblySKU = String(row[colIndex] ?? "").trim();
       if (assemblySKU) assembledSKUs.add(assemblySKU);
     }
     console.log(`BOM: ${assembledSKUs.size} assembled products identified`);
@@ -1167,6 +1171,15 @@ Deno.serve(async (req: Request) => {
         } catch {
           // non-critical
         }
+      }
+
+      if (assembledSKUs.size > 0) {
+        const { error: delErr } = await supabase.from("aim2026_assembled_products").delete().gte("sku", "");
+        if (delErr) console.error("aim2026_assembled_products delete error:", delErr);
+        const insertRows = Array.from(assembledSKUs).map((sku) => ({ sku }));
+        const { error: insErr } = await supabase.from("aim2026_assembled_products").insert(insertRows);
+        if (insErr) console.error("aim2026_assembled_products insert error:", insErr);
+        else console.log(`Assembled products: ${assembledSKUs.size} SKUs saved from BOM`);
       }
 
       if (blob) {

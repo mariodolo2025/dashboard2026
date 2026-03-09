@@ -827,6 +827,7 @@ async function syncAssemblies(
   const whMap = new Map<string, number>();
   const allMap = new Map<string, number>();
   const detailRows: any[] = [];
+  const assembledProductSKUs = new Set<string>();
   let totalLines = 0;
   let skippedDSM = 0;
 
@@ -838,6 +839,9 @@ async function syncAssemblies(
       skippedDSM++;
       continue;
     }
+
+    const assembledSku = (asm.Product?.ProductCode ?? "").trim();
+    if (assembledSku) assembledProductSKUs.add(assembledSku);
 
     // Use CompletedDate for month bucketing
     let asmPeriod: string | null = null;
@@ -899,6 +903,16 @@ async function syncAssemblies(
     `Assemblies: ${totalLines} component lines → ${allMap.size} All, ${whMap.size} per-wh ` +
     `(skipped ${skippedDSM} disassemblies)`
   );
+
+  // Persist assembled product SKUs for dashboard filter (exclude-by-default)
+  if (assembledProductSKUs.size > 0) {
+    const { error: delErr } = await supabase.from("aim2026_assembled_products").delete().gte("sku", "");
+    if (delErr) console.error("aim2026_assembled_products delete error:", delErr);
+    const insertRows = Array.from(assembledProductSKUs).map((sku) => ({ sku }));
+    const { error: insErr } = await supabase.from("aim2026_assembled_products").insert(insertRows);
+    if (insErr) console.error("aim2026_assembled_products insert error:", insErr);
+    else console.log(`Assembled products: ${assembledProductSKUs.size} SKUs saved`);
+  }
 
   if (allMap.size === 0) return 0;
 
