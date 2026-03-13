@@ -29,12 +29,14 @@ import {
   ArrowRight,
   Info,
   Loader2,
+  Layers,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { StatusBadge } from './StatusBadge';
 import { ABCBadge } from './ABCBadge';
 import type { SKURow } from '@/lib/aim2026/types';
 import { fetchRecentOrders, type RecentOrder } from '@/lib/aim2026/api';
+import type { BOMComponent } from '@/lib/aim2026/api';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -42,6 +44,8 @@ interface SKUDetailDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   sku: SKURow | null;
+  bomComponents?: BOMComponent[];
+  assembledProductSKUs?: Set<string>;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -178,7 +182,13 @@ function OrderStatusBadge({ status }: { status: string }) {
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
-export function SKUDetailDialog({ open, onOpenChange, sku }: SKUDetailDialogProps) {
+export function SKUDetailDialog({
+  open,
+  onOpenChange,
+  sku,
+  bomComponents = [],
+  assembledProductSKUs = new Set(),
+}: SKUDetailDialogProps) {
   // Fetch real SOH history
   const [sohHistory, setSohHistory] = useState<SOHHistoryPoint[]>([]);
   const [sohLoading, setSohLoading] = useState(false);
@@ -257,6 +267,38 @@ export function SKUDetailDialog({ open, onOpenChange, sku }: SKUDetailDialogProp
         </div>
 
         <div className="px-6 py-5 space-y-6">
+          {/* ── BOM Components (assembled products only) ───────────────── */}
+          {assembledProductSKUs.has(sku.sku) && bomComponents.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+                <Layers size={13} />
+                BOM Components
+              </h3>
+              <div className="rounded-lg border bg-muted/20 overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-muted/40 border-b">
+                      <th className="text-left px-3 py-2 font-medium">Component SKU</th>
+                      <th className="text-right px-3 py-2 font-medium">Qty per assembly</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bomComponents
+                      .filter((c) => c.assembly_sku === sku.sku)
+                      .map((c) => (
+                        <tr key={c.component_sku} className="border-b last:border-0">
+                          <td className="px-3 py-2 font-mono">{c.component_sku}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {c.quantity_per_assembly}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* ── Help Banner ──────────────────────────────────────────── */}
           <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg px-4 py-2.5 border border-blue-200/40 dark:border-blue-800/40 flex items-start gap-2">
             <Info size={13} className="text-blue-500 mt-0.5 flex-shrink-0" />

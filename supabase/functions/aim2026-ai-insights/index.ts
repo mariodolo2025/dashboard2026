@@ -36,30 +36,15 @@ interface InsightCard {
 
 // ─── Build Analysis Prompt ─────────────────────────────────────────────────
 
-function buildPrompt(data: any): string {
-  const { skus, kpiSummary } = data;
-
-  // Prepare compact SKU data for the prompt
-  const skuLines = skus
-    .map(
-      (s: any) =>
-        `${s.sku}|${s.abcClass}|SOH:${s.sohMainWH}|Demand:${s.projectedDemand}/mo|Cover:${s.daysOfCover}d|ROP:${s.reorderPoint}|SugQty:${s.suggestedQty}|Pipeline:${s.pipeline}|Status:${s.status}|Margin:${s.marginPercent}%|GMROI:${s.gmroi}|Turnover:${s.turnover}|Trend:${s.demandTrend}(${s.demandTrendPercent}%)|LT:${s.leadTimeDays}d|Cost:$${s.productCostChina}|Landed:$${s.landedCostAUD}|ASP:$${s.avgSellingPrice}`
-    )
-    .join("\n");
-
-  return `You are an expert inventory analyst for a consumer products company (Pesado Coffee accessories). Analyze the following inventory KPI data and provide 3-5 actionable insights.
+const DEFAULT_PROMPT_TEMPLATE = `You are an expert inventory analyst for a consumer products company (Pesado Coffee accessories). Analyze the following inventory KPI data and provide 3-5 actionable insights.
+{{ASSEMBLED_NOTE}}
+{{EXCLUDED_NOTE}}
 
 PORTFOLIO SUMMARY:
-- Total Products: ${kpiSummary.totalProducts}
-- Total Inventory Value: AUD ${Math.round(kpiSummary.totalInventoryValueAUD).toLocaleString()}
-- Items at Risk: ${kpiSummary.itemsAtRisk}
-- Avg Turnover: ${kpiSummary.avgTurnover}x
-- Avg GMROI: ${kpiSummary.avgGMROI}
-- Avg Margin: ${kpiSummary.avgMarginPercent}%
-- Avg Days of Cover: ${Math.round(kpiSummary.avgDaysOfCover)} days
+{{PORTFOLIO_SUMMARY}}
 
-SKU DATA (format: SKU|ABC|SOH|Demand|Cover|ROP|SugQty|Pipeline|Status|Margin|GMROI|Turnover|Trend|LeadTime|Cost|LandedCost|AvgSellingPrice):
-${skuLines}
+SKU DATA (format: SKU|ABC|SOH|Demand|Cover|ROP|SugQty|Pipeline|Status|Margin|GMROI|Turnover|Trend|LeadTime|Cost|LandedCost|AvgSellingPrice|Assembled):
+{{SKU_DATA}}
 
 Respond ONLY with a valid JSON array of insight objects. Each insight must have:
 - "category": one of "inventory", "demand", "financial", "action"
@@ -68,16 +53,67 @@ Respond ONLY with a valid JSON array of insight objects. Each insight must have:
 - "description": 2-3 sentences with specific SKU codes, numbers, and recommended actions. Be specific and data-driven.
 - "confidence": number 75-99 representing how confident you are
 - "actionLabel": short button label for the recommended action (e.g. "Restock Now", "Review Pricing", "Reduce Stock")
-- "relatedSKUs": array of up to 3 most relevant SKU codes
+- "relatedSKUs": array of up to 3 most relevant SKU codes (or more for missing-price / bundle lists)
 
 Focus on:
-1. Urgent stockout risks (CRITICAL/LOW STOCK items, especially ABC class A)
+1. Urgent stockout risks (CRITICAL/LOW STOCK items, especially ABC class A). CRITICAL: Do NOT flag assembled products (Assembled:Y) as stockout or restock based on SOH alone—they get stock from components. Never recommend "Emergency Restock" for assembled SKUs.
 2. Overstock situations tying up capital
 3. Margin or GMROI anomalies
 4. Demand trend changes that need attention
 5. Specific reorder recommendations
+6. **MISSING SELLING PRICE**: Identify products with HIGH demand that have ASP:0 or no selling price. Include full list in relatedSKUs and description.
+7. Premium bundles or products with zero revenue that need pricing/visibility checks
 
 Be concise, specific with numbers, and prioritize by business impact. Output ONLY the JSON array, no other text.`;
+
+function buildPrompt(data: any): string {
+  const {
+    skus,
+    kpiSummary,
+    assembledProductSKUs = [],
+    excludedSKUs = [],
+    customPrompt = "",
+  } = data;
+
+  // Prepare compact SKU data for the prompt (include isAssembled flag)
+  const skuLines = skus
+    .map(
+      (s: any) =>
+        `${s.sku}|${s.abcClass}|SOH:${s.sohMainWH}|Demand:${s.projectedDemand}/mo|Cover:${s.daysOfCover}d|ROP:${s.reorderPoint}|SugQty:${s.suggestedQty}|Pipeline:${s.pipeline}|Status:${s.status}|Margin:${s.marginPercent}%|GMROI:${s.gmroi}|Turnover:${s.turnover}|Trend:${s.demandTrend}(${s.demandTrendPercent}%)|LT:${s.leadTimeDays}d|Cost:$${s.productCostChina}|Landed:$${s.landedCostAUD}|ASP:$${s.avgSellingPrice}|Assembled:${s.isAssembled ? "Y" : "N"}`
+    )
+    .join("\n");
+
+  const portfolioSummary = `- Total Products: ${kpiSummary.totalProducts}
+- Total Inventory Value: AUD ${Math.round(kpiSummary.totalInventoryValueAUD).toLocaleString()}
+- Items at Risk: ${kpiSummary.itemsAtRisk}
+- Avg Turnover: ${kpiSummary.avgTurnover}x
+- Avg GMROI: ${kpiSummary.avgGMROI}
+- Avg Margin: ${kpiSummary.avgMarginPercent}%
+- Avg Days of Cover: ${Math.round(kpiSummary.avgDaysOfCover)} days`;
+
+  const assembledNote =
+    assembledProductSKUs.length > 0
+      ? `\n\nIMPORTANT - ASSEMBLED PRODUCTS: The following SKUs are ASSEMBLED products (built from components via BOM): ${assembledProductSKUs.join(", ")}. They typically show SOH:0 because they are not stored as finished goods—they are assembled on demand from components. Do NOT flag them as "out of stock", "stockout risk", or "restock" based on SOH alone. Their availability depends on component stock. For assembled SKUs, focus on component availability, demand trends, and margin—never recommend Emergency Restock for assembled products.`
+      : "";
+
+  const excludedNote =
+    excludedSKUs.length > 0
+      ? `\n\nEXCLUDED FROM ANALYSIS: The following are NOT real products and should be ignored: ${excludedSKUs.join(", ")}. Do not include them in any insight.`
+      : "";
+
+  if (customPrompt && customPrompt.trim()) {
+    return customPrompt
+      .replace(/\{\{SKU_DATA\}\}/g, skuLines)
+      .replace(/\{\{PORTFOLIO_SUMMARY\}\}/g, portfolioSummary)
+      .replace(/\{\{ASSEMBLED_NOTE\}\}/g, assembledNote)
+      .replace(/\{\{EXCLUDED_NOTE\}\}/g, excludedNote);
+  }
+
+  return DEFAULT_PROMPT_TEMPLATE
+    .replace("{{SKU_DATA}}", skuLines)
+    .replace("{{PORTFOLIO_SUMMARY}}", portfolioSummary)
+    .replace("{{ASSEMBLED_NOTE}}", assembledNote)
+    .replace("{{EXCLUDED_NOTE}}", excludedNote);
 }
 
 // ─── Main Handler ──────────────────────────────────────────────────────────
@@ -101,7 +137,13 @@ Deno.serve(async (req: Request) => {
     }
 
     const body = await req.json();
-    const { skus, kpiSummary } = body;
+    const {
+      skus,
+      kpiSummary,
+      assembledProductSKUs = [],
+      customPrompt = "",
+      excludedSKUs = [],
+    } = body;
 
     if (!skus || !Array.isArray(skus) || skus.length === 0) {
       return jsonResponse(
@@ -132,7 +174,13 @@ Deno.serve(async (req: Request) => {
 
     const topSKUs = prioritized.slice(0, 60);
 
-    const prompt = buildPrompt({ skus: topSKUs, kpiSummary });
+    const prompt = buildPrompt({
+      skus: topSKUs,
+      kpiSummary,
+      assembledProductSKUs,
+      customPrompt,
+      excludedSKUs,
+    });
 
     console.log(
       `AI Insights: sending ${topSKUs.length} SKUs to Claude (${prompt.length} chars)`
@@ -212,7 +260,7 @@ Deno.serve(async (req: Request) => {
         confidence: Math.min(99, Math.max(50, Number(i.confidence) || 85)),
         actionLabel: i.actionLabel ? String(i.actionLabel).slice(0, 25) : undefined,
         relatedSKUs: Array.isArray(i.relatedSKUs)
-          ? i.relatedSKUs.slice(0, 3).map(String)
+          ? i.relatedSKUs.slice(0, 15).map(String)
           : [],
       }));
 

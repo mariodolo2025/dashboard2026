@@ -95,7 +95,7 @@ function SortHeader({
 
 function SkeletonTable() {
   return (
-    <div className="space-y-0 border rounded-lg overflow-hidden">
+    <div className="space-y-0 border border-border/60 rounded-2xl overflow-hidden shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
       {/* Header */}
       <div className="h-10 bg-muted/50 border-b animate-pulse" />
       {/* Rows */}
@@ -664,7 +664,7 @@ export function InventoryTable({
   return (
     <div
       className={cn(
-        'border rounded-lg overflow-hidden bg-card',
+        'border border-border/60 rounded-2xl overflow-hidden bg-card shadow-[0_2px_8px_rgba(0,0,0,0.04)]',
         fullHeight && 'flex flex-col flex-1 min-h-0'
       )}
     >

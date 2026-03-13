@@ -20,8 +20,10 @@ import {
   ShieldAlert,
   DollarSign,
   BarChart3,
+  Download,
+  Table2,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, downloadCSV, type CSVColumn } from '@/lib/utils';
 import type { InsightCard, InsightCategory, InsightSeverity, SKURow, KPISummary } from '@/lib/aim2026/types';
 import { fetchAIInsights } from '@/lib/aim2026/api';
 
@@ -108,12 +110,50 @@ function ConfidenceRing({ value, size = 40 }: { value: number; size?: number }) 
   );
 }
 
+// ─── CSV columns for insight product lists ──────────────────────────────────
+
+const INSIGHT_CSV_COLUMNS: CSVColumn[] = [
+  { header: 'SKU', key: 'sku' },
+  { header: 'Product', key: 'product' },
+  { header: 'ABC', key: 'abcClass' },
+  { header: 'SOH', key: 'sohMainWH' },
+  { header: 'Demand/mo', key: 'projectedDemand' },
+  { header: 'Days Cover', key: 'daysOfCover' },
+  { header: 'Status', key: 'status' },
+  { header: 'Margin %', key: 'marginPercent' },
+  { header: 'GMROI', key: 'gmroi' },
+  { header: 'ASP', key: 'avgSellingPrice' },
+];
+
 // ─── Insight Card Component ────────────────────────────────────────────────
 
-function InsightCardUI({ insight, index }: { insight: InsightCard; index: number }) {
+function InsightCardUI({
+  insight,
+  index,
+  skuData,
+  onDownloadCSV,
+  onApplyFilter,
+}: {
+  insight: InsightCard;
+  index: number;
+  skuData: SKURow[];
+  onDownloadCSV?: (skus: string[], label: string) => void;
+  onApplyFilter?: (skus: string[]) => void;
+}) {
   const config = CATEGORY_CONFIG[insight.category] || CATEGORY_CONFIG.action;
   const Icon = config.icon;
   const sevBadge = SEVERITY_BADGE[insight.severity] || SEVERITY_BADGE.info;
+  const hasRelatedSKUs = insight.relatedSKUs && insight.relatedSKUs.length > 0;
+
+  const handleDownload = () => {
+    if (!hasRelatedSKUs || !onDownloadCSV) return;
+    onDownloadCSV(insight.relatedSKUs!, insight.title.replace(/\s+/g, '_').slice(0, 40));
+  };
+
+  const handleViewInTable = () => {
+    if (!hasRelatedSKUs || !onApplyFilter) return;
+    onApplyFilter(insight.relatedSKUs!);
+  };
 
   return (
     <motion.div
@@ -166,12 +206,29 @@ function InsightCardUI({ insight, index }: { insight: InsightCard; index: number
           </div>
         )}
 
-        {/* Footer: action + feedback */}
-        <div className="flex items-center justify-between pt-1">
-          {insight.actionLabel && (
-            <button className="text-[11px] font-semibold text-white bg-white/10 hover:bg-white/20 rounded-lg px-3 py-1.5 transition-colors border border-white/10">
-              {insight.actionLabel}
-            </button>
+        {/* Footer: action buttons + feedback */}
+        <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
+          {hasRelatedSKUs && (onDownloadCSV || onApplyFilter) && (
+            <div className="flex items-center gap-1.5">
+              {onDownloadCSV && (
+                <button
+                  onClick={handleDownload}
+                  className="text-[11px] font-semibold text-white bg-white/10 hover:bg-white/20 rounded-lg px-2.5 py-1.5 transition-colors border border-white/10 flex items-center gap-1"
+                >
+                  <Download size={10} />
+                  Download CSV
+                </button>
+              )}
+              {onApplyFilter && (
+                <button
+                  onClick={handleViewInTable}
+                  className="text-[11px] font-semibold text-white bg-white/10 hover:bg-white/20 rounded-lg px-2.5 py-1.5 transition-colors border border-white/10 flex items-center gap-1"
+                >
+                  <Table2 size={10} />
+                  View in Table
+                </button>
+              )}
+            </div>
           )}
           <div className="flex items-center gap-1 ml-auto">
             <span className="text-[9px] text-slate-500 mr-1">Confidence Score</span>
@@ -195,6 +252,9 @@ interface AIInsightsDialogProps {
   onOpenChange: (open: boolean) => void;
   skuData: SKURow[];
   kpiSummary: KPISummary | null;
+  assembledProductSKUs?: Set<string>;
+  config?: { aiInsightsPrompt?: string; aiInsightsExcludedSKUs?: string };
+  onApplyFilter?: (skus: string[]) => void;
 }
 
 export function AIInsightsDialog({
@@ -202,6 +262,9 @@ export function AIInsightsDialog({
   onOpenChange,
   skuData,
   kpiSummary,
+  assembledProductSKUs = new Set(),
+  config,
+  onApplyFilter,
 }: AIInsightsDialogProps) {
   const [insights, setInsights] = useState<InsightCard[]>([]);
   const [loading, setLoading] = useState(false);
@@ -216,8 +279,15 @@ export function AIInsightsDialog({
     setError(null);
 
     try {
+      const excludedList = (config?.aiInsightsExcludedSKUs ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
       const result = await fetchAIInsights(
-        skuData.map((s) => ({
+        skuData
+          .filter((s) => !excludedList.some((ex) => s.sku.includes(ex) || s.product.includes(ex)))
+          .map((s) => ({
           sku: s.sku,
           product: s.product,
           abcClass: s.abcClass,
@@ -242,8 +312,14 @@ export function AIInsightsDialog({
           productCostChina: s.productCostChina,
           landedCostAUD: s.landedCostAUD,
           avgSellingPrice: s.avgSellingPrice,
+          isAssembled: assembledProductSKUs.has(s.sku),
         })),
-        kpiSummary as unknown as Record<string, unknown>
+        kpiSummary as unknown as Record<string, unknown>,
+        {
+          assembledProductSKUs: [...assembledProductSKUs],
+          customPrompt: config?.aiInsightsPrompt || undefined,
+          excludedSKUs: excludedList,
+        }
       );
 
       if (result.success) {
@@ -258,7 +334,7 @@ export function AIInsightsDialog({
     } finally {
       setLoading(false);
     }
-  }, [skuData, kpiSummary]);
+  }, [skuData, kpiSummary, assembledProductSKUs, config]);
 
   // Auto-generate on first open if no insights
   const handleOpenChange = useCallback(
@@ -365,7 +441,20 @@ export function AIInsightsDialog({
 
           <AnimatePresence>
             {insights.map((insight, i) => (
-              <InsightCardUI key={`${insight.title}-${i}`} insight={insight} index={i} />
+              <InsightCardUI
+                key={`${insight.title}-${i}`}
+                insight={insight}
+                index={i}
+                skuData={skuData}
+                onDownloadCSV={(skus, label) => {
+                  const set = new Set(skus);
+                  const rows = skuData.filter((r) => set.has(r.sku));
+                  if (rows.length > 0) {
+                    downloadCSV(rows, `AI_Insight_${label}.csv`, INSIGHT_CSV_COLUMNS);
+                  }
+                }}
+                onApplyFilter={onApplyFilter}
+              />
             ))}
           </AnimatePresence>
 

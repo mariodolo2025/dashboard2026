@@ -34,10 +34,11 @@ import {
   FileUp,
   FlaskConical,
   Download,
+  Brain,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AIM2026Config } from '@/lib/aim2026/types';
-import { DEFAULT_CONFIG, DEFAULT_LANDED_COST_NOTES } from '@/lib/aim2026/types';
+import { DEFAULT_CONFIG, DEFAULT_LANDED_COST_NOTES, DEFAULT_AI_INSIGHTS_PROMPT } from '@/lib/aim2026/types';
 import {
   fetchXeroCosts,
   categorizeXeroCosts,
@@ -2032,6 +2033,51 @@ export function SettingsPanel({ open, onOpenChange, config, onSave, onSyncAndDow
 
           {/* ── Lead Times ──────────────────────────────────────────── */}
           <LeadTimesSection defaultLeadTimeDays={draft.defaultLeadTimeDays} />
+
+          {/* ── AI Insights ─────────────────────────────────────────── */}
+          <Section
+            title="AI Insights"
+            icon={Brain}
+            description="Customize the prompt and exclude non-products from analysis"
+            defaultOpen={false}
+          >
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs font-medium">Excluded SKUs / product names</Label>
+                <Input
+                  value={draft.aiInsightsExcludedSKUs ?? 'Courier Fee'}
+                  onChange={(e) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      aiInsightsExcludedSKUs: e.target.value,
+                    }))
+                  }
+                  placeholder="Courier Fee, OtherNonProduct"
+                  className="mt-1 text-sm"
+                />
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  Comma-separated. These will not be sent to the AI (e.g. fees, non-products).
+                </p>
+              </div>
+              <div>
+                <Label className="text-xs font-medium">Custom prompt</Label>
+                <Textarea
+                  value={draft.aiInsightsPrompt !== undefined && draft.aiInsightsPrompt !== '' ? draft.aiInsightsPrompt : DEFAULT_AI_INSIGHTS_PROMPT}
+                  onChange={(e) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      aiInsightsPrompt: e.target.value,
+                    }))
+                  }
+                  rows={12}
+                  className="mt-1 text-[11px] font-mono resize-y"
+                />
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  Editable. Placeholders: {'{{SKU_DATA}}'}, {'{{PORTFOLIO_SUMMARY}}'}, {'{{ASSEMBLED_NOTE}}'}, {'{{EXCLUDED_NOTE}}'}. Clear to use default.
+                </p>
+              </div>
+            </div>
+          </Section>
 
           {/* ── CSV Data Reload ────────────────────────────────────── */}
           <CSVReloadSection />

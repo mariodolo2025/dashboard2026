@@ -65,6 +65,41 @@ async function downloadFromBucket(
   return null;
 }
 
+/** Find BOM file by pattern (BOM*, BillOfMaterials*) - names vary with date/time. Returns blob or null. */
+async function downloadBOMFromBucket(supabase: any): Promise<Blob | null> {
+  const buckets = ["aim-csv-files", "csv-files"];
+  const FIXED_NAMES = ["BillOfMaterialsList.csv", "bom_cleaned_min.csv", "BOM.csv"];
+
+  for (const bucket of buckets) {
+    const { data: files, error } = await supabase.storage.from(bucket).list();
+    if (error || !files?.length) continue;
+
+    const bomFiles = files.filter(
+      (f: { name: string }) =>
+        (f.name.toLowerCase().startsWith("bom") ||
+          f.name.toLowerCase().startsWith("billofmaterials")) &&
+        f.name.toLowerCase().endsWith(".csv")
+    );
+
+    if (bomFiles.length > 0) {
+      bomFiles.sort((a: { updated_at?: string }, b: { updated_at?: string }) =>
+        (b.updated_at || "").localeCompare(a.updated_at || "")
+      );
+      const name = bomFiles[0].name;
+      const { data, error: dlErr } = await supabase.storage.from(bucket).download(name);
+      if (!dlErr && data) {
+        console.log(`✓ BOM: downloaded "${name}" from ${bucket} (${data.size} bytes)`);
+        return data;
+      }
+    }
+  }
+
+  return downloadFromBucket(supabase, "BillOfMaterialsList.csv", [
+    "bom_cleaned_min.csv",
+    "BOM.csv",
+  ]);
+}
+
 // ─── CSV Parsing Helpers ───────────────────────────────────────────────────
 
 const HEADER_KEYWORDS: Record<string, Record<string, string[]>> = {
@@ -109,8 +144,6 @@ const HEADER_KEYWORDS: Record<string, Record<string, string[]>> = {
     "Total Cost": ["total cost", "cost"],
   },
   bom: {
-    // Only need Product Code column for assembled list. BOM "List" format (Bill Number, Product Code, ...)
-    // has no Component/Quantity; BOM "Detail" format has all three.
     "Assembly Product Code": [
       "assembly product code",
       "assembly product",
@@ -119,6 +152,13 @@ const HEADER_KEYWORDS: Record<string, Record<string, string[]>> = {
       "productcode",
       "sku",
     ],
+    "Component Product Code": [
+      "component product code",
+      "component product",
+      "component",
+      "component code",
+    ],
+    Quantity: ["quantity", "qty", "*quantity"],
   },
 };
 
@@ -310,32 +350,61 @@ async function loadSOHFromCSV(
 }
 
 // ─── Load BOM (Bill of Materials) ─────────────────────────────────────────
-// Returns a set of assembled product SKUs (used in ROD calculation to exclude
-// component usage from assembled products themselves).
+// Returns assembled SKUs + components. Rows with empty Assembly inherit from previous row.
 
-function loadBOM(bomText: string): Set<string> {
+function loadBOM(bomText: string): {
+  assembledSKUs: Set<string>;
+  components: Array<{ assembly_sku: string; component_sku: string; quantity_per_assembly: number }>;
+} {
   const assembledSKUs = new Set<string>();
+  const components: Array<{
+    assembly_sku: string;
+    component_sku: string;
+    quantity_per_assembly: number;
+  }> = [];
+
   try {
     const rawData: string[][] = parse(bomText, { skipFirstRow: false, lazyQuotes: true });
     const { headerIndex, headerMap } = findHeaderRow(rawData, "bom");
     const dataRows = rawData.slice(headerIndex + 1);
 
-    // Column may be "Assembly Product Code" or "Product Code" (keywords include both)
-    const colIndex = headerMap["Assembly Product Code"];
-    if (colIndex === undefined) {
-      console.warn("BOM: no Assembly Product Code / Product Code column found");
-      return assembledSKUs;
+    const assemblyCol = headerMap["Assembly Product Code"];
+    const componentCol = headerMap["Component Product Code"];
+    const qtyCol = headerMap["Quantity"];
+
+    if (assemblyCol === undefined) {
+      console.warn("BOM: no Assembly Product Code column found");
+      return { assembledSKUs, components };
     }
 
+    let currentAssembly = "";
     for (const row of dataRows) {
-      const assemblySKU = String(row[colIndex] ?? "").trim();
-      if (assemblySKU) assembledSKUs.add(assemblySKU);
+      const assemblyVal = String(row[assemblyCol] ?? "").trim();
+      if (assemblyVal) currentAssembly = assemblyVal;
+      if (!currentAssembly) continue;
+
+      assembledSKUs.add(currentAssembly);
+
+      if (componentCol !== undefined) {
+        const componentVal = String(row[componentCol] ?? "").trim();
+        if (componentVal) {
+          const qty = qtyCol !== undefined ? toNumber(row[qtyCol]) : 1;
+          const qtyNum = qty > 0 ? qty : 1;
+          components.push({
+            assembly_sku: currentAssembly,
+            component_sku: componentVal,
+            quantity_per_assembly: qtyNum,
+          });
+        }
+      }
     }
-    console.log(`BOM: ${assembledSKUs.size} assembled products identified`);
+    console.log(
+      `BOM: ${assembledSKUs.size} assembled products, ${components.length} component rows`
+    );
   } catch (e) {
     console.warn("BOM parsing failed (non-critical):", e);
   }
-  return assembledSKUs;
+  return { assembledSKUs, components };
 }
 
 // ─── Load Sales from CSV → Demand History ─────────────────────────────────
@@ -1158,16 +1227,20 @@ Deno.serve(async (req: Request) => {
     // ── Production step ───────────────────────────────────────────
     if (step === "production" || step === "all") {
       const blob = await downloadFromBucket(supabase, "ProductionEnquiryList.csv");
-      const bomBlob = await downloadFromBucket(
-        supabase,
-        "BillOfMaterialsList.csv",
-        ["bom_cleaned_min.csv", "BOM.csv"]
-      );
+      const bomBlob = await downloadBOMFromBucket(supabase);
 
       let assembledSKUs = new Set<string>();
+      let bomComponents: Array<{
+        assembly_sku: string;
+        component_sku: string;
+        quantity_per_assembly: number;
+      }> = [];
+
       if (bomBlob) {
         try {
-          assembledSKUs = loadBOM(await bomBlob.text());
+          const bomResult = loadBOM(await bomBlob.text());
+          assembledSKUs = bomResult.assembledSKUs;
+          bomComponents = bomResult.components;
         } catch {
           // non-critical
         }
@@ -1180,6 +1253,19 @@ Deno.serve(async (req: Request) => {
         const { error: insErr } = await supabase.from("aim2026_assembled_products").insert(insertRows);
         if (insErr) console.error("aim2026_assembled_products insert error:", insErr);
         else console.log(`Assembled products: ${assembledSKUs.size} SKUs saved from BOM`);
+      }
+
+      if (bomComponents.length > 0) {
+        const { error: delBomErr } = await supabase.from("aim2026_bom_components").delete().gte("assembly_sku", "");
+        if (delBomErr) console.error("aim2026_bom_components delete error:", delBomErr);
+        const bomInsertRows = bomComponents.map((c) => ({
+          assembly_sku: c.assembly_sku,
+          component_sku: c.component_sku,
+          quantity_per_assembly: c.quantity_per_assembly,
+        }));
+        const { error: insBomErr } = await supabase.from("aim2026_bom_components").insert(bomInsertRows);
+        if (insBomErr) console.error("aim2026_bom_components insert error:", insBomErr);
+        else console.log(`BOM components: ${bomComponents.length} rows saved`);
       }
 
       if (blob) {

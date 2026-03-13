@@ -466,6 +466,12 @@ export async function syncUnleashed(
 
 // ─── Fetch Dashboard Data (from KPI cache) ────────────────────────────────
 
+export interface BOMComponent {
+  assembly_sku: string;
+  component_sku: string;
+  quantity_per_assembly: number;
+}
+
 export interface DashboardData {
   rows: SKURow[];
   kpiSummary: KPISummary;
@@ -473,6 +479,8 @@ export interface DashboardData {
   valuationHistory: StockValuationHistoryRecord[];
   /** SKUs that are assembled products (have a BOM). Used to filter table by default. */
   assembledProductSKUs: string[];
+  /** BOM components: assembly -> component -> qty. For dashboard component relationship display. */
+  bomComponents: BOMComponent[];
 }
 
 export async function fetchDashboardData(): Promise<DashboardData> {
@@ -482,12 +490,14 @@ export async function fetchDashboardData(): Promise<DashboardData> {
       success: boolean;
       data: Array<{ sku: string; kpi_data: any; calculated_at: string }>;
       assembledProductSKUs?: string[];
+      bomComponents?: BOMComponent[];
     }>('aim2026-get-dashboard', {}),
     fetchValuationHistory(10),
   ]);
 
   const kpiData = kpiResponse.data ?? [];
   const assembledProductSKUs = kpiResponse.assembledProductSKUs ?? [];
+  const bomComponents = kpiResponse.bomComponents ?? [];
 
   // Transform KPI cache rows into SKURow[]
   const rows: SKURow[] = kpiData.map((row) => {
@@ -544,6 +554,9 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
   ).length;
 
+  // Exclude products without selling price from avg margin (old/obsolete parts skew the metric)
+  const rowsWithSellingPrice = rows.filter((r) => (r.avgSellingPrice ?? 0) > 0);
+
   // Use exchange rate from config if available, else default 1.54
   const exchangeRate = 1.54;
 
@@ -554,7 +567,7 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     avgTurnover: rows.length > 0 ? rows.reduce((s, r) => s + r.turnover, 0) / rows.length : 0,
     avgTurnoverTrend: 'stable',
     avgGMROI: rows.length > 0 ? rows.reduce((s, r) => s + r.gmroi, 0) / rows.length : 0,
-    avgMarginPercent: rows.length > 0 ? rows.reduce((s, r) => s + r.marginPercent, 0) / rows.length : 0,
+    avgMarginPercent: rowsWithSellingPrice.length > 0 ? rowsWithSellingPrice.reduce((s, r) => s + r.marginPercent, 0) / rowsWithSellingPrice.length : 0,
     avgMarginTrend: 'stable',
     avgDaysOfCover: rows.length > 0 ? rows.reduce((s, r) => s + r.daysOfCover, 0) / rows.length : 0,
     totalProducts: rows.length,
@@ -587,7 +600,7 @@ export async function fetchDashboardData(): Promise<DashboardData> {
         totalInventory: 0,
       };
 
-  return { rows, kpiSummary, valuation, valuationHistory, assembledProductSKUs };
+  return { rows, kpiSummary, valuation, valuationHistory, assembledProductSKUs, bomComponents };
 }
 
 // ─── Date Range KPI Recalculation ─────────────────────────────────────────
@@ -672,6 +685,7 @@ export async function recalcKPIsForDateRange(
   const itemsAtRisk = rows.filter(
     (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
   ).length;
+  const rowsWithSellingPrice = rows.filter((r) => (r.avgSellingPrice ?? 0) > 0);
   const exchangeRate = 1.54;
 
   const kpiSummary: KPISummary = {
@@ -681,7 +695,7 @@ export async function recalcKPIsForDateRange(
     avgTurnover: rows.length > 0 ? rows.reduce((s, r) => s + r.turnover, 0) / rows.length : 0,
     avgTurnoverTrend: 'stable',
     avgGMROI: rows.length > 0 ? rows.reduce((s, r) => s + r.gmroi, 0) / rows.length : 0,
-    avgMarginPercent: rows.length > 0 ? rows.reduce((s, r) => s + r.marginPercent, 0) / rows.length : 0,
+    avgMarginPercent: rowsWithSellingPrice.length > 0 ? rowsWithSellingPrice.reduce((s, r) => s + r.marginPercent, 0) / rowsWithSellingPrice.length : 0,
     avgMarginTrend: 'stable',
     avgDaysOfCover: rows.length > 0 ? rows.reduce((s, r) => s + r.daysOfCover, 0) / rows.length : 0,
     totalProducts: rows.length,
@@ -725,6 +739,7 @@ export async function recalcKPIsForDemandMode(
   const itemsAtRisk = rows.filter(
     (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
   ).length;
+  const rowsWithSellingPrice = rows.filter((r) => (r.avgSellingPrice ?? 0) > 0);
   const exchangeRate = 1.54;
 
   const kpiSummary: KPISummary = {
@@ -734,7 +749,7 @@ export async function recalcKPIsForDemandMode(
     avgTurnover: rows.length > 0 ? rows.reduce((s, r) => s + r.turnover, 0) / rows.length : 0,
     avgTurnoverTrend: 'stable',
     avgGMROI: rows.length > 0 ? rows.reduce((s, r) => s + r.gmroi, 0) / rows.length : 0,
-    avgMarginPercent: rows.length > 0 ? rows.reduce((s, r) => s + r.marginPercent, 0) / rows.length : 0,
+    avgMarginPercent: rowsWithSellingPrice.length > 0 ? rowsWithSellingPrice.reduce((s, r) => s + r.marginPercent, 0) / rowsWithSellingPrice.length : 0,
     avgMarginTrend: 'stable',
     avgDaysOfCover: rows.length > 0 ? rows.reduce((s, r) => s + r.daysOfCover, 0) / rows.length : 0,
     totalProducts: rows.length,
@@ -918,7 +933,12 @@ export async function fetchRecentOrders(sku: string): Promise<RecentOrder[]> {
 
 export async function fetchAIInsights(
   skus: Array<Record<string, unknown>>,
-  kpiSummary: Record<string, unknown>
+  kpiSummary: Record<string, unknown>,
+  options?: {
+    assembledProductSKUs?: string[];
+    customPrompt?: string;
+    excludedSKUs?: string[];
+  }
 ): Promise<{
   success: boolean;
   insights: Array<{
@@ -934,7 +954,13 @@ export async function fetchAIInsights(
   model?: string;
   message?: string;
 }> {
-  return callFunction('aim2026-ai-insights', { skus, kpiSummary });
+  return callFunction('aim2026-ai-insights', {
+    skus,
+    kpiSummary,
+    assembledProductSKUs: options?.assembledProductSKUs ?? [],
+    customPrompt: options?.customPrompt ?? '',
+    excludedSKUs: options?.excludedSKUs ?? [],
+  });
 }
 
 // ─── Create Purchase Order in Unleashed ───────────────────────────────────

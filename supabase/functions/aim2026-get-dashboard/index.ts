@@ -66,20 +66,45 @@ function parseUnleashedDate(dateVal: any): string {
   try { return new Date(dateVal).toISOString().slice(0, 10); } catch { return ""; }
 }
 
-// ─── BOM fallback: read assembled SKUs from BillOfMaterialsList.csv in storage ─
+// ─── BOM fallback: find by pattern (BOM*, BillOfMaterials*) then read assembled SKUs ─
 async function fetchAssembledFromBOM(supabase: any): Promise<string[]> {
   const buckets = ["aim-csv-files", "csv-files"];
-  const names = ["BillOfMaterialsList.csv", "bom_cleaned_min.csv", "BOM.csv"];
   let blob: Blob | null = null;
-  for (const name of names) {
-    for (const bucket of buckets) {
-      const { data, error } = await supabase.storage.from(bucket).download(name);
-      if (!error && data) {
+
+  for (const bucket of buckets) {
+    const { data: files, error } = await supabase.storage.from(bucket).list();
+    if (error || !files?.length) continue;
+    const bomFiles = files.filter(
+      (f: { name: string }) =>
+        (f.name.toLowerCase().startsWith("bom") ||
+          f.name.toLowerCase().startsWith("billofmaterials")) &&
+        f.name.toLowerCase().endsWith(".csv")
+    );
+    if (bomFiles.length > 0) {
+      bomFiles.sort((a: { updated_at?: string }, b: { updated_at?: string }) =>
+        (b.updated_at || "").localeCompare(a.updated_at || "")
+      );
+      const { data, error: dlErr } = await supabase.storage
+        .from(bucket)
+        .download(bomFiles[0].name);
+      if (!dlErr && data) {
         blob = data;
         break;
       }
     }
-    if (blob) break;
+  }
+
+  if (!blob) {
+    for (const name of ["BillOfMaterialsList.csv", "bom_cleaned_min.csv", "BOM.csv"]) {
+      for (const bucket of buckets) {
+        const { data, error } = await supabase.storage.from(bucket).download(name);
+        if (!error && data) {
+          blob = data;
+          break;
+        }
+      }
+      if (blob) break;
+    }
   }
   if (!blob) return [];
 
@@ -102,9 +127,11 @@ async function fetchAssembledFromBOM(supabase: any): Promise<string[]> {
   if (headerIndex < 0 || productCodeCol < 0) return [];
 
   const skus = new Set<string>();
+  let currentAssembly = "";
   for (let i = headerIndex + 1; i < rows.length; i++) {
-    const sku = String(rows[i][productCodeCol] ?? "").trim();
-    if (sku) skus.add(sku);
+    const assemblyVal = String(rows[i][productCodeCol] ?? "").trim();
+    if (assemblyVal) currentAssembly = assemblyVal;
+    if (currentAssembly) skus.add(currentAssembly);
   }
   return Array.from(skus);
 }
@@ -170,7 +197,20 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      return jsonResponse({ success: true, data: allData, assembledProductSKUs });
+      let bomComponents: Array<{ assembly_sku: string; component_sku: string; quantity_per_assembly: number }> = [];
+      const { data: bomRows } = await supabase
+        .from("aim2026_bom_components")
+        .select("assembly_sku, component_sku, quantity_per_assembly");
+      if (bomRows && bomRows.length > 0) {
+        bomComponents = bomRows;
+      }
+
+      return jsonResponse({
+        success: true,
+        data: allData,
+        assembledProductSKUs,
+        bomComponents,
+      });
     }
 
     // ─── Valuation History ────────────────────────────────────────

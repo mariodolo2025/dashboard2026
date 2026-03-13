@@ -4,6 +4,7 @@ A React + TypeScript dashboard for analyzing sales data from multiple sources (U
 
 ## Features
 
+- **Authentication**: Login restricted to @dolo.com.au emails (Supabase Auth)
 - **Multi-source Data Analysis**: Processes data from Unleashed, Shopify, Meta Ads, and cost files
 - **Automated Data Loading**: Uses Supabase Storage and Edge Functions to centralize CSV files
 - **Real-time Currency Conversion**: Automatic USD to AUD conversion with live exchange rates
@@ -29,7 +30,15 @@ A React + TypeScript dashboard for analyzing sales data from multiple sources (U
    - `meta-ads.csv`
    - `costs.csv`
 
-### 2. Environment Variables
+### 2. Authentication (Supabase Auth)
+
+1. **Authentication** → **Providers** → enable **Email**
+2. **Disable "Enable email signups"** – solo el admin puede crear usuarios
+3. Solo correos `@dolo.com.au` pueden iniciar sesión
+4. **Invitar usuarios**: Admin (mario@dolo.com.au) va a Config → "Invitar usuarios" → ingresa email → Invitar
+5. Despliega: `supabase functions deploy invite-user`
+
+### 3. Environment Variables
 
 Copy `.env.example` to `.env` and fill in your Supabase credentials:
 
@@ -38,13 +47,13 @@ VITE_SUPABASE_URL=your_supabase_project_url
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
-### 3. Install Dependencies
+### 4. Install Dependencies
 
 ```bash
 npm install
 ```
 
-### 4. Run Development Server
+### 5. Run Development Server
 
 ```bash
 npm run dev

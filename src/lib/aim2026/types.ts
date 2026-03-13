@@ -168,6 +168,10 @@ export interface AIM2026Config {
   defaultServiceLevelZ: number;
   exchangeRateUSDToAUD: number;
   landedCostNotes: string;
+  /** Custom prompt for AI Insights. Use {{SKU_DATA}}, {{PORTFOLIO_SUMMARY}}, {{ASSEMBLED_NOTE}}, {{EXCLUDED_NOTE}} as placeholders. Empty = use default. */
+  aiInsightsPrompt?: string;
+  /** SKUs or product names to exclude from AI analysis (e.g. "Courier Fee" - not a real product). Comma-separated. */
+  aiInsightsExcludedSKUs?: string;
 }
 
 export const DEFAULT_LANDED_COST_NOTES = `FY 2025-26 (1 Jul 2025 to date):
@@ -183,6 +187,37 @@ Calculated rates:
 
 Formula: Landed Cost AUD = Product Cost (China AUD) × (1 + Freight + Duty + Insurance)`;
 
+/** Default AI Insights prompt. Shown in Settings when empty. Placeholders: {{SKU_DATA}}, {{PORTFOLIO_SUMMARY}}, {{ASSEMBLED_NOTE}}, {{EXCLUDED_NOTE}} */
+export const DEFAULT_AI_INSIGHTS_PROMPT = `You are an expert inventory analyst for a consumer products company (Pesado Coffee accessories). Analyze the following inventory KPI data and provide 3-5 actionable insights.
+{{ASSEMBLED_NOTE}}
+{{EXCLUDED_NOTE}}
+
+PORTFOLIO SUMMARY:
+{{PORTFOLIO_SUMMARY}}
+
+SKU DATA (format: SKU|ABC|SOH|Demand|Cover|ROP|SugQty|Pipeline|Status|Margin|GMROI|Turnover|Trend|LeadTime|Cost|LandedCost|AvgSellingPrice|Assembled):
+{{SKU_DATA}}
+
+Respond ONLY with a valid JSON array of insight objects. Each insight must have:
+- "category": one of "inventory", "demand", "financial", "action"
+- "severity": one of "critical", "warning", "info", "positive"
+- "title": short headline (max 8 words)
+- "description": 2-3 sentences with specific SKU codes, numbers, and recommended actions. Be specific and data-driven.
+- "confidence": number 75-99 representing how confident you are
+- "actionLabel": short button label for the recommended action (e.g. "Restock Now", "Review Pricing", "Reduce Stock")
+- "relatedSKUs": array of up to 3 most relevant SKU codes (or more for missing-price / bundle lists)
+
+Focus on:
+1. Urgent stockout risks (CRITICAL/LOW STOCK items, especially ABC class A). CRITICAL: Do NOT flag assembled products (Assembled:Y) as stockout or restock based on SOH alone—they get stock from components. Never recommend "Emergency Restock" for assembled SKUs.
+2. Overstock situations tying up capital
+3. Margin or GMROI anomalies
+4. Demand trend changes that need attention
+5. Specific reorder recommendations
+6. **MISSING SELLING PRICE**: Identify products with HIGH demand that have ASP:0 or no selling price. Include full list in relatedSKUs and description.
+7. Premium bundles or products with zero revenue that need pricing/visibility checks
+
+Be concise, specific with numbers, and prioritize by business impact. Output ONLY the JSON array, no other text.`;
+
 export const DEFAULT_CONFIG: AIM2026Config = {
   landedCost: {
     default: { freightRate: 0.0592, dutyRate: 0.05, insuranceRate: 0.0132 },
@@ -197,6 +232,8 @@ export const DEFAULT_CONFIG: AIM2026Config = {
   defaultServiceLevelZ: 1.65,
   exchangeRateUSDToAUD: 1.54,
   landedCostNotes: DEFAULT_LANDED_COST_NOTES,
+  aiInsightsPrompt: '',
+  aiInsightsExcludedSKUs: 'Courier Fee',
 };
 
 // ─── Sync ────────────────────────────────────────────────────────────────────

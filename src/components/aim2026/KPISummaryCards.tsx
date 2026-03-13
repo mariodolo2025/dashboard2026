@@ -161,14 +161,24 @@ function KPICard({
 
 // ─── KPI Summary Strip ───────────────────────────────────────────────────────
 
+interface FilteredKPIOverrides {
+  avgMarginPercent: number;
+  avgTurnover: number;
+  avgGMROI: number;
+  avgDaysOfCover: number;
+  itemsAtRisk: number;
+  totalProducts: number;
+}
+
 interface KPISummaryCardsProps {
   data: KPISummary | null;
+  filteredOverrides?: FilteredKPIOverrides | null;
   loading: boolean;
   onValuationClick?: () => void;
   onAIInsightsClick?: () => void;
 }
 
-export function KPISummaryCards({ data, loading, onValuationClick, onAIInsightsClick }: KPISummaryCardsProps) {
+export function KPISummaryCards({ data, filteredOverrides, loading, onValuationClick, onAIInsightsClick }: KPISummaryCardsProps) {
   if (loading || !data) {
     return (
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
@@ -198,6 +208,14 @@ export function KPISummaryCards({ data, loading, onValuationClick, onAIInsightsC
     return `USD ${v.toFixed(0)}`;
   };
 
+  const fo = filteredOverrides;
+  const itemsAtRisk = fo?.itemsAtRisk ?? data.itemsAtRisk;
+  const totalProducts = fo?.totalProducts ?? data.totalProducts;
+  const avgMarginPercent = fo?.avgMarginPercent ?? data.avgMarginPercent;
+  const avgTurnover = fo?.avgTurnover ?? data.avgTurnover;
+  const avgGMROI = fo?.avgGMROI ?? data.avgGMROI;
+  const avgDaysOfCover = fo?.avgDaysOfCover ?? data.avgDaysOfCover;
+
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
       <KPICard
@@ -214,13 +232,13 @@ export function KPISummaryCards({ data, loading, onValuationClick, onAIInsightsC
       <KPICard
         icon={<AlertTriangle size={15} />}
         label="Items at Risk"
-        value={String(data.itemsAtRisk)}
-        subtitle={`of ${data.totalProducts} products`}
+        value={String(itemsAtRisk)}
+        subtitle={`of ${totalProducts} products`}
         helpText="Products with CRITICAL or LOW STOCK status that need urgent attention."
         accent="#ef4444"
         badge={
-          data.itemsAtRisk > 0
-            ? { text: `${data.itemsAtRisk}`, color: 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300' }
+          itemsAtRisk > 0
+            ? { text: `${itemsAtRisk}`, color: 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300' }
             : undefined
         }
         delay={0.05}
@@ -228,7 +246,7 @@ export function KPISummaryCards({ data, loading, onValuationClick, onAIInsightsC
       <KPICard
         icon={<RotateCcw size={15} />}
         label="Avg Turnover"
-        value={data.avgTurnover.toFixed(1)}
+        value={avgTurnover.toFixed(1)}
         subtitle="times per period"
         helpText="How many times inventory is sold and replaced. Higher = better capital efficiency."
         trend={{ direction: data.avgTurnoverTrend }}
@@ -238,16 +256,16 @@ export function KPISummaryCards({ data, loading, onValuationClick, onAIInsightsC
       <KPICard
         icon={<TrendingUp size={15} />}
         label="Avg GMROI"
-        value={data.avgGMROI > 100 ? '>100' : data.avgGMROI.toFixed(1)}
+        value={avgGMROI > 100 ? '>100' : avgGMROI.toFixed(1)}
         subtitle="return on inventory $"
         helpText="Gross Margin Return on Investment: annual gross profit per AUD invested in inventory. High values (>100) indicate very low stock relative to sales. Target: > 3.0."
-        accent={data.avgGMROI >= 3 ? '#10b981' : data.avgGMROI >= 1 ? '#f59e0b' : '#ef4444'}
+        accent={avgGMROI >= 3 ? '#10b981' : avgGMROI >= 1 ? '#f59e0b' : '#ef4444'}
         delay={0.15}
       />
       <KPICard
         icon={<Percent size={15} />}
         label="Avg Margin"
-        value={`${data.avgMarginPercent.toFixed(1)}%`}
+        value={`${avgMarginPercent.toFixed(1)}%`}
         subtitle="gross profit"
         helpText="Gross profit margin: (Selling Price − Landed Cost) ÷ Selling Price × 100."
         trend={{ direction: data.avgMarginTrend }}
@@ -257,7 +275,7 @@ export function KPISummaryCards({ data, loading, onValuationClick, onAIInsightsC
       <KPICard
         icon={<CalendarClock size={15} />}
         label="Avg Coverage"
-        value={`${Math.round(data.avgDaysOfCover)}d`}
+        value={`${Math.round(avgDaysOfCover)}d`}
         subtitle="days of cover"
         helpText="Average days current stock will last at current demand. Red < 30, Yellow < 60, Green ≥ 60."
         accent="#06b6d4"

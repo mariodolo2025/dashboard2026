@@ -1,8 +1,11 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
-import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Calendar } from '@/components/ui/calendar';
 import { KPISummaryCards } from './aim2026/KPISummaryCards';
 import { FilterBar } from './aim2026/FilterBar';
 import { InventoryTable } from './aim2026/InventoryTable';
@@ -14,6 +17,7 @@ import { POBuilderPanel } from './aim2026/POBuilderPanel';
 import { QtyConfirmDialog } from './aim2026/QtyConfirmDialog';
 import { AIInsightsDialog } from './aim2026/AIInsightsDialog';
 import type { AIM2026Filters, SKURow, KPISummary, SyncStatus, StockValuationTotals, StockValuationHistoryRecord, AIM2026Config, POBuilderItem } from '@/lib/aim2026/types';
+import type { BOMComponent } from '@/lib/aim2026/api';
 import { DEFAULT_FILTERS, DEFAULT_CONFIG } from '@/lib/aim2026/types';
 import {
   fetchDashboardData,
@@ -30,8 +34,11 @@ interface DateRange {
   to?: Date;
 }
 
+const AIM2026_FILTERS_STORAGE_KEY = 'aim2026_filters';
+
 interface AIM2026DashboardProps {
   dateRange?: DateRange;
+  setDateRange?: (range: DateRange) => void;
 }
 
 /** Deduplicate rows by SKU (keeps first occurrence) to prevent duplicate lines */
@@ -46,12 +53,23 @@ function dedupeRowsBySKU(rows: SKURow[]): SKURow[] {
 
 // ─── Dashboard Component ─────────────────────────────────────────────────────
 
-export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
+function loadFiltersFromStorage(): AIM2026Filters {
+  try {
+    const raw = localStorage.getItem(AIM2026_FILTERS_STORAGE_KEY);
+    if (!raw) return DEFAULT_FILTERS;
+    const parsed = JSON.parse(raw) as Partial<AIM2026Filters>;
+    return { ...DEFAULT_FILTERS, ...parsed };
+  } catch {
+    return DEFAULT_FILTERS;
+  }
+}
+
+export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026DashboardProps) {
   // ─── State ─────────────────────────────────────────────────────────────────
 
   const [loading, setLoading] = useState(true);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
-  const [filters, setFilters] = useState<AIM2026Filters>(DEFAULT_FILTERS);
+  const [filters, setFilters] = useState<AIM2026Filters>(loadFiltersFromStorage);
   const [skuData, setSKUData] = useState<SKURow[]>([]);
   const [kpiSummary, setKPISummary] = useState<KPISummary | null>(null);
   const [valuation, setValuation] = useState<StockValuationTotals | null>(null);
@@ -76,7 +94,10 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
   const [poNotification, setPONotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [tableMaximized, setTableMaximized] = useState(false);
   const [assembledProductSKUs, setAssembledProductSKUs] = useState<Set<string>>(new Set());
+  const [bomComponents, setBomComponents] = useState<BOMComponent[]>([]);
   const [showAssembledProducts, setShowAssembledProducts] = useState(false);
+  const [insightFilterSKUs, setInsightFilterSKUs] = useState<string[] | null>(null);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
 
   // ─── Load real data from Supabase ──────────────────────────────────────────
 
@@ -84,6 +105,15 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
   const [needsFirstSync, setNeedsFirstSync] = useState(false);
   const [syncStep, setSyncStep] = useState<string>('');
   const [syncProgress, setSyncProgress] = useState<number>(0);
+
+  // Persist filters to localStorage when they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(AIM2026_FILTERS_STORAGE_KEY, JSON.stringify(filters));
+    } catch {
+      // ignore storage errors
+    }
+  }, [filters]);
 
   // When date range is set, the date range effect handles loading — avoid race with cache
   useEffect(() => {
@@ -105,6 +135,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
             setValuation(data.valuation);
             setValuationHistory(data.valuationHistory);
             setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
+            setBomComponents(data.bomComponents ?? []);
             setNeedsFirstSync(false);
           }
           setLoading(false);
@@ -147,6 +178,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
           setSKUData(dedupeRowsBySKU(data.rows));
           setKPISummary(data.kpiSummary);
           setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
+          setBomComponents(data.bomComponents ?? []);
         }
       }).catch(console.error);
       return;
@@ -170,14 +202,15 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
           setValuation(data.valuation);
           setValuationHistory(data.valuationHistory);
           setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
-          // Preserve fixed inventory value — only update demand-dependent KPIs
+          setBomComponents(data.bomComponents ?? []);
+          // Preserve fixed inventory value — always use total from valuation history, not date-range recalc
           setKPISummary((prev) => {
-            if (!prev) return result.kpiSummary;
+            const inventorySource = prev ?? data.kpiSummary;
             return {
               ...result.kpiSummary,
-              totalInventoryValueAUD: prev.totalInventoryValueAUD,
-              totalInventoryValueUSD: prev.totalInventoryValueUSD,
-              inventoryValueHistory: prev.inventoryValueHistory,
+              totalInventoryValueAUD: inventorySource.totalInventoryValueAUD,
+              totalInventoryValueUSD: inventorySource.totalInventoryValueUSD,
+              inventoryValueHistory: inventorySource.inventoryValueHistory,
             };
           });
           setDateRangeLabel(label);
@@ -205,6 +238,8 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
           if (!cancelled && data.rows.length > 0) {
             setSKUData(dedupeRowsBySKU(data.rows));
             setKPISummary(data.kpiSummary);
+            setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
+            setBomComponents(data.bomComponents ?? []);
           }
         })
         .catch((err) => console.error('Dashboard fetch failed:', err));
@@ -246,6 +281,10 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
     if (!showAssembledProducts && assembledProductSKUs.size > 0) {
       result = result.filter((r) => !assembledProductSKUs.has(r.sku));
     }
+    if (insightFilterSKUs && insightFilterSKUs.length > 0) {
+      const set = new Set(insightFilterSKUs);
+      result = result.filter((r) => set.has(r.sku));
+    }
     if (filters.search) {
       const term = filters.search.toLowerCase();
       result = result.filter(
@@ -257,7 +296,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
     if (filters.productGroup !== 'all') result = result.filter((r) => r.productGroup === filters.productGroup);
     if (filters.supplier !== 'all') result = result.filter((r) => r.supplier === filters.supplier);
     return result;
-  }, [skuData, filters, showAssembledProducts, assembledProductSKUs]);
+  }, [skuData, filters, showAssembledProducts, assembledProductSKUs, insightFilterSKUs]);
 
   const filteredCount = filteredData.length;
 
@@ -273,6 +312,27 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
     const total = mainWH + china + container + dhl + onProduction;
     return { mainWH, china, container, dhl, onProduction, total };
   }, [filteredData]);
+
+  // KPIs computed from filtered selection when filters are active
+  const filteredKPIOverrides = useMemo(() => {
+    if (filteredData.length === 0 || filteredData.length === skuData.length) return null;
+    const n = filteredData.length;
+    const itemsAtRisk = filteredData.filter(
+      (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
+    ).length;
+    const withSellingPrice = filteredData.filter((r) => (r.avgSellingPrice ?? 0) > 0);
+    const avgMarginPercent = withSellingPrice.length > 0
+      ? withSellingPrice.reduce((s, r) => s + r.marginPercent, 0) / withSellingPrice.length
+      : 0;
+    return {
+      avgMarginPercent,
+      avgTurnover: filteredData.reduce((s, r) => s + r.turnover, 0) / n,
+      avgGMROI: filteredData.reduce((s, r) => s + r.gmroi, 0) / n,
+      avgDaysOfCover: filteredData.reduce((s, r) => s + r.daysOfCover, 0) / n,
+      itemsAtRisk,
+      totalProducts: n,
+    };
+  }, [filteredData, skuData.length]);
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
 
@@ -314,6 +374,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
       setValuation(data.valuation);
       setValuationHistory(data.valuationHistory);
       setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
+      setBomComponents(data.bomComponents ?? []);
       setNeedsFirstSync(false);
 
       if (filters.demandMode !== 'realDemand') {
@@ -526,15 +587,47 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
         <div className="flex items-center gap-3">
           <div>
             <h2 className="text-lg font-semibold tracking-tight flex items-center gap-2">
-              <Zap size={18} className="text-blue-500" />
+              <Zap size={18} className="text-primary" />
               AIM 2026
-              {dateRangeLabel && (
-                <span className="text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full border border-blue-500/20">
+              {setDateRange && dateRange ? (
+                <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen} modal>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className={cn(
+                        "h-7 gap-1.5 text-[10px] font-medium px-2 py-0.5 rounded-full border",
+                        "bg-primary/10 text-primary border-primary/20 hover:bg-primary/20"
+                      )}
+                    >
+                      <CalendarIcon className="h-3 w-3" />
+                      {dateRangeLabel || 'Date range'}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start" side="bottom">
+                    <Calendar
+                      initialFocus
+                      mode="range"
+                      defaultMonth={dateRange?.from}
+                      selected={dateRange as never}
+                      onSelect={(range) => setDateRange(range || {})}
+                      numberOfMonths={2}
+                      weekStartsOn={1}
+                    />
+                    <div className="p-2 border-t flex justify-end">
+                      <Button size="sm" onClick={() => setDatePickerOpen(false)}>
+                        Apply
+                      </Button>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              ) : dateRangeLabel ? (
+                <span className="text-[10px] font-medium bg-primary/10 text-primary px-2 py-0.5 rounded-full border border-primary/20">
                   {dateRangeLabel}
                 </span>
-              )}
+              ) : null}
               {dateRangeLoading && (
-                <RefreshCw size={13} className="animate-spin text-blue-500/60" />
+                <RefreshCw size={13} className="animate-spin text-primary/60" />
               )}
             </h2>
             <p className="text-xs text-muted-foreground flex items-center gap-1.5 mt-0.5">
@@ -556,7 +649,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
             variant={poBuilderMode ? 'default' : 'outline'}
             className={`h-8 gap-1.5 text-xs font-medium ${
               poBuilderMode
-                ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
                 : ''
             }`}
           >
@@ -733,6 +826,7 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
           {/* ─── KPI Summary Cards ──────────────────────────────────────────── */}
           <KPISummaryCards
             data={kpiSummary}
+            filteredOverrides={filteredKPIOverrides}
             loading={loading}
             onValuationClick={() => setValuationOpen(true)}
             onAIInsightsClick={() => setAIInsightsOpen(true)}
@@ -753,6 +847,37 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
               onMaximizeClick={() => setTableMaximized(true)}
             />
           </div>
+
+          {/* ─── AI Insight Filter Banner ───────────────────────────────────── */}
+          <AnimatePresence>
+            {insightFilterSKUs && insightFilterSKUs.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="bg-purple-50 dark:bg-purple-950/30 border border-purple-200/60 dark:border-purple-800/40 rounded-lg px-4 py-2.5 flex items-center gap-3"
+              >
+                <Zap size={14} className="text-purple-500 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-xs font-medium text-purple-700 dark:text-purple-300">
+                    Viewing {insightFilterSKUs.length} products from AI Insight
+                  </p>
+                  <p className="text-[10px] text-purple-600/70 dark:text-purple-400/70">
+                    Filter applied from Intelligent Growth Insights. Clear to see all products.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs text-purple-600 dark:text-purple-400 hover:bg-purple-200/50 dark:hover:bg-purple-800/30"
+                  onClick={() => setInsightFilterSKUs(null)}
+                >
+                  <X size={12} className="mr-1" />
+                  Clear filter
+                </Button>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* ─── Filtered Stock Valuation Strip ─────────────────────────────── */}
           {filteredData.length > 0 && filteredData.length <= skuData.length && (
@@ -943,6 +1068,8 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
         open={skuDetailOpen}
         onOpenChange={setSKUDetailOpen}
         sku={selectedSKU}
+        bomComponents={bomComponents}
+        assembledProductSKUs={assembledProductSKUs}
       />
       <DemandHistoryDialog
         open={demandOpen}
@@ -967,6 +1094,12 @@ export default function AIM2026Dashboard({ dateRange }: AIM2026DashboardProps) {
         onOpenChange={setAIInsightsOpen}
         skuData={skuData}
         kpiSummary={kpiSummary}
+        assembledProductSKUs={assembledProductSKUs}
+        config={config}
+        onApplyFilter={(skus) => {
+          setInsightFilterSKUs(skus);
+          setAIInsightsOpen(false);
+        }}
       />
 
       {/* ─── PO Builder Components ─────────────────────────────────────────── */}

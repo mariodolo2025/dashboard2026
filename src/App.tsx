@@ -1,13 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
 import { format, parseISO, isValid, startOfWeek, isWithinInterval, parse, addDays, differenceInDays } from 'date-fns';
-import { Calendar as CalendarIcon, Download, RefreshCw, ChevronDown, ChevronUp, Link2, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Search, X, AlertTriangle } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { Calendar as CalendarIcon, Download, RefreshCw, ChevronDown, ChevronUp, Link2, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Search, X, AlertTriangle, PanelLeftClose, PanelLeft, Settings, LogOut, UserPlus, ShoppingBag } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, BarChart, Bar, Cell, LabelList } from 'recharts';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -16,6 +15,8 @@ import { Calendar } from '@/components/ui/calendar';
 import { Tooltip as TooltipComponent, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn, downloadCSV, CSVColumn } from '@/lib/utils';
+import { signOut } from '@/lib/auth';
+import { supabase } from '@/lib/supabase';
 import { XeroData, computeCostsSnapshot, loadCostsConfigFromSupabase, saveCostsConfig, loadCostsConfig, saveCostsConfigToSupabase } from '@/lib/costsCalculator';
 import { CostsSnapshot } from '@/lib/utils';
 import SalesEvolutionContent from '@/components/SalesEvolutionContent';
@@ -23,6 +24,11 @@ import InventoryReorderDashboard from '@/components/InventoryReorderDashboard';
 import MarioDashboard from '@/components/MarioDashboard';
 import CostsCanvas from '@/components/CostsCanvas';
 import AIM2026Dashboard from '@/components/AIM2026Dashboard';
+import EcommerceTab from '@/components/EcommerceTab';
+import { fetchDashboardData, recalcKPIsForDateRange } from '@/lib/aim2026/api';
+import type { SKURow } from '@/lib/aim2026/types';
+import { TrendIndicator } from '@/components/aim2026/TrendIndicator';
+import ModalDateRangePicker from '@/components/ModalDateRangePicker';
 
 // Utility function to validate dates
 const isValidDate = (date: any): date is Date => {
@@ -123,6 +129,12 @@ function App() {
 
   // Costs modal state
   const [isCostsModalOpen, setIsCostsModalOpen] = useState<boolean>(false);
+
+  // Sidebar collapsed state - minimized by default
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+
+  // Modal for each nav pill - pills open modals instead of inline content
+  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | null>(null);
   
   // Configurable financial parameters
   const [shippingCostPercent, setShippingCostPercent] = useState<number>(0.157);
@@ -147,6 +159,13 @@ function App() {
     return localStorage.getItem('bychannel-costs-source') || 'estimations';
   });
   const [costsSnapshot, setCostsSnapshot] = useState<CostsSnapshot | null>(null);
+
+  // Pesado critical stock (from AIM 2026)
+  const [pesadoCriticalStock, setPesadoCriticalStock] = useState<SKURow[]>([]);
+  const [pesadoCriticalLoading, setPesadoCriticalLoading] = useState(false);
+
+  // Cost "Other" detail dialog (for grouped slices)
+  const [costOtherDetail, setCostOtherDetail] = useState<{ title: string; items: { name: string; value: number }[] } | null>(null);
 
   // Expandable cost lines states
   const [expandedB2CVariableCost, setExpandedB2CVariableCost] = useState<boolean>(false);
@@ -186,6 +205,17 @@ function App() {
   } | null>(null);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
   const [isSavingCredentials, setIsSavingCredentials] = useState<boolean>(false);
+  const [inviteEmail, setInviteEmail] = useState<string>('');
+  const [inviteStatus, setInviteStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isInviting, setIsInviting] = useState<boolean>(false);
+  const [shopifyStoreUrl, setShopifyStoreUrl] = useState<string>('');
+  const [shopifyAccessToken, setShopifyAccessToken] = useState<string>('');
+  const [metaAdAccountIds, setMetaAdAccountIds] = useState<string>('');
+  const [metaAccessToken, setMetaAccessToken] = useState<string>('');
+  const [ecommerceCredsStatus, setEcommerceCredsStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isSavingEcommerceCreds, setIsSavingEcommerceCreds] = useState<boolean>(false);
+  const [csvLoadStatus, setCsvLoadStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isLoadingCsv, setIsLoadingCsv] = useState<boolean>(false);
 
   // Load data from Supabase Edge Function
   const loadDataFromSupabase = async () => {
@@ -529,11 +559,150 @@ function App() {
     }
   };
 
+  const loadEcommerceCredentials = async () => {
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/manage-ecommerce-credentials`, {
+        headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
+      });
+      const data = await res.json();
+      if (data.shopify?.store_url) setShopifyStoreUrl(data.shopify.store_url);
+      if (data.meta?.ad_account_ids) setMetaAdAccountIds(data.meta.ad_account_ids);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSaveEcommerceCredentials = async () => {
+    setIsSavingEcommerceCreds(true);
+    setEcommerceCredsStatus(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setEcommerceCredsStatus({ type: 'error', message: 'Sesión expirada' });
+        return;
+      }
+      const body: Record<string, unknown> = {};
+      if (shopifyStoreUrl.trim() && shopifyAccessToken.trim()) {
+        body.shopify = { store_url: shopifyStoreUrl.trim(), access_token: shopifyAccessToken.trim() };
+      }
+      if (metaAdAccountIds.trim() && metaAccessToken.trim()) {
+        body.meta = { ad_account_ids: metaAdAccountIds.trim(), access_token: metaAccessToken.trim() };
+      }
+      if (Object.keys(body).length === 0) {
+        setEcommerceCredsStatus({ type: 'error', message: 'Completa al menos Shopify o Meta' });
+        return;
+      }
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/manage-ecommerce-credentials`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        setEcommerceCredsStatus({ type: 'error', message: result.error || 'Error al guardar' });
+        return;
+      }
+      const savedList = result.saved?.length ? result.saved.join(', ') : '';
+      setEcommerceCredsStatus({
+        type: 'success',
+        message: savedList ? `Credenciales guardadas: ${savedList}` : 'Credenciales guardadas',
+      });
+      setShopifyAccessToken('');
+      setMetaAccessToken('');
+      loadEcommerceCredentials();
+    } catch (err) {
+      setEcommerceCredsStatus({ type: 'error', message: (err as Error).message });
+    } finally {
+      setIsSavingEcommerceCreds(false);
+    }
+  };
+
+  const handleLoadFromCsv = async () => {
+    setIsLoadingCsv(true);
+    setCsvLoadStatus(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setCsvLoadStatus({ type: 'error', message: 'Sesión expirada' });
+        return;
+      }
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ecommerce-load-csv`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}` },
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        setCsvLoadStatus({ type: 'error', message: result.error || 'Error al cargar CSV' });
+        return;
+      }
+      const parts: string[] = [];
+      if (result.shopify_days) parts.push(`${result.shopify_days} días Shopify`);
+      if (result.meta_days) parts.push(`${result.meta_days} días Meta`);
+      if (result.meta_top_ads) parts.push(`${result.meta_top_ads} ads top`);
+      const msg = parts.length ? `Cargado: ${parts.join(', ')}` : 'Sin datos nuevos';
+      if (result.errors?.length) {
+        setCsvLoadStatus({ type: 'error', message: `${msg}. Errores: ${result.errors.join('; ')}` });
+      } else {
+        setCsvLoadStatus({ type: 'success', message: msg });
+      }
+    } catch (err) {
+      setCsvLoadStatus({ type: 'error', message: (err as Error).message });
+    } finally {
+      setIsLoadingCsv(false);
+    }
+  };
+
+  const handleInviteUser = async () => {
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email || !email.endsWith('@dolo.com.au')) {
+      setInviteStatus({ type: 'error', message: 'Ingresa un email @dolo.com.au' });
+      return;
+    }
+    setIsInviting(true);
+    setInviteStatus(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setInviteStatus({ type: 'error', message: 'Sesión expirada. Vuelve a iniciar sesión.' });
+        return;
+      }
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ email }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setInviteStatus({ type: 'error', message: result.error || 'Error al enviar invitación' });
+        return;
+      }
+      setInviteStatus({ type: 'success', message: result.message || 'Invitación enviada' });
+      setInviteEmail('');
+    } catch (err) {
+      setInviteStatus({ type: 'error', message: (err as Error).message });
+    } finally {
+      setIsInviting(false);
+    }
+  };
+
   // Load data on component mount
   useEffect(() => {
     loadDataFromSupabase();
     loadUnleashedCredentials();
   }, []);
+
+  useEffect(() => {
+    if (isConfigOpen) {
+      loadEcommerceCredentials();
+      setCsvLoadStatus(null);
+    }
+  }, [isConfigOpen]);
 
   // Reload data when date range changes (to apply correct exchange rates)
   useEffect(() => {
@@ -586,16 +755,6 @@ function App() {
     return { unleashed, shopify, oldShopify, meta };
   }, [unleashedData, shopifyData, oldShopifyData, metaData, dateRange]);
 
-  // Debug filtered data
-  useEffect(() => {
-    console.log('=== FILTERED DATA DEBUG ===');
-    console.log('filteredData.shopify:', filteredData.shopify.length, 'rows');
-    console.log('filteredData.oldShopify:', filteredData.oldShopify.length, 'rows');
-    console.log('filteredData.meta:', filteredData.meta.length, 'rows');
-    console.log('costsData size:', costsData.size);
-    console.log('dateRange:', dateRange);
-    console.log('=== END DEBUG ===');
-  }, [filteredData, costsData, dateRange]);
 
   // Fetch Xero costs data from edge function
   const fetchXeroCosts = async () => {
@@ -663,6 +822,72 @@ function App() {
     }
   }, [costsSource, computedCostsSnapshot]);
 
+  // Fetch Pesado critical stock from AIM 2026 (same data source as AIM 2026 modal)
+  const PESADO_CRITICAL_EXCLUDED_SKUS = ['FREE-PSD-CeramicSet', 'M10 Screw'];
+  useEffect(() => {
+    let cancelled = false;
+    setPesadoCriticalLoading(true);
+
+    const isPesado = (r: SKURow) => {
+      const pg = (r.productGroup || '').toLowerCase();
+      const prod = (r.product || '').toLowerCase();
+      return pg.includes('pesado') || prod.includes('pesado');
+    };
+
+    const applyFilters = (rows: SKURow[], assembledProductSKUs: string[], bomComponents: { component_sku: string }[]) => {
+      const componentSKUs = new Set(bomComponents.map((b) => b.component_sku));
+      return rows
+        .filter((r) => !assembledProductSKUs.includes(r.sku))
+        .filter((r) => !componentSKUs.has(r.sku))
+        .filter((r) => !PESADO_CRITICAL_EXCLUDED_SKUS.includes(r.sku))
+        .filter((r) => r.status === 'CRITICAL' && isPesado(r))
+        .sort((a, b) => b.projectedDemand - a.projectedDemand)
+        .slice(0, 10);
+    };
+
+    if (dateRange?.from && dateRange?.to) {
+      const from = dateRange.from;
+      const to = dateRange.to;
+      const rangeFrom = format(from, 'yyyy-MM-dd');
+      const rangeTo = format(to, 'yyyy-MM-dd');
+      const startDate = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-01`;
+      const toMonthLast = new Date(to.getFullYear(), to.getMonth() + 1, 0);
+      const endDate = `${toMonthLast.getFullYear()}-${String(toMonthLast.getMonth() + 1).padStart(2, '0')}-${String(toMonthLast.getDate()).padStart(2, '0')}`;
+
+      const monthsDiff = (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+      if (monthsDiff >= 11) {
+        fetchDashboardData()
+          .then((data) => {
+            if (cancelled) return;
+            setPesadoCriticalStock(applyFilters(data.rows, data.assembledProductSKUs ?? [], data.bomComponents ?? []));
+          })
+          .catch(() => { if (!cancelled) setPesadoCriticalStock([]); })
+          .finally(() => { if (!cancelled) setPesadoCriticalLoading(false); });
+      } else {
+        Promise.all([
+          fetchDashboardData(),
+          recalcKPIsForDateRange(startDate, endDate, rangeFrom, rangeTo, 'realDemand'),
+        ])
+          .then(([cacheData, recalcResult]) => {
+            if (cancelled) return;
+            setPesadoCriticalStock(applyFilters(recalcResult.rows, cacheData.assembledProductSKUs ?? [], cacheData.bomComponents ?? []));
+          })
+          .catch(() => { if (!cancelled) setPesadoCriticalStock([]); })
+          .finally(() => { if (!cancelled) setPesadoCriticalLoading(false); });
+      }
+    } else {
+      fetchDashboardData()
+        .then((data) => {
+          if (cancelled) return;
+          setPesadoCriticalStock(applyFilters(data.rows, data.assembledProductSKUs ?? [], data.bomComponents ?? []));
+        })
+        .catch(() => { if (!cancelled) setPesadoCriticalStock([]); })
+        .finally(() => { if (!cancelled) setPesadoCriticalLoading(false); });
+    }
+
+    return () => { cancelled = true; };
+  }, [dateRange?.from?.getTime(), dateRange?.to?.getTime()]);
+
   // Generate warehouse options
   const warehouseOptions = useMemo(() => {
     const warehouseSet = new Set<string>();
@@ -703,9 +928,8 @@ function App() {
   // Calculate total overall sales (AUD) for brand share calculation
   const totalOverallSalesAUDMemo = useMemo(() => {
     const unleashedTotal = filteredData.unleashed.reduce((sum, row) => sum + row.subTotal, 0);
-    
-    return totalShopifySalesMemo + unleashedTotal;
-  }, [filteredData.unleashed, totalShopifySalesMemo]);
+    return totalShopifySalesGross + unleashedTotal;
+  }, [filteredData.unleashed, totalShopifySalesGross]);
 
   // Total Shopify COGS memo
   const totalShopifyCOGS = useMemo(() => {
@@ -1100,6 +1324,26 @@ function App() {
       });
   }, [filteredData?.unleashed, totalShopifySalesGross, dateRange.from, dateRange.to]);
 
+  // Sales by Product Group (for bar chart)
+  const salesByProductGroup = useMemo(() => {
+    const groupMap = new Map<string, number>();
+    for (const row of filteredData.unleashed) {
+      if (!matchesWarehouse(row.warehouse, activeWarehouse)) continue;
+      if (row.channel === 'Shopify' || row.channel === 'Shop sale') continue;
+      const pg = (row.productGroup || 'Other').trim() || 'Other';
+      groupMap.set(pg, (groupMap.get(pg) || 0) + row.subTotal);
+    }
+    const shopifyTotal = filteredData.shopify.reduce((s, r) => s + r.netSales, 0) +
+      filteredData.oldShopify.reduce((s, r) => s + r.netSales, 0);
+    if (shopifyTotal > 0) {
+      groupMap.set('Shopify', (groupMap.get('Shopify') || 0) + shopifyTotal);
+    }
+    return Array.from(groupMap.entries())
+      .map(([name, sales]) => ({ name, sales }))
+      .filter((x) => x.sales > 0)
+      .sort((a, b) => b.sales - a.sales);
+  }, [filteredData.unleashed, filteredData.shopify, filteredData.oldShopify, activeWarehouse]);
+
   // Top SKUs analysis
   const topSKUs = useMemo(() => {
     const skuData = new Map<string, { sku: string; units: number; revenue: number }>();
@@ -1166,6 +1410,51 @@ function App() {
     // Only limit to top 20 if no search term
     return skuSearchTerm.trim() ? skuList : skuList.slice(0, 20);
   }, [filteredData.unleashed, filteredData.shopify, selectedSkuChannels, costsData, skuSortBy, activeWarehouse, skuSearchTerm]);
+
+  // Top 10 SKUs for dashboard (exclude misc, with productGroup)
+  const top10SKUsDashboard = useMemo(() => {
+    const skuToProductGroup = new Map<string, string>();
+    for (const row of filteredData.unleashed) {
+      if (row.product && row.productGroup) {
+        skuToProductGroup.set(row.product, row.productGroup);
+      }
+    }
+    const skuData = new Map<string, { sku: string; units: number; revenue: number; productGroup: string }>();
+    for (const row of filteredData.unleashed) {
+      if (!matchesWarehouse(row.warehouse, activeWarehouse)) continue;
+      if (row.channel === 'Shopify' || row.channel === 'Shop sale') continue;
+      if (!selectedSkuChannels.includes(row.channel)) continue;
+      const sku = row.product;
+      if (!sku) continue;
+      const pg = skuToProductGroup.get(sku) || '';
+      const existing = skuData.get(sku) || { sku, units: 0, revenue: 0, productGroup: pg };
+      existing.units += row.quantity;
+      existing.revenue += row.subTotal;
+      if (pg) existing.productGroup = pg;
+      skuData.set(sku, existing);
+    }
+    if (selectedSkuChannels.includes('Shopify')) {
+      for (const row of filteredData.shopify) {
+        const sku = row.sku;
+        if (!sku) continue;
+        const pg = skuToProductGroup.get(sku) || 'Shopify';
+        const existing = skuData.get(sku) || { sku, units: 0, revenue: 0, productGroup: pg };
+        existing.units += row.quantity;
+        existing.revenue += row.netSales;
+        skuData.set(sku, existing);
+      }
+    }
+    return Array.from(skuData.values())
+      .filter((item) => !item.sku.toLowerCase().includes('misc') && !(item.productGroup || '').toLowerCase().includes('misc'))
+      .filter((item) => !item.sku.toLowerCase().includes('shipping cost'))
+      .map((item) => {
+        const unitCost = costsData.get(item.sku) || null;
+        const margin = unitCost && item.revenue > 0 ? ((item.revenue - unitCost * item.units) / item.revenue) * 100 : null;
+        return { ...item, unitCost, margin };
+      })
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 10);
+  }, [filteredData.unleashed, filteredData.shopify, selectedSkuChannels, costsData, activeWarehouse]);
 
   // Function to download Top SKUs as CSV
   const handleDownloadTopSkusCsv = () => {
@@ -1449,31 +1738,225 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Sidebar */}
-      <div className="w-80 bg-white border-r p-6 space-y-6">
-        {/* File Inputs */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Data Sources</h2>
-            <Button 
+    <>
+    <div className="min-h-screen flex flex-col">
+      {/* Top Bar - Navigation pills + toolbar */}
+      <header className="shrink-0 px-4 py-3 border-b border-border/60 bg-card/80 backdrop-blur-sm">
+        <div className="flex items-center gap-4 flex-wrap">
+          {/* Logo / Title */}
+          <div className="flex items-center gap-2 shrink-0">
+            <h1 className="text-base font-semibold text-foreground tracking-tight">Dashboard 2026</h1>
+          </div>
+
+          {/* Nav Pills - each opens a modal */}
+          <div className="overflow-x-auto flex-1 min-w-0">
+          <div className="h-9 rounded-2xl bg-muted/60 p-1 gap-0.5 shrink-0 inline-flex">
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'channel' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'channel' ? null : 'channel')}
+              >
+                By Channel
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+                onClick={() => setIsCostsModalOpen(true)}
+              >
+                Costs
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'brand' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'brand' ? null : 'brand')}
+              >
+                Brand
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'top-skus' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'top-skus' ? null : 'top-skus')}
+              >
+                Top SKUs
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'sales-evolution' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'sales-evolution' ? null : 'sales-evolution')}
+              >
+                Sales Evolution
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'aim' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'aim' ? null : 'aim')}
+              >
+                AIM
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "relative h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'aim-2026' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'aim-2026' ? null : 'aim-2026')}
+              >
+                AIM 2026
+                <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
+                </span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'ecommerce' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'ecommerce' ? null : 'ecommerce')}
+              >
+                <ShoppingBag className="h-3.5 w-3.5 mr-1.5" />
+                E-commerce
+              </Button>
+            </div>
+          </div>
+
+          {/* Toolbar: Date, Update, Config, Sidebar toggle */}
+          <div className="flex items-center gap-2 ml-auto shrink-0">
+            <Popover open={isCalendarOpen} onOpenChange={setIsCalendarOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    "h-8 gap-1.5 text-xs font-normal",
+                    !dateRange?.from && "text-muted-foreground"
+                  )}
+                >
+                  <CalendarIcon className="h-3.5 w-3.5" />
+                  {dateRange?.from ? (
+                    dateRange.to ? (
+                      `${format(dateRange.from, "MMM d")} – ${format(dateRange.to, "MMM d")}`
+                    ) : (
+                      format(dateRange.from, "MMM d")
+                    )
+                  ) : (
+                    "Date range"
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="end" side="bottom">
+                <Calendar
+                  initialFocus
+                  mode="range"
+                  defaultMonth={dateRange?.from}
+                  selected={dateRange as any}
+                  onSelect={(range) => setDateRange(range || {})}
+                  numberOfMonths={2}
+                  weekStartsOn={1}
+                />
+                <div className="p-2 border-t flex justify-end">
+                  <Button size="sm" onClick={() => setIsCalendarOpen(false)}>
+                    Apply
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            <Button
               onClick={loadDataFromSupabase}
               disabled={isLoading}
               size="sm"
-              className="flex items-center gap-2"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
             >
-              <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
               {isLoading ? 'Updating...' : 'Update'}
             </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={() => setIsConfigOpen(true)}
+              title="Config"
+            >
+              <Settings className="h-4 w-4 text-muted-foreground" />
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={() => signOut()}
+              title="Cerrar sesión"
+            >
+              <LogOut className="h-4 w-4 text-muted-foreground" />
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={() => setSidebarOpen((o) => !o)}
+              title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+            >
+              {sidebarOpen ? (
+                <PanelLeftClose className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <PanelLeft className="h-4 w-4 text-muted-foreground" />
+              )}
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* Body: Sidebar + Main */}
+      <div className="flex-1 flex min-h-0">
+      {/* Sidebar - collapsible */}
+      <aside
+        className={cn(
+          "shrink-0 bg-card border-r border-border/60 overflow-hidden transition-all duration-300 ease-in-out",
+          sidebarOpen ? "w-80" : "w-0"
+        )}
+      >
+        <div className={cn("w-80 p-6 space-y-6", !sidebarOpen && "opacity-0 pointer-events-none")}>
+        {/* File Inputs - no Update button here anymore */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Data Sources</h2>
           </div>
           
           {lastUpdated && (
-            <p className="text-sm text-gray-600">
+            <p className="text-sm text-muted-foreground">
               Last updated: {format(lastUpdated, 'MMM dd, yyyy HH:mm')}
             </p>
           )}
           
-          <div className="text-sm text-gray-500 space-y-1">
+          <div className="text-sm text-muted-foreground space-y-1">
             <p>• Unleashed Sales: {unleashedData.length} records</p>
             <p>• Shopify Sales: {shopifyData.length} records</p>
             <p>• Old Shopify: {oldShopifyData.length} records</p>
@@ -1528,7 +2011,7 @@ function App() {
           
           {/* Legacy file inputs - kept for fallback */}
           <details className="mt-4">
-            <summary className="text-sm text-gray-600 cursor-pointer">Manual File Upload (Fallback)</summary>
+            <summary className="text-sm text-muted-foreground cursor-pointer">Manual File Upload (Fallback)</summary>
             <div className="mt-2 space-y-2">
               <div>
                 <Label>Unleashed Sales</Label>
@@ -1595,53 +2078,6 @@ function App() {
           </Select>
         </div>
 
-        {/* Date Range */}
-        <div>
-          <Label>Date Range</Label>
-          <Popover open={isCalendarOpen} onOpenChange={setIsCalendarOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                className={cn(
-                  "w-full justify-start text-left font-normal text-foreground",
-                  !dateRange && "text-muted-foreground"
-                )}
-              >
-                <CalendarIcon className="mr-2 h-4 w-4" />
-                {dateRange?.from ? (
-                  dateRange.to ? (
-                    <>
-                      {format(dateRange.from, "LLL dd, y")} -{" "}
-                      {format(dateRange.to, "LLL dd, y")}
-                    </>
-                  ) : (
-                    format(dateRange.from, "LLL dd, y")
-                  )
-                ) : (
-                  <span>Pick a date range</span>
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0" align="start" side="bottom">
-              <Calendar
-                initialFocus
-                mode="range"
-                defaultMonth={dateRange?.from}
-                selected={dateRange as any}
-                onSelect={(range) => {
-                  setDateRange(range || {});
-                  // Close calendar when both dates are selected
-                  if (range && range.from && range.to) {
-                    setIsCalendarOpen(false);
-                  }
-                }}
-                numberOfMonths={2}
-                weekStartsOn={1}
-              />
-            </PopoverContent>
-          </Popover>
-        </div>
-
         {/* FX Controls */}
         <div className="space-y-3">
           <Label>Currency Exchange</Label>
@@ -1651,7 +2087,7 @@ function App() {
           <TooltipProvider>
             <TooltipComponent>
               <TooltipTrigger asChild>
-                <p className="text-sm text-gray-600 cursor-help">
+                <p className="text-sm text-muted-foreground cursor-help">
                   Source: {fxSource.includes('Dynamic') ? 'Dynamic rates by month' : fxSource}
                 </p>
               </TooltipTrigger>
@@ -1698,37 +2134,36 @@ function App() {
             </Button>
             <Button 
               variant="outline" 
-              size="sm" 
-              className="w-full text-xs"
-              onClick={() => setIsConfigOpen(true)}
-            >
-              Config
-            </Button>
-            <Button 
-              variant="outline" 
               onClick={() => setShowPasswordDialog(true)}
             >
               Internal Functions (Mario)
             </Button>
           </div>
         </div>
-      </div>
+        </div>
+      </aside>
 
       {/* Main Content */}
-      <div className="flex-1 p-6 space-y-6">
+      <div className="flex-1 flex flex-col min-w-0 overflow-auto">
+        <main className="flex-1 p-6 space-y-6 overflow-auto">
         {/* KPI Cards Row */}
         <div className="flex gap-6 mb-6">
           {/* Total Sales KPI */}
           <Card className="flex-1">
             <CardHeader>
               <CardTitle>Total Sales (AUD)</CardTitle>
+              {dateRange?.from && dateRange?.to && (
+                <CardDescription>
+                  {format(dateRange.from, "MMM d, yyyy")} – {format(dateRange.to, "MMM d, yyyy")}
+                </CardDescription>
+              )}
             </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold">
+            <CardContent className="flex flex-col items-center justify-center text-center">
+              <div className="text-2xl font-bold tabular-nums">
                 ${totalSales.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
               </div>
               {lastUpdated && (
-                <div className="text-xs text-neutral-500 mt-2">
+                <div className="text-xs text-muted-foreground mt-2">
                   Last updated: {format(lastUpdated, 'MMM d, yyyy h:mm a')}
                 </div>
               )}
@@ -1757,7 +2192,7 @@ function App() {
                   {channelAnalysis.map((row) => (
                     <TableRow
                       key={row.channel}
-                      className="cursor-pointer hover:bg-gray-100 transition-colors"
+                      className="cursor-pointer hover:bg-muted/60 transition-colors"
                       onClick={() => exportChannelOperationsCSV(row.channel)}
                     >
                       <TableCell className="font-medium">{row.channel}</TableCell>
@@ -1786,13 +2221,13 @@ function App() {
               {/* Top Section: Meta Ads and Date Range ROAS */}
               <div className="grid grid-cols-2 gap-4 text-center mb-4 pb-4 border-b">
                 <div>
-                  <div className="text-sm text-gray-600 mb-1">Total Meta Ads</div>
+                  <div className="text-sm text-muted-foreground mb-1">Total Meta Ads</div>
                   <div className="text-lg font-semibold">
                     ${(metaSpend.length > 0 ? metaSpend[0].spend : 0).toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                   </div>
                 </div>
                 <div>
-                  <div className="text-sm text-gray-600 mb-1">Date Range ROAS</div>
+                  <div className="text-sm text-muted-foreground mb-1">Date Range ROAS</div>
                   <div className="text-lg font-semibold">
                     {dateRangeROAS !== null ? dateRangeROAS.toFixed(2) : 'N/A'}
                   </div>
@@ -1802,25 +2237,25 @@ function App() {
               {/* Bottom Section: Attribution Details */}
               <div className="grid grid-cols-4 gap-4 text-center">
                 <div>
-                  <div className="text-sm text-gray-600 mb-1">Shopify Sales</div>
+                  <div className="text-sm text-muted-foreground mb-1">Shopify Sales</div>
                   <div className="text-lg font-semibold">
                     ${totalShopifySalesMemo.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                   </div>
                 </div>
                 <div>
-                  <div className="text-sm text-gray-600 mb-1">Meta Conversions</div>
+                  <div className="text-sm text-muted-foreground mb-1">Meta Conversions</div>
                   <div className="text-lg font-semibold">
                     ${totalMetaConversions.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                   </div>
                 </div>
                 <div>
-                  <div className="text-sm text-gray-600 mb-1">Purchase ROAS</div>
+                  <div className="text-sm text-muted-foreground mb-1">Purchase ROAS</div>
                   <div className="text-lg font-semibold">
                     {purchaseROAS !== null ? purchaseROAS.toFixed(2) : 'N/A'}
                   </div>
                 </div>
                 <div>
-                  <div className="text-sm text-gray-600 mb-1">Ratio Meta / Shopify</div>
+                  <div className="text-sm text-muted-foreground mb-1">Ratio Meta / Shopify</div>
                   <div className="text-lg font-semibold">
                     {metaShopifyRatio !== null ? `${(metaShopifyRatio * 100).toFixed(1)}%` : 'N/A'}
                   </div>
@@ -1830,83 +2265,289 @@ function App() {
           </Card>
         </div>
 
-        {/* ROAS Chart */}
+        {/* ROAS + Cost distribution */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <Card className="lg:col-span-1">
+            <CardHeader>
+              <CardTitle>Weekly ROAS</CardTitle>
+              <CardDescription>Shopify Net Sales / Meta Ads Spend</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={weeklyROAS}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="week" tickFormatter={(v) => format(parseISO(v), 'MMM dd')} />
+                    <YAxis />
+                    <Tooltip
+                      labelFormatter={(v) => `Week of ${format(parseISO(v), 'MMM dd, yyyy')}`}
+                      formatter={(value: any, name: string) => [
+                        value?.toFixed(2) || 'N/A',
+                        name === 'roas' ? 'Blended ROAS' : 'META Purchase ROAS',
+                      ]}
+                    />
+                    <Line type="monotone" dataKey="roas" stroke="#3b82f6" strokeWidth={2} connectNulls={false} />
+                    <Line type="monotone" dataKey="purchaseRoas" stroke="#16a34a" strokeWidth={2} connectNulls={false} />
+                    {blendedRoasTarget && blendedRoasTarget > 0 && (
+                      <ReferenceLine
+                        y={blendedRoasTarget}
+                        stroke="red"
+                        strokeDasharray="3 3"
+                        label={{ value: `Target: ${blendedRoasTarget.toFixed(2)}`, position: 'top' as const }}
+                      />
+                    )}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="lg:col-span-2">
+            <CardHeader>
+              <CardTitle>Cost distribution</CardTitle>
+              <CardDescription>
+                {costsSource === 'costs' && costsSnapshot
+                  ? 'Fixed and Variable costs from Costs tab. Hover for details, click Other to expand.'
+                  : 'Use Costs tab to see distribution'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {costsSnapshot && costsSource === 'costs' ? (
+                  <>
+                    {(() => {
+                      const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+                      const buildChartData = (board: 'fixed' | 'variable') => {
+                        const items = costsSnapshot!.items
+                          .filter((i) => i.board === board)
+                          .map((i) => ({ name: i.name, value: i.b2cAmount + i.b2bAmount }))
+                          .filter((d) => d.value > 0)
+                          .sort((a, b) => b.value - a.value);
+                        if (items.length === 0) return { displayData: [] as { name: string; value: number; _otherItems?: { name: string; value: number }[] }[], otherItems: [] as { name: string; value: number }[] };
+                        const top6 = items.slice(0, 6);
+                        const rest = items.slice(6);
+                        const otherSum = rest.reduce((s, x) => s + x.value, 0);
+                        const displayData = top6.map((x) => ({ ...x, _otherItems: undefined as { name: string; value: number }[] | undefined }));
+                        if (otherSum > 0) {
+                          displayData.push({ name: 'Other', value: otherSum, _otherItems: rest });
+                        }
+                        return { displayData, otherItems: rest };
+                      };
+                      const fixed = buildChartData('fixed');
+                      const variable = buildChartData('variable');
+                      const renderBarChart = (
+                        data: { name: string; value: number; _otherItems?: { name: string; value: number }[] }[],
+                        title: string,
+                        colorOffset: number
+                      ) => {
+                        if (data.length === 0) return <div className="text-muted-foreground text-sm">No {title.toLowerCase()} in range</div>;
+                        const total = data.reduce((s, d) => s + d.value, 0);
+                        const dataWithPct = data.map((d) => ({ ...d, pct: total > 0 ? (d.value / total) * 100 : 0 }));
+                        const hasClickableOther = data.some((d) => d.name === 'Other' && d._otherItems?.length);
+                        return (
+                          <div className="h-64">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={dataWithPct} layout="vertical" margin={{ left: 100, right: 60 }}>
+                                <CartesianGrid strokeDasharray="3 3" />
+                                <XAxis type="number" tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                                <YAxis type="category" dataKey="name" width={95} tick={{ fontSize: 11 }} />
+                                <Tooltip
+                                  formatter={(v: number, _n: string, item: unknown) => {
+                                    const p = (item as { payload?: { name?: string; _otherItems?: unknown[] } })?.payload;
+                                    const label = p?.name === 'Other' && (p?._otherItems?.length ?? 0) > 0
+                                      ? `Other (${p._otherItems!.length} items) – click to expand`
+                                      : (p?.name ?? '');
+                                    return [`$${Number(v).toLocaleString('en-AU', { minimumFractionDigits: 2 })}`, label];
+                                  }}
+                                />
+                                <Bar
+                                  dataKey="value"
+                                  radius={[0, 4, 4, 0]}
+                                  onClick={(payload: { name: string; _otherItems?: { name: string; value: number }[] }) => {
+                                    if (payload?.name === 'Other' && payload?._otherItems?.length) {
+                                      setCostOtherDetail({ title: `${title} – Other`, items: payload._otherItems });
+                                    }
+                                  }}
+                                  style={{ cursor: hasClickableOther ? 'pointer' : 'default' }}
+                                >
+                                  {dataWithPct.map((d, i) => (
+                                    <Cell key={d.name} fill={COLORS[(colorOffset + i) % COLORS.length]} />
+                                  ))}
+                                  <LabelList dataKey="pct" position="right" formatter={(v: number) => `${v.toFixed(1)}%`} />
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        );
+                      };
+                      return (
+                        <>
+                          <div>
+                            <div className="text-sm font-medium mb-2">Fixed Costs</div>
+                            {renderBarChart(fixed.displayData, 'Fixed Costs', 0)}
+                          </div>
+                          <div>
+                            <div className="text-sm font-medium mb-2">Variable Costs</div>
+                            {renderBarChart(variable.displayData, 'Variable Costs', 2)}
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </>
+                ) : (
+                  <div className="md:col-span-2 h-64 flex items-center justify-center text-muted-foreground text-sm">Select Costs source in By Channel</div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Dialog open={!!costOtherDetail} onOpenChange={(o) => !o && setCostOtherDetail(null)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{costOtherDetail?.title ?? 'Other'}</DialogTitle>
+              <DialogDescription>Breakdown of grouped items</DialogDescription>
+            </DialogHeader>
+            {costOtherDetail && (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Item</TableHead>
+                    <TableHead className="text-right">Amount (AUD)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {costOtherDetail.items.map((item) => (
+                    <TableRow key={item.name}>
+                      <TableCell>{item.name}</TableCell>
+                      <TableCell className="text-right">${item.value.toLocaleString('en-AU', { minimumFractionDigits: 2 })}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Sales by Product Group */}
         <Card>
           <CardHeader>
-            <CardTitle>Weekly ROAS</CardTitle>
-            <CardDescription>Shopify Net Sales / Meta Ads Spend</CardDescription>
+            <CardTitle>Sales by Product Group</CardTitle>
+            <CardDescription>Revenue by brand (Pesado, The Artisan Barista, Coffee Accessories, Tiamo, Others) – same as Brand modal</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={weeklyROAS}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis 
-                    dataKey="week" 
-                    tickFormatter={(value) => format(parseISO(value), 'MMM dd')}
-                  />
-                  <YAxis />
-                  <Tooltip 
-                    labelFormatter={(value) => `Week of ${format(parseISO(value), 'MMM dd, yyyy')}`}
-                    formatter={(value: any, name: string) => [
-                      value?.toFixed(2) || 'N/A', 
-                      name === 'roas' ? 'Blended ROAS' : 'META Purchase ROAS'
-                    ]}
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="roas" 
-                    stroke="#3b82f6" 
-                    strokeWidth={2}
-                    connectNulls={false}
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="purchaseRoas" 
-                    stroke="#16a34a" 
-                    strokeWidth={2}
-                    connectNulls={false}
-                  />
-                  {blendedRoasTarget && blendedRoasTarget > 0 && (
-                    <ReferenceLine 
-                      y={blendedRoasTarget} 
-                      stroke="red" 
-                      strokeDasharray="3 3"
-                      label={{ value: `Target: ${blendedRoasTarget.toFixed(2)}`, position: "top" as const }}
-                    />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
+            <div className="h-72">
+              {(() => {
+                const chartData = brandAnalysis.filter((b) => b.totalSales > 0).map((b) => ({ name: b.brand, sales: b.totalSales }));
+                const total = chartData.reduce((s, x) => s + x.sales, 0);
+                const dataWithPct = chartData.map((d) => ({ ...d, pct: total > 0 ? (d.sales / total) * 100 : 0 }));
+                return dataWithPct.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={dataWithPct} layout="vertical" margin={{ left: 80, right: 60 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis type="number" tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                    <YAxis type="category" dataKey="name" width={75} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v: number) => [`$${v.toLocaleString('en-AU', { minimumFractionDigits: 2 })}`, 'Sales']} />
+                    <Bar dataKey="sales" fill="#3b82f6" radius={[0, 4, 4, 0]}>
+                      <LabelList dataKey="pct" position="right" formatter={(v: number) => `${v.toFixed(1)}%`} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex items-center justify-center text-muted-foreground">No sales data in range</div>
+              );
+              })()}
             </div>
           </CardContent>
         </Card>
 
-        {/* Tabs */}
-        <Tabs defaultValue="channel" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="channel">By Channel</TabsTrigger>
-            <Button
-              variant="ghost"
-              className="inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
-              onClick={() => setIsCostsModalOpen(true)}
-            >
-              Costs
-            </Button>
-            <TabsTrigger value="brand">Brand</TabsTrigger>
-            <TabsTrigger value="top-skus">Top SKUs</TabsTrigger>
-            <TabsTrigger value="sales-evolution">Sales Evolution</TabsTrigger>
-            <TabsTrigger value="aim">AIM</TabsTrigger>
-            <TabsTrigger value="aim-2026" className="relative">
-              AIM 2026
-              <span className="absolute -top-1 -right-1 flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-              </span>
-            </TabsTrigger>
-          </TabsList>
+        {/* Top 10 SKUs + Pesado critical stock */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Top 10 SKUs by Revenue</CardTitle>
+              <CardDescription>Excluding misc products</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-8">#</TableHead>
+                    <TableHead>SKU</TableHead>
+                    <TableHead className="text-right">Revenue (AUD)</TableHead>
+                    <TableHead className="text-right">Units</TableHead>
+                    <TableHead className="text-right">Margin %</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {top10SKUsDashboard.map((row, i) => (
+                    <TableRow key={row.sku}>
+                      <TableCell className="font-medium">{i + 1}</TableCell>
+                      <TableCell className="font-medium">{row.sku}</TableCell>
+                      <TableCell className="text-right">${row.revenue.toLocaleString('en-AU', { minimumFractionDigits: 2 })}</TableCell>
+                      <TableCell className="text-right">{row.units.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{row.margin != null ? `${row.margin.toFixed(1)}%` : 'N/A'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              {top10SKUsDashboard.length === 0 && (
+                <div className="py-6 text-center text-muted-foreground text-sm">No SKU data in range</div>
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>10 Pesado products – Critical stock</CardTitle>
+              <CardDescription>Stock, demand and days of coverage</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {pesadoCriticalLoading ? (
+                <div className="py-6 flex items-center justify-center">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>SKU</TableHead>
+                      <TableHead className="text-right">Stock</TableHead>
+                      <TableHead className="text-right">Demand</TableHead>
+                      <TableHead className="text-right">Trend</TableHead>
+                      <TableHead className="text-right">Days cover</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pesadoCriticalStock.map((r) => (
+                      <TableRow key={r.sku}>
+                        <TableCell className="font-medium">{r.sku}</TableCell>
+                        <TableCell className="text-right">{r.sohMainWH + r.sohChina}</TableCell>
+                        <TableCell className="text-right">{r.projectedDemand.toFixed(1)}</TableCell>
+                        <TableCell className="text-right">
+                          <TrendIndicator direction={r.demandTrend} percent={r.demandTrendPercent} showPercent />
+                        </TableCell>
+                        <TableCell className="text-right text-red-600 font-medium">{r.daysOfCover}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+              {!pesadoCriticalLoading && pesadoCriticalStock.length === 0 && (
+                <div className="py-6 text-center text-muted-foreground text-sm">No Pesado products in critical stock</div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
-          <TabsContent value="channel" className="space-y-4">
-            <div className="flex items-center gap-4 mb-4">
+        {/* By Channel modal */}
+        <Dialog open={activeModal === 'channel'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>By Channel</DialogTitle>
+              <DialogDescription>Detailed financials for B2C and B2B channels</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 mt-4">
+            <div className="flex items-center gap-4 mb-4 flex-wrap">
+              <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
               <Label htmlFor="costs-source" className="whitespace-nowrap">Costs source:</Label>
               <Select value={costsSource} onValueChange={setCostsSource}>
                 <SelectTrigger id="costs-source" className="w-[250px]">
@@ -2528,9 +3169,20 @@ function App() {
                 </CardContent>
               </Card>
             </div>
-          </TabsContent>
+            </div>
+          </DialogContent>
+        </Dialog>
 
-          <TabsContent value="sales-evolution" className="space-y-6">
+        {/* Sales Evolution modal */}
+        <Dialog open={activeModal === 'sales-evolution'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Sales Evolution</DialogTitle>
+            </DialogHeader>
+            <div className="mt-4 space-y-4">
+            <div className="flex items-center">
+              <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
+            </div>
             <SalesEvolutionContent
               unleashedData={unleashedData}
               shopifyData={shopifyData}
@@ -2538,25 +3190,64 @@ function App() {
               startDate={dateRange.from ?? new Date('2025-01-01')}
               endDate={dateRange.to ?? new Date()}
             />
-          </TabsContent>
+            </div>
+          </DialogContent>
+        </Dialog>
 
-          <TabsContent value="aim" className="space-y-6">
+        {/* AIM modal */}
+        <Dialog open={activeModal === 'aim'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>AIM - Inventory Reorder</DialogTitle>
+            </DialogHeader>
+            <div className="mt-4 space-y-4">
+            <div className="flex items-center">
+              <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
+            </div>
             <InventoryReorderDashboard 
               startDate={dateRange.from ?? new Date()}
               endDate={dateRange.to ?? new Date()}
             />
-          </TabsContent>
+            </div>
+          </DialogContent>
+        </Dialog>
 
-          <TabsContent value="aim-2026" className="space-y-6">
-            <AIM2026Dashboard dateRange={dateRange} />
-          </TabsContent>
+        {/* AIM 2026 modal */}
+        <Dialog open={activeModal === 'aim-2026'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>AIM 2026</DialogTitle>
+            </DialogHeader>
+            <div className="mt-4">
+            <AIM2026Dashboard dateRange={dateRange} setDateRange={setDateRange} />
+            </div>
+          </DialogContent>
+        </Dialog>
 
+        {/* E-commerce modal (Shopify + Meta) */}
+        <Dialog open={activeModal === 'ecommerce'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>E-commerce (Shopify + Meta)</DialogTitle>
+              <DialogDescription>Orders, AOV and Meta Ads metrics</DialogDescription>
+            </DialogHeader>
+            <div className="mt-4">
+              <EcommerceTab dateRange={dateRange} setDateRange={setDateRange} fxRate={fxRate} />
+            </div>
+          </DialogContent>
+        </Dialog>
 
-          <TabsContent value="brand" className="space-y-4">
+        {/* Brand modal */}
+        <Dialog open={activeModal === 'brand'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Sales by Product Group</DialogTitle>
+            </DialogHeader>
+            <div className="mt-4 space-y-4">
+            <div className="flex items-center">
+              <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
+            </div>
             <Card>
-              <CardHeader>
-                <CardTitle>Sales by Product Group</CardTitle>
-              </CardHeader>
               <CardContent>
                 <Table>
                   <TableHeader>
@@ -2583,18 +3274,23 @@ function App() {
                 </Table>
               </CardContent>
             </Card>
-          </TabsContent>
+            </div>
+          </DialogContent>
+        </Dialog>
 
-          <TabsContent value="top-skus" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Top SKUs Analysis</CardTitle>
-                <CardDescription>
-                  Combined data from Unleashed (B2B/Korea/Web) and Shopify with cost analysis
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+        {/* Top SKUs modal */}
+        <Dialog open={activeModal === 'top-skus'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Top SKUs Analysis</DialogTitle>
+              <DialogDescription>Combined data from Unleashed (B2B/Korea/Web) and Shopify with cost analysis</DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 space-y-4">
+            <div className="flex items-center">
+              <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
+            </div>
                 {/* Filters */}
+                <div className="space-y-4">
                 <div className="flex gap-4 items-center flex-wrap">
                   <div className="flex items-center space-x-4">
                     <Label>Channels:</Label>
@@ -2664,7 +3360,7 @@ function App() {
 
                 {/* Search Results Info */}
                 {skuSearchTerm.trim() && (
-                  <div className="text-sm text-gray-600">
+                  <div className="text-sm text-muted-foreground">
                     {topSKUs.length > 0 ? (
                       <span>Showing {topSKUs.length} result{topSKUs.length !== 1 ? 's' : ''} for "{skuSearchTerm}"</span>
                     ) : (
@@ -2716,15 +3412,18 @@ function App() {
                 </Table>
                 
                 {topSKUs.length === 0 && (
-                  <div className="text-center py-8 text-gray-500">
+                  <div className="text-center py-8 text-muted-foreground">
                     No data available for the selected filters and date range.
                   </div>
                 )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+                </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+        </main>
       </div>
+      </div>
+    </div>
       
       {/* Configuration Dialog */}
       <Dialog open={isConfigOpen} onOpenChange={setIsConfigOpen}>
@@ -2956,6 +3655,148 @@ function App() {
                 </div>
               </div>
             </div>
+
+            {/* E-commerce (Shopify + Meta) */}
+            <div className="pt-6 border-t border-gray-200">
+              <div className="flex items-center gap-2 mb-4">
+                <ShoppingBag className="w-5 h-5 text-gray-700" />
+                <h3 className="text-lg font-semibold text-gray-900">E-commerce (Shopify + Meta)</h3>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">
+                Credenciales para el tab E-commerce. Solo administradores pueden configurarlas.
+              </p>
+              {ecommerceCredsStatus && (
+                <div className={cn(
+                  "mb-4 p-3 rounded-lg flex items-start gap-2",
+                  ecommerceCredsStatus.type === 'success' ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"
+                )}>
+                  {ecommerceCredsStatus.type === 'success' ? (
+                    <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  )}
+                  <p className={cn("text-sm", ecommerceCredsStatus.type === 'success' ? "text-green-800" : "text-red-800")}>
+                    {ecommerceCredsStatus.message}
+                  </p>
+                </div>
+              )}
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-sm font-medium">Shopify</Label>
+                  <p className="text-xs text-gray-500 mb-1">Store URL (ej. mi-tienda.myshopify.com) · Admin API Access Token</p>
+                  <div className="space-y-2 mt-1">
+                    <Input
+                      placeholder="mi-tienda.myshopify.com"
+                      value={shopifyStoreUrl}
+                      onChange={(e) => setShopifyStoreUrl(e.target.value)}
+                    />
+                    <Input
+                      type="password"
+                      placeholder="Admin API token"
+                      value={shopifyAccessToken}
+                      onChange={(e) => setShopifyAccessToken(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium">Meta Ads</Label>
+                  <p className="text-xs text-gray-500 mb-1">Ad Account IDs (act_123,act_456) · Marketing API token</p>
+                  <p className="text-xs text-amber-600 mb-1">
+                    Para evitar bloqueos: usa un <strong>System User token</strong> (no expira). Business Manager → System Users → Generate token con ads_read. Orden de IDs: 1º = USA Market, 2º = Australia Market.
+                  </p>
+                  <div className="space-y-2 mt-1">
+                    <Input
+                      placeholder="act_123456789,act_987654321"
+                      value={metaAdAccountIds}
+                      onChange={(e) => setMetaAdAccountIds(e.target.value)}
+                    />
+                    <Input
+                      type="password"
+                      placeholder="Marketing API token"
+                      value={metaAccessToken}
+                      onChange={(e) => setMetaAccessToken(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <Button
+                  onClick={handleSaveEcommerceCredentials}
+                  disabled={isSavingEcommerceCreds}
+                >
+                  {isSavingEcommerceCreds ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                  Guardar credenciales
+                </Button>
+                <div className="flex items-center gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    onClick={handleLoadFromCsv}
+                    disabled={isLoadingCsv}
+                  >
+                    {isLoadingCsv ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                    Load from CSV
+                  </Button>
+                  <span className="text-xs text-gray-500">Carga datos históricos desde bucket ecom</span>
+                </div>
+                {csvLoadStatus && (
+                  <div className={cn(
+                    "mt-2 p-3 rounded-lg flex items-start gap-2",
+                    csvLoadStatus.type === 'success' ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"
+                  )}>
+                    {csvLoadStatus.type === 'success' ? (
+                      <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                    ) : (
+                      <XCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                    )}
+                    <p className={cn("text-sm", csvLoadStatus.type === 'success' ? "text-green-800" : "text-red-800")}>
+                      {csvLoadStatus.message}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Invitar usuarios (solo admin) */}
+            <div className="pt-6 border-t border-gray-200">
+              <div className="flex items-center gap-2 mb-4">
+                <UserPlus className="w-5 h-5 text-gray-700" />
+                <h3 className="text-lg font-semibold text-gray-900">Invitar usuarios</h3>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">
+                Solo administradores pueden invitar nuevos usuarios. El invitado recibirá un email para establecer su contraseña.
+              </p>
+              {inviteStatus && (
+                <div className={cn(
+                  "mb-4 p-3 rounded-lg flex items-start gap-2",
+                  inviteStatus.type === 'success' ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"
+                )}>
+                  {inviteStatus.type === 'success' ? (
+                    <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  )}
+                  <p className={cn(
+                    "text-sm",
+                    inviteStatus.type === 'success' ? "text-green-800" : "text-red-800"
+                  )}>
+                    {inviteStatus.message}
+                  </p>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Input
+                  type="email"
+                  placeholder="nuevo@dolo.com.au"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  className="flex-1"
+                />
+                <Button
+                  onClick={handleInviteUser}
+                  disabled={isInviting || !inviteEmail.trim()}
+                >
+                  {isInviting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Invitar'}
+                </Button>
+              </div>
+            </div>
           </div>
           <DialogFooter>
             <Button onClick={() => setIsConfigOpen(false)}>Close</Button>
@@ -3020,7 +3861,7 @@ function App() {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }
 

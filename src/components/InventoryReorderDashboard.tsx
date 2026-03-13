@@ -551,7 +551,7 @@ export default function InventoryReorderDashboard({ startDate, endDate }: Invent
                   <Button 
                     variant="secondary" 
                     className="rounded-2xl w-full text-xs" 
-                    onClick={() => window.open('https://au.unleashedsoftware.com/v2/Production/BillOfMaterialsList#Obsolete=No,ExactMatchFilter=false,IncludeSubBom=false', '_blank')}
+                    onClick={() => window.open('https://au.unleashedsoftware.com/v2/Production/ImportExport/?tabSelector=tabsBOM', '_blank')}
                   >
                     Bill Of Materials Enquiry
                   </Button>
