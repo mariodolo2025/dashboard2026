@@ -53,10 +53,16 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const { email } = await req.json();
+    const { email, password } = await req.json();
     if (!email || typeof email !== "string") {
       return new Response(
         JSON.stringify({ error: "Email requerido" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    if (!password || typeof password !== "string" || password.length < 6) {
+      return new Response(
+        JSON.stringify({ error: "Contraseña requerida (mín. 6 caracteres)" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -70,14 +76,16 @@ Deno.serve(async (req: Request) => {
     }
 
     const adminClient = createClient(supabaseUrl, supabaseService);
-    const { data: inviteData, error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(emailTrimmed, {
-      redirectTo: `${req.headers.get("origin") || "https://your-app.com"}/`,
+    const { error: createError } = await adminClient.auth.admin.createUser({
+      email: emailTrimmed,
+      password: password.trim(),
+      email_confirm: true,
     });
 
-    if (inviteError) {
-      const msg = inviteError.message.includes("already been registered")
+    if (createError) {
+      const msg = createError.message.includes("already been registered")
         ? "Este usuario ya existe. Usa 'Reset password' en Supabase si olvidó la contraseña."
-        : inviteError.message;
+        : createError.message;
       return new Response(
         JSON.stringify({ error: msg }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -87,7 +95,7 @@ Deno.serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         success: true,
-        message: `Invitación enviada a ${emailTrimmed}. El usuario recibirá un email para establecer su contraseña.`,
+        message: `Usuario creado. Puede iniciar sesión en https://dashboard2026.dolo.au/`,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

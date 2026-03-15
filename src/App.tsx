@@ -206,6 +206,7 @@ function App() {
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
   const [isSavingCredentials, setIsSavingCredentials] = useState<boolean>(false);
   const [inviteEmail, setInviteEmail] = useState<string>('');
+  const [invitePassword, setInvitePassword] = useState<string>('');
   const [inviteStatus, setInviteStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isInviting, setIsInviting] = useState<boolean>(false);
   const [shopifyStoreUrl, setShopifyStoreUrl] = useState<string>('');
@@ -661,6 +662,15 @@ function App() {
       setInviteStatus({ type: 'error', message: 'Ingresa un email @dolo.com.au' });
       return;
     }
+    if (!invitePassword || invitePassword.length < 6) {
+      setInviteStatus({ type: 'error', message: 'Contraseña requerida (mín. 6 caracteres)' });
+      return;
+    }
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    if (!supabaseUrl) {
+      setInviteStatus({ type: 'error', message: 'VITE_SUPABASE_URL no configurada en .env' });
+      return;
+    }
     setIsInviting(true);
     setInviteStatus(null);
     try {
@@ -669,23 +679,28 @@ function App() {
         setInviteStatus({ type: 'error', message: 'Sesión expirada. Vuelve a iniciar sesión.' });
         return;
       }
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-user`, {
+      const response = await fetch(`${supabaseUrl}/functions/v1/invite-user`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, password: invitePassword }),
       });
       const result = await response.json();
       if (!response.ok) {
-        setInviteStatus({ type: 'error', message: result.error || 'Error al enviar invitación' });
+        setInviteStatus({ type: 'error', message: result.error || 'Error al crear usuario' });
         return;
       }
-      setInviteStatus({ type: 'success', message: result.message || 'Invitación enviada' });
+      setInviteStatus({ type: 'success', message: result.message || 'Usuario creado' });
       setInviteEmail('');
+      setInvitePassword('');
     } catch (err) {
-      setInviteStatus({ type: 'error', message: (err as Error).message });
+      const msg = (err as Error).message;
+      const hint = msg.includes('Failed to fetch')
+        ? ' — Despliega la función: supabase functions deploy invite-user'
+        : '';
+      setInviteStatus({ type: 'error', message: `${msg}${hint}` });
     } finally {
       setIsInviting(false);
     }
@@ -3754,14 +3769,14 @@ function App() {
               </div>
             </div>
 
-            {/* Invitar usuarios (solo admin) */}
+            {/* Crear usuario (solo admin) */}
             <div className="pt-6 border-t border-gray-200">
               <div className="flex items-center gap-2 mb-4">
                 <UserPlus className="w-5 h-5 text-gray-700" />
-                <h3 className="text-lg font-semibold text-gray-900">Invitar usuarios</h3>
+                <h3 className="text-lg font-semibold text-gray-900">Crear usuario</h3>
               </div>
               <p className="text-sm text-gray-600 mb-4">
-                Solo administradores pueden invitar nuevos usuarios. El invitado recibirá un email para establecer su contraseña.
+                Solo administradores. Crea un usuario con email y contraseña. Podrá iniciar sesión de inmediato en dashboard2026.dolo.au
               </p>
               {inviteStatus && (
                 <div className={cn(
@@ -3781,19 +3796,26 @@ function App() {
                   </p>
                 </div>
               )}
-              <div className="flex gap-2">
+              <div className="space-y-2">
                 <Input
                   type="email"
                   placeholder="nuevo@dolo.com.au"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
-                  className="flex-1"
+                  className="w-full"
+                />
+                <Input
+                  type="password"
+                  placeholder="Contraseña (mín. 6 caracteres)"
+                  value={invitePassword}
+                  onChange={(e) => setInvitePassword(e.target.value)}
+                  className="w-full"
                 />
                 <Button
                   onClick={handleInviteUser}
-                  disabled={isInviting || !inviteEmail.trim()}
+                  disabled={isInviting || !inviteEmail.trim() || !invitePassword || invitePassword.length < 6}
                 >
-                  {isInviting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Invitar'}
+                  {isInviting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Crear usuario'}
                 </Button>
               </div>
             </div>
