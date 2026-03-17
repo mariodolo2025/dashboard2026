@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { format, differenceInDays } from 'date-fns';
-import { RefreshCw, ShoppingBag, DollarSign, TrendingUp, ExternalLink, Loader2, AlertTriangle, MousePointerClick, Eye, Calendar as CalendarIcon, Database } from 'lucide-react';
+import { RefreshCw, ShoppingBag, DollarSign, TrendingUp, ExternalLink, Loader2, AlertTriangle, MousePointerClick, Eye, Calendar as CalendarIcon, Database, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -94,6 +95,7 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ status: string; records_synced?: Record<string, number>; errors?: string[]; duration_ms?: number } | null>(null);
+  const [selectedMarket, setSelectedMarket] = useState<'all' | 'usa' | 'australia'>('all');
 
   const days = propDays ?? (dateRange?.from && dateRange?.to
     ? Math.max(1, differenceInDays(dateRange.to, dateRange.from))
@@ -127,6 +129,7 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
       } else {
         params.set('days', String(days));
       }
+      params.set('market', selectedMarket);
       const qs = params.toString();
 
       let shopifyJson: ShopifyData = { success: false };
@@ -176,7 +179,7 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
     } finally {
       setLoading(false);
     }
-  }, [days, fromStr, toStr]);
+  }, [days, fromStr, toStr, selectedMarket]);
 
   useEffect(() => {
     fetchData();
@@ -221,6 +224,26 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
     }
   }, [fetchData]);
 
+  const ACCOUNT_LABELS = ['USA Market', 'Australia Market'];
+  const getAccountDisplayName = (accountId: string, index: number) =>
+    ACCOUNT_LABELS[index] ?? accountId;
+
+  // Filter Meta by market: account index 0 = USA, 1 = Australia (must be before conditional returns - hooks rule)
+  const filteredMeta = useMemo(() => {
+    if (!meta?.accounts?.length) return meta;
+    if (selectedMarket === 'all') return meta;
+    const idx = selectedMarket === 'usa' ? 0 : 1;
+    const acc = meta.accounts[idx];
+    if (!acc) return { ...meta, accounts: [], total_spend: 0, total_impressions: 0, total_clicks: 0 };
+    return {
+      ...meta,
+      accounts: [acc],
+      total_spend: acc.spend,
+      total_impressions: acc.impressions,
+      total_clicks: acc.clicks,
+    };
+  }, [meta, selectedMarket]);
+
   if (loading && !shopify && !meta) {
     return (
       <div className="flex items-center justify-center min-h-[200px] gap-2">
@@ -251,17 +274,13 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
 
   const totalSales = shopify?.total_revenue ?? 0;
   const orders = shopify?.orders ?? 0;
-  const amountSpend = meta?.total_spend ?? 0;
-  const impressions = meta?.total_impressions ?? 0;
-  const clicks = meta?.total_clicks ?? 0;
+  const amountSpend = filteredMeta?.total_spend ?? 0;
+  const impressions = filteredMeta?.total_impressions ?? 0;
+  const clicks = filteredMeta?.total_clicks ?? 0;
 
   const roi = amountSpend > 0 ? totalSales / amountSpend : null;
   const costPerOrder = orders > 0 ? amountSpend / orders : null;
   const ctr = impressions > 0 ? (clicks / impressions) * 100 : null;
-
-  const ACCOUNT_LABELS = ['USA Market', 'Australia Market'];
-  const getAccountDisplayName = (accountId: string, index: number) =>
-    ACCOUNT_LABELS[index] ?? accountId;
 
   return (
     <div className="space-y-6">
@@ -272,8 +291,19 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <Select value={selectedMarket} onValueChange={(v) => setSelectedMarket(v as 'all' | 'usa' | 'australia')}>
+            <SelectTrigger className="w-[160px] h-8 text-xs">
+              <Globe className="h-3.5 w-3.5 mr-1.5" />
+              <SelectValue placeholder="Market" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All (USA + Australia)</SelectItem>
+              <SelectItem value="usa">USA only</SelectItem>
+              <SelectItem value="australia">Australia only</SelectItem>
+            </SelectContent>
+          </Select>
           {setDateRange && dateRange ? (
             <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen} modal>
               <PopoverTrigger asChild>
@@ -318,6 +348,11 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
           {shopify?.period && (
             <span className="text-xs text-muted-foreground">
               ({shopify.period.from} – {shopify.period.to})
+            </span>
+          )}
+          {selectedMarket !== 'all' && (
+            <span className="text-xs text-muted-foreground">
+              · {selectedMarket === 'usa' ? 'USA' : 'Australia'} only (Shopify + Meta)
             </span>
           )}
         </div>
@@ -480,7 +515,7 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
       )}
 
       {/* Meta Ads by account - Clean table layout */}
-      {hasMeta && meta.accounts && meta.accounts.length > 0 && (
+      {hasMeta && filteredMeta?.accounts && filteredMeta.accounts.length > 0 && (
         <Card className={cn(
           "transition-opacity",
           loading && "opacity-70 animate-pulse"
@@ -491,12 +526,13 @@ export default function EcommerceTab({ days: propDays, dateRange, setDateRange, 
           </CardHeader>
           <CardContent>
             <div className="space-y-6">
-              {meta.accounts.map((acc, accIndex) => {
+              {filteredMeta.accounts.map((acc, accIndex) => {
                 const historicalAds = acc.top_ads_historical ?? acc.top_ads ?? [];
                 const rangeAds = acc.top_ads_range ?? [];
+                const displayIndex = selectedMarket === 'all' ? accIndex : (selectedMarket === 'usa' ? 0 : 1);
                 return (
                 <div key={acc.account_id} className="space-y-4">
-                  <div className="font-medium text-sm">{getAccountDisplayName(acc.account_id, accIndex)}</div>
+                  <div className="font-medium text-sm">{getAccountDisplayName(acc.account_id, displayIndex)}</div>
                   <div className="flex gap-4 text-sm text-muted-foreground mb-3">
                     <span>Spend: ${(acc.spend * fxRate).toLocaleString('en-AU', { minimumFractionDigits: 2 })} AUD <span className="text-[10px]">(${acc.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })} USD)</span></span>
                     <span>Impressions: {acc.impressions.toLocaleString()}</span>

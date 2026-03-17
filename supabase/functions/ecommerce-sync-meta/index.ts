@@ -272,8 +272,8 @@ Deno.serve(async (req: Request) => {
               m.spend += api.spend;
               m.impressions += api.impressions;
               m.clicks += api.clicks;
-              m.purchases = api.purchases > 0 ? api.purchases : m.purchases;
-              m.purchase_value = api.purchase_value > 0 ? api.purchase_value : m.purchase_value;
+              m.purchases += api.purchases;
+              m.purchase_value += api.purchase_value;
               if (api.permalink) m.permalink = api.permalink;
               if (api.ad_id && !api.ad_id.startsWith("csv-")) m.ad_id = api.ad_id;
             } else {

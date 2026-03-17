@@ -9,10 +9,40 @@ const corsHeaders = {
 };
 
 const BUCKET = "ecom";
-const SHOPIFY_FILE = "Orders by day MARIO DASH 2026 - 2025-07-01 - 2026-02-28.csv";
+// Try multiple filenames (date range may vary)
+const SHOPIFY_FILES = [
+  "Orders by day MARIO DASH 2026 - 2025-07-01 - 2026-03-16.csv",
+  "Orders by day MARIO DASH 2026 - 2025-07-01 - 2026-02-28.csv",
+];
 const META_FILE = "Mario-dash-2026.csv";
 const AUD_TO_USD = 0.65;
 const ADMIN_EMAILS = ["mario@dolo.com.au"];
+
+/** Map Order checkout currency → market: USD→usa, AUD→australia, else→other */
+function currencyToMarket(currency: string): "usa" | "australia" | "other" {
+  const c = (currency || "").toUpperCase().trim();
+  if (c === "USD") return "usa";
+  if (c === "AUD") return "australia";
+  return "other";
+}
+
+/** Convert amount to USD (approximate). Used for backfill consistency. */
+function toUsd(amount: number, currency: string): number {
+  const c = (currency || "").toUpperCase().trim();
+  if (c === "USD") return amount;
+  if (c === "AUD") return amount * AUD_TO_USD;
+  // Common rates to USD (approx)
+  const rates: Record<string, number> = {
+    EUR: 1.08, GBP: 1.27, CAD: 0.74, CHF: 1.13, SGD: 0.74, HKD: 0.13,
+    JPY: 0.0067, CNY: 0.14, KRW: 0.00075, INR: 0.012, MYR: 0.22, THB: 0.029,
+    PLN: 0.25, CZK: 0.044, SEK: 0.096, DKK: 0.14, NOK: 0.09, SAR: 0.27,
+    AED: 0.27, QAR: 0.27, ILS: 0.27, EGP: 0.02, PHP: 0.017, IDR: 0.000063,
+    BND: 0.74, PEN: 0.26, COP: 0.00024, MXN: 0.06, BRL: 0.2, RON: 0.22,
+    BGN: 0.55, HUF: 0.0027, RSD: 0.009, UAH: 0.025, KZT: 0.0021,
+  };
+  const rate = rates[c] ?? 0.5; // fallback for unknown
+  return amount * rate;
+}
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -88,43 +118,90 @@ Deno.serve(async (req: Request) => {
     if (!storeUrl.includes(".")) storeUrl += ".myshopify.com";
 
     // ─── Download & parse Shopify ─────────────────────────────────────────
-    const { data: shopifyBlob, error: shopifyErr } = await supabase.storage
-      .from(BUCKET)
-      .download(SHOPIFY_FILE);
+    let shopifyBlob: Blob | null = null;
+    let shopifyErr: { message: string } | null = null;
+    for (const f of SHOPIFY_FILES) {
+      const res = await supabase.storage.from(BUCKET).download(f);
+      if (res.data) {
+        shopifyBlob = res.data;
+        break;
+      }
+      shopifyErr = res.error;
+    }
 
-    if (shopifyErr || !shopifyBlob) {
+    if (!shopifyBlob) {
       result.errors.push(`Shopify: ${shopifyErr?.message || "File not found"}`);
     } else {
       const shopifyText = await shopifyBlob.text();
       const shopifyRows = parseCSV(shopifyText);
       const dateCol = shopifyRows[0]?.Month ? "Month" : shopifyRows[0]?.Day ? "Day" : "Month";
-      const daily: Record<string, { orders: number; revenue: number }> = {};
+      const hasCurrency = shopifyRows[0] && "Order checkout currency" in shopifyRows[0];
 
-      for (const r of shopifyRows) {
-        const dateStr = r[dateCol] || r.Day || r.Month;
-        if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr).slice(0, 10))) continue;
-        const date = String(dateStr).slice(0, 10);
-        const orders = parseInt(String(r.Orders || r["Orders"] || 0), 10) || 0;
-        const revenue = parseFloat(String(r["Total sales"] || 0).replace(/,/g, "")) || 0;
-        if (!daily[date]) daily[date] = { orders: 0, revenue: 0 };
-        daily[date].orders += orders;
-        daily[date].revenue += revenue;
-      }
-
-      const shopifyUpsert = Object.entries(daily).map(([date, d]) => ({
-        date,
-        store_url: storeUrl,
-        order_count: d.orders,
-        total_revenue: Math.round(d.revenue * 100) / 100,
-        currency: "USD",
-      }));
-
-      if (shopifyUpsert.length > 0) {
-        const { error } = await supabase.from("ecommerce_shopify_daily").upsert(shopifyUpsert, {
-          onConflict: "date,store_url",
-        });
-        if (error) result.errors.push(`Shopify upsert: ${error.message}`);
-        else result.shopify_days = shopifyUpsert.length;
+      if (hasCurrency) {
+        // Per-market backfill: group by (date, market), convert to USD
+        const dailyByMarket: Record<string, Record<string, { orders: number; revenueUsd: number }>> = {};
+        for (const r of shopifyRows) {
+          const dateStr = r[dateCol] || r.Day || r.Month;
+          if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr).slice(0, 10))) continue;
+          const date = String(dateStr).slice(0, 10);
+          const currency = String(r["Order checkout currency"] || "").trim();
+          const market = currencyToMarket(currency);
+          const orders = parseInt(String(r.Orders || r["Orders"] || 0), 10) || 0;
+          const revenue = parseFloat(String(r["Total sales"] || 0).replace(/,/g, "")) || 0;
+          const revenueUsd = toUsd(revenue, currency);
+          if (!dailyByMarket[date]) dailyByMarket[date] = {};
+          if (!dailyByMarket[date][market]) dailyByMarket[date][market] = { orders: 0, revenueUsd: 0 };
+          dailyByMarket[date][market].orders += orders;
+          dailyByMarket[date][market].revenueUsd += revenueUsd;
+        }
+        const shopifyUpsert: Array<{ date: string; store_url: string; market: string; order_count: number; total_revenue: number; currency: string }> = [];
+        for (const [date, markets] of Object.entries(dailyByMarket)) {
+          for (const [market, d] of Object.entries(markets)) {
+            shopifyUpsert.push({
+              date,
+              store_url: storeUrl,
+              market,
+              order_count: d.orders,
+              total_revenue: Math.round(d.revenueUsd * 100) / 100,
+              currency: "USD",
+            });
+          }
+        }
+        if (shopifyUpsert.length > 0) {
+          const { error } = await supabase.from("ecommerce_shopify_daily").upsert(shopifyUpsert, {
+            onConflict: "date,store_url,market",
+          });
+          if (error) result.errors.push(`Shopify upsert: ${error.message}`);
+          else result.shopify_days = shopifyUpsert.length;
+        }
+      } else {
+        // Legacy: aggregate all into market="all"
+        const daily: Record<string, { orders: number; revenue: number }> = {};
+        for (const r of shopifyRows) {
+          const dateStr = r[dateCol] || r.Day || r.Month;
+          if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr).slice(0, 10))) continue;
+          const date = String(dateStr).slice(0, 10);
+          const orders = parseInt(String(r.Orders || r["Orders"] || 0), 10) || 0;
+          const revenue = parseFloat(String(r["Total sales"] || 0).replace(/,/g, "")) || 0;
+          if (!daily[date]) daily[date] = { orders: 0, revenue: 0 };
+          daily[date].orders += orders;
+          daily[date].revenue += revenue;
+        }
+        const shopifyUpsert = Object.entries(daily).map(([date, d]) => ({
+          date,
+          store_url: storeUrl,
+          market: "all",
+          order_count: d.orders,
+          total_revenue: Math.round(d.revenue * 100) / 100,
+          currency: "USD",
+        }));
+        if (shopifyUpsert.length > 0) {
+          const { error } = await supabase.from("ecommerce_shopify_daily").upsert(shopifyUpsert, {
+            onConflict: "date,store_url,market",
+          });
+          if (error) result.errors.push(`Shopify upsert: ${error.message}`);
+          else result.shopify_days = shopifyUpsert.length;
+        }
       }
     }
 
@@ -246,30 +323,7 @@ Deno.serve(async (req: Request) => {
         else result.meta_daily_ads = dailyAdsRows.length;
       }
 
-      // Top ads: aggregate by ad, merge with existing, upsert
-      const { data: existingTopAds } = await supabase
-        .from("ecommerce_meta_top_ads")
-        .select("account_id, ad_id, ad_name, spend, impressions, clicks, purchases, purchase_value, permalink, campaign_name, rank")
-        .order("account_id")
-        .order("rank");
-
-      const existingByAccount = new Map<string, Array<{ ad_id: string; ad_name: string; spend: number; impressions: number; clicks: number; purchases: number; purchase_value: number; permalink: string | null; campaign_name: string | null }>>();
-      for (const row of existingTopAds || []) {
-        const acc = row.account_id || "";
-        if (!existingByAccount.has(acc)) existingByAccount.set(acc, []);
-        existingByAccount.get(acc)!.push({
-          ad_id: String(row.ad_id || ""),
-          ad_name: String(row.ad_name || "Unnamed"),
-          spend: Number(row.spend || 0),
-          impressions: row.impressions || 0,
-          clicks: row.clicks || 0,
-          purchases: row.purchases ?? 0,
-          purchase_value: Number(row.purchase_value || 0),
-          permalink: row.permalink || null,
-          campaign_name: row.campaign_name || null,
-        });
-      }
-
+      // Top ads: use CSV data ONLY (replace, don't merge - merging caused double-counting)
       for (const accountId of Object.keys(adByAccount)) {
         const csvAds = Object.entries(adByAccount[accountId])
           .map(([adName, d]) => ({
@@ -282,77 +336,41 @@ Deno.serve(async (req: Request) => {
             purchase_value: Math.round(d.purchase_value * 100) / 100,
             permalink: null as string | null,
             campaign_name: d.campaign || null,
-            source: "csv" as const,
           }))
           .filter((a) => a.spend > 0);
 
-        const merged = new Map<string, { spend: number; impressions: number; clicks: number; purchases: number; purchase_value: number; ad_id: string; ad_name: string; permalink: string | null; campaign_name: string | null }>();
-
-        for (const a of csvAds) {
-          merged.set(a.ad_name, {
-            ad_id: a.ad_id,
-            ad_name: a.ad_name,
-            spend: a.spend,
-            impressions: a.impressions,
-            clicks: a.clicks,
-            purchases: a.purchases,
-            purchase_value: a.purchase_value,
-            permalink: a.permalink,
-            campaign_name: a.campaign_name,
-          });
-        }
-
-        for (const ex of existingByAccount.get(accountId) || []) {
-          const key = ex.ad_name;
-          if (merged.has(key)) {
-            const m = merged.get(key)!;
-            m.spend += ex.spend;
-            m.impressions += ex.impressions;
-            m.clicks += ex.clicks;
-            m.purchases += ex.purchases;
-            m.purchase_value += ex.purchase_value;
-            if (ex.permalink) m.permalink = ex.permalink;
-            if (ex.ad_id && !ex.ad_id.startsWith("csv-")) m.ad_id = ex.ad_id;
-            if (ex.campaign_name && !m.campaign_name) m.campaign_name = ex.campaign_name;
-          } else {
-            merged.set(key, {
-              ad_id: ex.ad_id,
-              ad_name: ex.ad_name,
-              spend: ex.spend,
-              impressions: ex.impressions,
-              clicks: ex.clicks,
-              purchases: ex.purchases,
-              purchase_value: ex.purchase_value,
-              permalink: ex.permalink,
-              campaign_name: ex.campaign_name,
-            });
-          }
-        }
-
-        const top3 = Array.from(merged.values())
+        const top3 = Array.from(csvAds)
           .sort((a, b) => b.spend - a.spend)
           .slice(0, 3);
 
-        for (let i = 0; i < top3.length; i++) {
-          const a = top3[i];
-          await supabase.from("ecommerce_meta_top_ads").upsert(
-            {
+        // Replace (don't merge): delete existing for this account, then insert fresh
+        const { error: delErr } = await supabase.from("ecommerce_meta_top_ads").delete().eq("account_id", accountId);
+        if (delErr) {
+          result.errors.push(`Top ads delete ${accountId}: ${delErr.message}`);
+        } else {
+          for (let i = 0; i < top3.length; i++) {
+            const a = top3[i];
+            const row = {
               account_id: accountId,
               ad_id: a.ad_id,
               ad_name: a.ad_name,
               spend: a.spend,
               impressions: a.impressions,
               clicks: a.clicks,
-              purchases: a.purchases,
-              purchase_value: Math.round(a.purchase_value * 100) / 100,
+              purchases: Math.round(a.purchases || 0),
+              purchase_value: Math.round((a.purchase_value || 0) * 100) / 100,
               permalink: a.permalink,
               campaign_name: a.campaign_name || null,
               rank: i + 1,
-            },
-            { onConflict: "account_id,rank" }
-          );
+            };
+            const { error: insErr } = await supabase.from("ecommerce_meta_top_ads").insert(row);
+            if (insErr) {
+              result.errors.push(`Top ads insert ${a.ad_name}: ${insErr.message}`);
+            } else {
+              result.meta_top_ads += 1;
+            }
+          }
         }
-        result.meta_top_ads += top3.length;
       }
     }
 

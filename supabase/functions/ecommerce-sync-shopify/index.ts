@@ -85,7 +85,6 @@ Deno.serve(async (req: Request) => {
       const createdMin = `${since}T00:00:00.000Z`;
       const createdMax = `${until}T23:59:59.999Z`;
 
-      const dailyTotals: Record<string, { order_count: number; total_revenue: number }> = {};
       let nextUrl: string | null = since <= until
         ? `https://${storeUrl}/admin/api/2024-01/orders.json?limit=250&status=any&created_at_min=${createdMin}&created_at_max=${createdMax}`
         : null;
@@ -104,14 +103,17 @@ Deno.serve(async (req: Request) => {
         }
         const data = await res.json();
         const orders = data.orders || [];
+        const dailyByMarket: Record<string, Record<string, { order_count: number; total_revenue: number }>> = {};
         for (const o of orders) {
           const price = parseFloat(String(o.total_price || o.current_total_price || 0));
           const created = String(o.created_at || "").slice(0, 10);
-          if (created && !isNaN(price) && price > 0) {
-            if (!dailyTotals[created]) dailyTotals[created] = { order_count: 0, total_revenue: 0 };
-            dailyTotals[created].order_count++;
-            dailyTotals[created].total_revenue += price;
-          }
+          if (!created || isNaN(price) || price <= 0) continue;
+          const country = (o.shipping_address?.country_code || o.billing_address?.country_code || "").toUpperCase();
+          const market = country === "US" || country === "USA" ? "usa" : country === "AU" || country === "AUS" ? "australia" : "other";
+          if (!dailyByMarket[market]) dailyByMarket[market] = {};
+          if (!dailyByMarket[market][created]) dailyByMarket[market][created] = { order_count: 0, total_revenue: 0 };
+          dailyByMarket[market][created].order_count++;
+          dailyByMarket[market][created].total_revenue += price;
         }
         const linkHeader = res.headers.get("Link");
         nextUrl = null;
@@ -119,17 +121,23 @@ Deno.serve(async (req: Request) => {
         if (match) nextUrl = match[1];
       }
 
-      const shopifyRows = Object.entries(dailyTotals).map(([date, d]) => ({
-        date,
-        store_url: storeUrl,
-        order_count: d.order_count,
-        total_revenue: Math.round(d.total_revenue * 100) / 100,
-        currency: "USD",
-      }));
+      const shopifyRows: Array<{ date: string; store_url: string; market: string; order_count: number; total_revenue: number; currency: string }> = [];
+      for (const [market, daily] of Object.entries(dailyByMarket)) {
+        for (const [date, d] of Object.entries(daily)) {
+          shopifyRows.push({
+            date,
+            store_url: storeUrl,
+            market,
+            order_count: d.order_count,
+            total_revenue: Math.round(d.total_revenue * 100) / 100,
+            currency: "USD",
+          });
+        }
+      }
 
       if (shopifyRows.length > 0) {
         const { error } = await supabase.from("ecommerce_shopify_daily").upsert(shopifyRows, {
-          onConflict: "date,store_url",
+          onConflict: "date,store_url,market",
         });
         if (error) errors.push(`Shopify upsert: ${error.message}`);
         else recordsSynced.shopify_days = shopifyRows.length;

@@ -636,7 +636,8 @@ function App() {
       });
       const result = await res.json();
       if (!res.ok) {
-        setCsvLoadStatus({ type: 'error', message: result.error || 'Error al cargar CSV' });
+        const errMsg = result.error || result.errors?.join('; ') || 'Error al cargar CSV';
+        setCsvLoadStatus({ type: 'error', message: errMsg });
         return;
       }
       const parts: string[] = [];
@@ -2001,7 +2002,7 @@ function App() {
               variant="outline"
               size="sm"
               className="w-full text-xs"
-              onClick={() => window.open('https://adsmanager.facebook.com/adsmanager/reporting/business_view?act=1619162111994178&ads_manager_write_regions=true&business_id=204916233498200&selected_report_id=1736637710326037', '_blank')}
+              onClick={() => window.open('https://adsmanager.facebook.com/adsmanager/reporting/business_view?act=1619162111994178&ads_manager_write_regions=true&business_id=204916233498200&event_source=CLICK_CREATE_REPORT&selected_report_id=1893156248007515', '_blank')}
             >
               Open Meta Ads
             </Button>

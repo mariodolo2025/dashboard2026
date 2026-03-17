@@ -1,8 +1,7 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2 } from 'lucide-react';
+import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2, GripVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 import type { POBuilderItem } from '@/lib/aim2026/types';
 
 const CUSTOM_ORDER_STATUSES = [
@@ -10,6 +9,9 @@ const CUSTOM_ORDER_STATUSES = [
   { value: 'Container', label: 'Container' },
   { value: 'DHL-Inbounds', label: 'DHL Inbounds' },
 ] as const;
+
+const getDefaultPos = () => ({ x: 16, y: Math.max(80, (typeof window !== 'undefined' ? window.innerHeight : 600) - 420) });
+const PANEL_WIDTH = 340;
 
 interface POBuilderPanelProps {
   items: POBuilderItem[];
@@ -34,25 +36,56 @@ export function POBuilderPanel({
 }: POBuilderPanelProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState('Production');
-  const [expanded, setExpanded] = useState(false);
+  const [minimized, setMinimized] = useState(false);
+  const [pos, setPos] = useState(getDefaultPos);
+  const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
 
   const totalUnits = items.reduce((s, i) => s + i.quantity, 0);
   const totalValue = items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, startPosX: pos.x, startPosY: pos.y };
+  }, [pos]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dx = e.clientX - dragRef.current.startX;
+      const dy = e.clientY - dragRef.current.startY;
+      setPos({
+        x: Math.max(0, Math.min(window.innerWidth - PANEL_WIDTH, dragRef.current.startPosX + dx)),
+        y: Math.max(0, Math.min(window.innerHeight - 100, dragRef.current.startPosY + dy)),
+      });
+    };
+    const onUp = () => { dragRef.current = null; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
 
   if (items.length === 0) return null;
 
   return (
     <AnimatePresence>
       <motion.div
-        initial={{ x: -320, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        exit={{ x: -320, opacity: 0 }}
-        transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-        className="fixed bottom-4 left-4 z-50 w-[340px] bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.2 }}
+        style={{ left: pos.x, top: pos.y }}
+        className="fixed z-50 w-[340px] bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
       >
-        {/* Header */}
-        <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-between">
+        {/* Header - draggable */}
+        <div
+          onMouseDown={handleMouseDown}
+          className="bg-blue-600 text-white px-4 py-3 flex items-center justify-between cursor-grab active:cursor-grabbing select-none"
+        >
           <div className="flex items-center gap-2">
+            <GripVertical size={14} className="text-white/60" />
             <ShoppingCart size={16} />
             <span className="text-sm font-semibold">PO Draft</span>
             <span className="bg-white/20 text-[11px] px-1.5 py-0.5 rounded-full font-medium">
@@ -61,20 +94,22 @@ export function POBuilderPanel({
           </div>
           <div className="flex items-center gap-1">
             <button
-              onClick={() => setExpanded(!expanded)}
-              className="text-white/70 hover:text-white transition-colors"
-              title={expanded ? 'Minimize' : 'Maximize'}
+              onClick={(e) => { e.stopPropagation(); setMinimized(!minimized); }}
+              className="text-white/70 hover:text-white transition-colors p-0.5"
+              title={minimized ? 'Expand' : 'Minimize'}
             >
-              {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {minimized ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
             </button>
-            <button onClick={onClear} className="text-white/70 hover:text-white transition-colors" title="Clear all">
+            <button onClick={(e) => { e.stopPropagation(); onClear(); }} className="text-white/70 hover:text-white transition-colors p-0.5" title="Clear all">
               <Trash2 size={14} />
             </button>
           </div>
         </div>
 
+        {!minimized && (
+          <>
         {/* Items list */}
-        <div className={cn('overflow-y-auto divide-y divide-border/40', expanded ? 'max-h-[500px]' : 'max-h-[300px]')}>
+        <div className="overflow-y-auto divide-y divide-border/40 max-h-[300px]">
           {items.map((item) => (
             <div
               key={item.sku}
@@ -195,6 +230,8 @@ export function POBuilderPanel({
             </div>
           )}
         </div>
+          </>
+        )}
       </motion.div>
     </AnimatePresence>
   );

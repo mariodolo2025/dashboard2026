@@ -44,6 +44,7 @@ Deno.serve(async (req: Request) => {
     const toParam = url.searchParams.get("to");
     const daysParam = parseInt(url.searchParams.get("days") || "30", 10);
     const days = Math.min(90, Math.max(1, daysParam));
+    const marketParam = url.searchParams.get("market") || "all";
 
     let since: string;
     let until: string;
@@ -59,12 +60,43 @@ Deno.serve(async (req: Request) => {
       until = toDate.toISOString().slice(0, 10);
     }
 
-    // ─── Shopify from cache ──────────────────────────────────────────────
-    const { data: shopifyRows } = await supabase
-      .from("ecommerce_shopify_daily")
-      .select("date, store_url, order_count, total_revenue, currency")
-      .gte("date", since)
-      .lte("date", until);
+    // ─── Shopify from cache (filter by market: all, usa, australia) ───────
+    let shopifyRows: Array<{ date: string; store_url: string; market: string; order_count: number; total_revenue: number; currency: string }> | null = null;
+    if (marketParam === "usa") {
+      const { data } = await supabase
+        .from("ecommerce_shopify_daily")
+        .select("date, store_url, market, order_count, total_revenue, currency")
+        .gte("date", since)
+        .lte("date", until)
+        .eq("market", "usa");
+      shopifyRows = data;
+    } else if (marketParam === "australia") {
+      const { data } = await supabase
+        .from("ecommerce_shopify_daily")
+        .select("date, store_url, market, order_count, total_revenue, currency")
+        .gte("date", since)
+        .lte("date", until)
+        .eq("market", "australia");
+      shopifyRows = data;
+    } else {
+      const { data: perMarket } = await supabase
+        .from("ecommerce_shopify_daily")
+        .select("date, store_url, market, order_count, total_revenue, currency")
+        .gte("date", since)
+        .lte("date", until)
+        .in("market", ["usa", "australia", "other"]);
+      if (perMarket && perMarket.length > 0) {
+        shopifyRows = perMarket;
+      } else {
+        const { data: legacy } = await supabase
+          .from("ecommerce_shopify_daily")
+          .select("date, store_url, market, order_count, total_revenue, currency")
+          .gte("date", since)
+          .lte("date", until)
+          .eq("market", "all");
+        shopifyRows = legacy;
+      }
+    }
 
     let shopify: { success: boolean; store_url?: string; period?: { from: string; to: string; days: number }; orders?: number; total_revenue?: number; aov?: number; currency?: string; from_cache?: boolean } = { success: false };
 
