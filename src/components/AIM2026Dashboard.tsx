@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from 'react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon } from 'lucide-react';
+import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
@@ -16,6 +16,7 @@ import { SettingsPanel } from './aim2026/SettingsPanel';
 import { POBuilderPanel } from './aim2026/POBuilderPanel';
 import { QtyConfirmDialog } from './aim2026/QtyConfirmDialog';
 import { AIInsightsDialog } from './aim2026/AIInsightsDialog';
+import { AIM2026ExportCSVDialog } from './aim2026/AIM2026ExportCSVDialog';
 import type { AIM2026Filters, SKURow, KPISummary, SyncStatus, StockValuationTotals, StockValuationHistoryRecord, AIM2026Config, POBuilderItem } from '@/lib/aim2026/types';
 import type { BOMComponent } from '@/lib/aim2026/api';
 import { DEFAULT_FILTERS, DEFAULT_CONFIG } from '@/lib/aim2026/types';
@@ -76,6 +77,8 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const [valuationHistory, setValuationHistory] = useState<StockValuationHistoryRecord[]>([]);
   const [config, setConfig] = useState<AIM2026Config>(DEFAULT_CONFIG);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportCSVOpen, setExportCSVOpen] = useState(false);
+  const [exportSelectedSKUs, setExportSelectedSKUs] = useState<Set<string>>(new Set());
 
   // Popup state
   const [skuDetailOpen, setSKUDetailOpen] = useState(false);
@@ -296,9 +299,25 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     if (filters.productGroup !== 'all') result = result.filter((r) => r.productGroup === filters.productGroup);
     if (filters.supplier !== 'all') result = result.filter((r) => r.supplier === filters.supplier);
     return result;
-  }, [skuData, filters, showAssembledProducts, assembledProductSKUs, insightFilterSKUs]);
+  }, [
+    skuData,
+    filters.search,
+    filters.abcClass,
+    filters.status,
+    filters.productGroup,
+    filters.supplier,
+    showAssembledProducts,
+    assembledProductSKUs,
+    insightFilterSKUs,
+  ]);
 
   const filteredCount = filteredData.length;
+
+  // Keep row selection in sync with the current filtered view.
+  // If filters/search change, the set of visible rows changes too.
+  useEffect(() => {
+    setExportSelectedSKUs(new Set());
+  }, [filteredData]);
 
   const filteredValuation = useMemo(() => {
     let mainWH = 0, china = 0, container = 0, dhl = 0, onProduction = 0;
@@ -589,7 +608,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             <h2 className="text-lg font-semibold tracking-tight flex items-center gap-2">
               <Zap size={18} className="text-primary" />
               AIM 2026
-              {setDateRange && dateRange ? (
+              {!tableMaximized && setDateRange && dateRange ? (
                 <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen} modal>
                   <PopoverTrigger asChild>
                     <Button
@@ -621,7 +640,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                     </div>
                   </PopoverContent>
                 </Popover>
-              ) : dateRangeLabel ? (
+              ) : !tableMaximized && dateRangeLabel ? (
                 <span className="text-[10px] font-medium bg-primary/10 text-primary px-2 py-0.5 rounded-full border border-primary/20">
                   {dateRangeLabel}
                 </span>
@@ -664,6 +683,17 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                 Create Purchase Order
               </>
             )}
+          </Button>
+
+          <Button
+            onClick={() => setExportCSVOpen(true)}
+            disabled={loading || filteredCount === 0}
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 text-xs font-medium min-w-[160px]"
+          >
+            <Download size={14} />
+            Export CSV
           </Button>
 
           <Button
@@ -959,6 +989,8 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             poBuilderMode={poBuilderMode}
             poSelectedSKUs={poSelectedSKUs}
             onSugQtyClick={handleSugQtyClick}
+            exportSelectedSKUs={exportSelectedSKUs}
+            onExportSelectedSKUsChange={setExportSelectedSKUs}
             dataIsFullyFiltered
           />
         </>
@@ -974,8 +1006,69 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             transition={{ duration: 0.15 }}
             className="fixed inset-0 z-50 bg-background flex flex-col"
           >
-            <div className="flex items-center gap-4 px-4 py-2 border-b bg-muted/30 shrink-0">
-              <span className="text-sm font-medium">AIM 2026 — Tabla principal</span>
+            <div className="flex items-center justify-between gap-4 px-4 py-2 border-b bg-muted/30 shrink-0">
+              <span className="text-sm font-medium">AIM 2026 — Main table</span>
+
+              <div className="flex items-center gap-3">
+                {setDateRange && dateRange ? (
+                  <div className="flex items-center gap-3">
+                    <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen} modal>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className={cn(
+                            'h-7 gap-1.5 text-[10px] font-medium px-2 py-0.5 rounded-full border',
+                            'bg-primary/10 text-primary border-primary/20 hover:bg-primary/20'
+                          )}
+                        >
+                          <CalendarIcon className="h-3 w-3" />
+                          {dateRangeLabel || 'Date range'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        className="w-auto p-0 z-[70]"
+                        align="start"
+                        side="bottom"
+                      >
+                        <Calendar
+                          initialFocus
+                          mode="range"
+                          defaultMonth={dateRange?.from}
+                          selected={dateRange as never}
+                          onSelect={(range) => setDateRange(range || {})}
+                          numberOfMonths={2}
+                          weekStartsOn={1}
+                        />
+                        <div className="p-2 border-t flex justify-end">
+                          <Button size="sm" onClick={() => setDatePickerOpen(false)}>
+                            Apply
+                          </Button>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+
+                    {dateRangeLoading && (
+                      <RefreshCw size={13} className="animate-spin text-primary/60" />
+                    )}
+                  </div>
+                ) : dateRangeLabel ? (
+                  <span className="text-[10px] font-medium bg-primary/10 text-primary px-2 py-0.5 rounded-full border border-primary/20">
+                    {dateRangeLabel}
+                  </span>
+                ) : null}
+
+                <Button
+                  onClick={() => setExportCSVOpen(true)}
+                  disabled={loading || filteredCount === 0}
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1.5 text-xs font-medium min-w-[160px]"
+                >
+                  <Download size={14} />
+                  Export CSV
+                </Button>
+              </div>
             </div>
             <div className="flex-1 min-h-0 p-4 flex flex-col gap-3 overflow-auto">
               <div className="bg-muted/20 rounded-lg border border-border/40 px-4 py-3 shrink-0">
@@ -1042,6 +1135,8 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                   poBuilderMode={poBuilderMode}
                   poSelectedSKUs={poSelectedSKUs}
                   onSugQtyClick={handleSugQtyClick}
+                  exportSelectedSKUs={exportSelectedSKUs}
+                  onExportSelectedSKUsChange={setExportSelectedSKUs}
                   fullHeight
                   dataIsFullyFiltered
                 />
@@ -1100,6 +1195,16 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
           setInsightFilterSKUs(skus);
           setAIInsightsOpen(false);
         }}
+      />
+
+      <AIM2026ExportCSVDialog
+        open={exportCSVOpen}
+        onOpenChange={setExportCSVOpen}
+        filters={filters}
+        filteredRows={filteredData}
+        selectedRowSKUs={exportSelectedSKUs}
+        dateRange={dateRange}
+        setDateRange={setDateRange}
       />
 
       {/* ─── PO Builder Components ─────────────────────────────────────────── */}

@@ -68,7 +68,7 @@ SelectScrollDownButton.displayName =
 const SelectContent = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className, children, position = "popper", ...props }, ref) => (
+>(({ className, children, position = "popper", onWheelCapture, ...props }, ref) => (
   <SelectPrimitive.Portal>
     <SelectPrimitive.Content
       ref={ref}
@@ -80,11 +80,16 @@ const SelectContent = React.forwardRef<
       )}
       position={position}
       {...props}
+      onWheelCapture={(e) => {
+        onWheelCapture?.(e);
+        // Prevent the parent maximized-table scroll container from eating wheel events.
+        e.stopPropagation();
+      }}
     >
       <SelectScrollUpButton />
       <SelectPrimitive.Viewport
         className={cn(
-          "p-1",
+          "p-1 overflow-auto",
           position === "popper" &&
             "h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]"
         )}

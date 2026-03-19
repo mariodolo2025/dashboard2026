@@ -263,10 +263,10 @@ export function FilterBar({
             size="sm"
             className="h-9 gap-1.5 text-xs font-medium"
             onClick={onRestoreClick}
-            title="Restaurar (Esc)"
+            title="Restore (Esc)"
           >
             <Minimize2 size={14} />
-            Restaurar
+            Restore
           </Button>
         )}
         {!isMaximized && onMaximizeClick && (
@@ -275,10 +275,10 @@ export function FilterBar({
             size="sm"
             className="h-9 gap-1.5 text-xs font-medium"
             onClick={onMaximizeClick}
-            title="Maximizar tabla"
+            title="Maximize table"
           >
             <Maximize2 size={14} />
-            Maximizar tabla
+            Maximize table
           </Button>
         )}
       </div>

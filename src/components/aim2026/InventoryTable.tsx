@@ -12,6 +12,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { Checkbox } from '@/components/ui/checkbox';
 import { StatusBadge } from './StatusBadge';
 import { ABCBadge } from './ABCBadge';
 import { TrendIndicator } from './TrendIndicator';
@@ -128,6 +129,8 @@ interface InventoryTableProps {
   poBuilderMode?: boolean;
   poSelectedSKUs?: Set<string>;
   onSugQtyClick?: (row: SKURow) => void;
+  exportSelectedSKUs?: Set<string>;
+  onExportSelectedSKUsChange?: (next: Set<string>) => void;
   /** When true, table scroll container fills parent height (for maximized overlay) */
   fullHeight?: boolean;
   /** When true, data is already fully filtered (e.g. includes assembled filter); do not apply filters again */
@@ -143,6 +146,8 @@ export function InventoryTable({
   poBuilderMode = false,
   poSelectedSKUs,
   onSugQtyClick,
+  exportSelectedSKUs,
+  onExportSelectedSKUsChange,
   fullHeight = false,
   dataIsFullyFiltered = false,
 }: InventoryTableProps) {
@@ -186,10 +191,55 @@ export function InventoryTable({
     return result;
   }, [data, filters, dataIsFullyFiltered]);
 
+  const allRowSKUs = useMemo(() => filteredData.map((r) => r.sku), [filteredData]);
+  const allRowsSelected =
+    allRowSKUs.length > 0 && !!exportSelectedSKUs && allRowSKUs.every((sku) => exportSelectedSKUs.has(sku));
+  const someRowsSelected = allRowSKUs.some((sku) => exportSelectedSKUs?.has(sku));
+
   // ─── Column definitions ──────────────────────────────────────────────────
 
   const columns = useMemo<ColumnDef<SKURow>[]>(() => {
     const cols: ColumnDef<SKURow>[] = [
+      // ── Selection checkbox column ───────────────────────────────────────
+      {
+        id: 'select',
+        header: () => (
+          <div className="flex justify-center">
+            <Checkbox
+              checked={
+                allRowsSelected ? true : someRowsSelected ? ('indeterminate' as const) : false
+              }
+              disabled={allRowSKUs.length === 0 || !onExportSelectedSKUsChange}
+              onCheckedChange={() => {
+                if (!onExportSelectedSKUsChange) return;
+                if (allRowsSelected) onExportSelectedSKUsChange(new Set());
+                else onExportSelectedSKUsChange(new Set(allRowSKUs));
+              }}
+            />
+          </div>
+        ),
+        cell: ({ row }) => {
+          const sku = row.original.sku;
+          const checked = exportSelectedSKUs?.has(sku) ?? false;
+
+          return (
+            <div className="flex justify-center w-full">
+              <Checkbox
+                checked={checked}
+                disabled={!onExportSelectedSKUsChange}
+                onCheckedChange={(next) => {
+                  if (!onExportSelectedSKUsChange) return;
+                  const nextSet = new Set(exportSelectedSKUs ? exportSelectedSKUs : []);
+                  if (next === true) nextSet.add(sku);
+                  else nextSet.delete(sku);
+                  onExportSelectedSKUsChange(nextSet);
+                }}
+              />
+            </div>
+          );
+        },
+        size: 36,
+      },
       // SKU
       {
         accessorKey: 'sku',
@@ -611,7 +661,22 @@ export function InventoryTable({
     // Filter out hidden columns
     const hidden = new Set(filters.hiddenColumns ?? []);
     return cols.filter((c: any) => !hidden.has(c.accessorKey));
-  }, [filters.showInTransit, filters.showAllocation, filters.showReorderDetail, filters.hiddenColumns, onSKUClick, onDemandClick, poBuilderMode, poSelectedSKUs, onSugQtyClick]);
+  }, [
+    filters.showInTransit,
+    filters.showAllocation,
+    filters.showReorderDetail,
+    filters.hiddenColumns,
+    onSKUClick,
+    onDemandClick,
+    poBuilderMode,
+    poSelectedSKUs,
+    onSugQtyClick,
+    allRowSKUs,
+    allRowsSelected,
+    someRowsSelected,
+    exportSelectedSKUs,
+    onExportSelectedSKUsChange,
+  ]);
 
   // ─── Table instance ──────────────────────────────────────────────────────
 
