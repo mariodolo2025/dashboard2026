@@ -1,153 +1,178 @@
 # Economic Dashboard
 
-A React + TypeScript dashboard for analyzing sales data from multiple sources (Unleashed, Shopify, Meta Ads, etc.) with Supabase integration for centralized data management.
+React + TypeScript dashboard: análisis por canal (Unleashed, Shopify, Meta), **AIM 2026** (inventario, demanda, KPIs), costes Xero y e-commerce. Datos centralizados en **Supabase** (Auth, Storage, Postgres, Edge Functions).
 
 ## Features
 
-- **Authentication**: Login restricted to @dolo.com.au emails (Supabase Auth)
-- **Multi-source Data Analysis**: Processes data from Unleashed, Shopify, Meta Ads, and cost files
-- **Automated Data Loading**: Uses Supabase Storage and Edge Functions to centralize CSV files
-- **Real-time Currency Conversion**: Automatic USD to AUD conversion with live exchange rates
-- **Channel Analysis**: Revenue breakdown by sales channels (B2B, Shopify, Korea, etc.)
-- **Weekly ROAS Tracking**: Return on Ad Spend calculations with target visualization
-- **Top SKU Analysis**: Product performance with margin calculations
-- **Warehouse Filtering**: Filter data by specific warehouses
+- **Authentication**: login restringido a correos `@dolo.com.au` (Supabase Auth)
+- **Multi-source**: Unleashed (CSV/API), Shopify/Meta (API y/o CSV), costes unitarios, P&amp;L Xero (Excel)
+- **AIM 2026**: SOH, demanda, BOM, KPIs cacheados, valuación
+- **Costs Analysis / By channel**: costes desde Xero (edge `parse-xero-costs`) o entradas manuales legacy
+- **Currency**: tipos de cambio en tabla `currency_exchange_rates` donde aplica
+
+---
 
 ## Setup
 
-### 1. Supabase Configuration
+### 1. Supabase
 
-1. Create a new Supabase project
-2. Run the migration to set up storage:
-   ```sql
-   -- This will be automatically applied from supabase/migrations/
-   ```
+1. Crear proyecto y aplicar migraciones en `supabase/migrations/`.
+2. Crear buckets de Storage que uses (ver [Orígenes de datos](#orígenes-de-datos-y-storage) abajo).
+3. Variables en el front: copiar `.env.example` → `.env` con `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` (no commitear secretos).
 
-3. Upload your CSV files to the `csv-files` bucket with these exact names:
-   - `unleashed-sales.csv`
-   - `shopify-sales.csv`
-   - `old-shopify-sales.csv`
-   - `meta-ads.csv`
-   - `costs.csv`
+### 2. Autenticación
 
-### 2. Authentication (Supabase Auth)
+1. **Authentication** → **Providers** → Email.
+2. Desactivar signups públicos si solo invitás usuarios.
+3. Invitar usuarios `@dolo.com.au`; desplegar `invite-user` si usás flujo de invitación.
 
-1. **Authentication** → **Providers** → enable **Email**
-2. **Disable "Enable email signups"** – solo el admin puede crear usuarios
-3. Solo correos `@dolo.com.au` pueden iniciar sesión
-4. **Invitar usuarios**: Admin (mario@dolo.com.au) va a Config → "Invitar usuarios" → ingresa email → Invitar
-5. Despliega: `supabase functions deploy invite-user`
-
-### 3. Environment Variables
-
-Copy `.env.example` to `.env` and fill in your Supabase credentials:
-
-```bash
-VITE_SUPABASE_URL=your_supabase_project_url
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-```
-
-### 4. Install Dependencies
+### 3. Desarrollo local
 
 ```bash
 npm install
-```
-
-### 5. Run Development Server
-
-```bash
 npm run dev
 ```
 
-## Data Sources
-
-### Unleashed Sales
-- **Format**: CSV with auto-detected headers
-- **Key Columns**: Order Date, Product Code, Customer, Quantity, Sub Total, Warehouse
-- **Processing**: Automatically categorizes customers into channels (B2B, Shopify, Korea, etc.)
-
-### Shopify Sales (Current)
-- **Format**: CSV with fixed column positions
-- **Key Columns**: C=SKU, F=Date, G=Quantity, K=Net Sales (USD)
-- **Processing**: Converts USD to AUD using live exchange rates
-
-### Old Shopify Sales (2025)
-- **Format**: CSV with fixed column positions  
-- **Key Columns**: D=Date, I=Net Sales (AUD)
-- **Processing**: Already in AUD, no conversion needed
-
-### Meta Ads
-- **Format**: CSV with headers
-- **Key Columns**: Date, Amount Spent, Currency
-- **Processing**: Converts USD to AUD, aggregates by week for ROAS calculation
-
-### Costs
-- **Format**: CSV with SKU and unit cost
-- **Key Columns**: SKU, Unit Cost
-- **Processing**: Creates lookup table for margin calculations
-
-## Key Calculations
-
-### Channel Analysis
-- Combines Shopify data from both current and historical files
-- Excludes Shopify/Shop sale/Unclassified channels from Unleashed data
-- Calculates revenue share percentages
-
-### Weekly ROAS
-- **Formula**: (Total Shopify Sales) / (Total Meta Ad Spend) per week
-- Uses Monday as week start
-- Supports target ROAS visualization
-
-### Top SKU Analysis
-- Combines data from Unleashed (B2B/Korea) and Shopify
-- Calculates margins using cost data: `((Revenue - (Unit Cost × Units)) / Revenue) × 100`
-- Supports filtering by channel and sorting by revenue/units
-
-## Architecture
-
-### Frontend (React + TypeScript)
-- **State Management**: React hooks for data and UI state
-- **UI Components**: shadcn/ui component library
-- **Charts**: Recharts for ROAS visualization
-- **Date Handling**: date-fns for date parsing and formatting
-
-### Backend (Supabase)
-- **Storage**: CSV files stored in `csv-files` bucket
-- **Edge Functions**: Server-side CSV parsing and data processing
-- **Real-time**: Automatic data updates with single button click
-
-### Data Flow
-1. CSV files uploaded to Supabase Storage (manual admin process)
-2. User clicks "Update" button in dashboard
-3. Edge Function downloads and parses all CSV files
-4. Processed data returned as JSON to frontend
-5. Dashboard updates with new calculations and visualizations
-
-## Manual File Upload Fallback
-
-The application includes legacy file upload inputs as a fallback option. These are hidden by default but can be accessed through the "Manual File Upload (Fallback)" section in the sidebar.
-
-## Development
-
-### Adding New Data Sources
-1. Add parsing logic to the Edge Function (`supabase/functions/parse-csv-data/index.ts`)
-2. Update the `DataResponse` interface
-3. Add corresponding state management in `App.tsx`
-4. Update calculations and visualizations as needed
-
-### Modifying Calculations
-- Channel analysis logic is in the `channelAnalysis` useMemo hook
-- ROAS calculations are in the `weeklyROAS` useMemo hook  
-- SKU analysis is in the `topSKUs` useMemo hook
-
-## Deployment
-
-The application can be deployed to any static hosting service. Make sure to:
-1. Set up your Supabase project and upload CSV files
-2. Configure environment variables
-3. Deploy the Edge Function to Supabase
-4. Build and deploy the frontend
+### 4. Build
 
 ```bash
 npm run build
 ```
+
+Desplegar el front en tu hosting estático y las **Edge Functions** con Supabase CLI (`supabase functions deploy <nombre>`).
+
+---
+
+## Orígenes de datos y Storage
+
+En la consola de Supabase: **Project → Storage → Buckets**. Las rutas de objeto suelen ser la **raíz del bucket** salvo que subáis carpetas.
+
+### Resumen por área
+
+| Área | Origen |
+|------|--------|
+| Dashboard “Economic” legacy | CSV en **`csv-files`** + edge `parse-csv-data`; FX en **`currency_exchange_rates`** |
+| AIM 2026 (inventario, demanda, KPIs) | CSV en **`aim-csv-files`** o **`csv-files`** (el código prueba ambos); tablas **`aim2026_*`**; sync **Unleashed API** opcional |
+| E-commerce (Shopify/Meta en BD) | APIs + credenciales en **`api_credentials`** → tablas **`ecommerce_*`**; CSV opcional en **`ecom`** (`ecommerce-load-csv`) |
+| Costes Xero (Costs Analysis) | Excel en **`csv-files`**: `Dolo_Ent_PTY_Ltd_-_Profit_and_Loss_Mario_2026.xlsx` → **`parse-xero-costs`** |
+| Coste unitario SKU (AIM / margen) | **`costs.csv`** → `aim2026_sku_parameters` vía **`aim2026-csv-load`** |
+
+### Bucket `aim-csv-files` (principal AIM)
+
+| Archivo | Uso |
+|---------|-----|
+| `SOHList.csv` | Stock → `aim2026_soh_snapshots`, `aim2026_sku_parameters` |
+| `SalesEnquiryList.csv` | Demanda ventas → `aim2026_demand_history` / `aim2026_demand_detail` |
+| `ProductionEnquiryList.csv` | Producción y uso de componentes |
+| `PurchaseEnquiryList.csv` | Pipeline (Container, DHL, On Production) |
+| `costs.csv` | `product_cost_china` por SKU |
+| `ProductList.csv` | Lead times (también: `productlist.csv`, `Product List.csv`) |
+| **`BOM_*.csv`**, **`BillOfMaterials*.csv`**, o `BillOfMaterialsList.csv` / `bom_cleaned_min.csv` / `BOM.csv` | Ensamblados + componentes → ver [BOM](#bom-bill-of-materials) |
+
+### Bucket `csv-files`
+
+| Archivo / patrón | Uso |
+|------------------|-----|
+| `SalesEnquiryList.csv` | Unleashed en flujo `parse-csv-data` |
+| `costs.csv` | Costes legacy por SKU |
+| `old-shopify-sales.csv` | Shopify histórico |
+| `2-Mario-for-Danshboard.csv` | Meta / Mario dash |
+| Nombre que empiece por **`MARIO Total sales by product variant`** | Shopify actual (detectado con `list()`) |
+| **`Dolo_Ent_PTY_Ltd_-_Profit_and_Loss_Mario_2026.xlsx`** | P&amp;L para Xero / Costs |
+
+Los mismos CSV de AIM pueden existir también en **`csv-files`** como respaldo: varias funciones intentan **`aim-csv-files` primero** y luego **`csv-files`**.
+
+### Bucket `ecom` (opcional)
+
+| Archivo | Uso |
+|---------|-----|
+| `Orders by day MARIO DASH 2026 - … .csv` | Variantes con distinto rango de fechas en el nombre |
+| `Mario-dash-2026.csv` | Meta (constante en `ecommerce-load-csv`) |
+
+### APIs y tablas (sin archivo en Storage)
+
+- **Unleashed**: `unleashed_credentials`; funciones de sync, generación de CSV, POs, etc.
+- **Shopify / Meta**: `api_credentials` → `ecommerce_shopify_daily`, `ecommerce_meta_daily`, `ecommerce_meta_daily_ads`, `ecommerce_meta_top_ads`, `ecommerce_sync_log`.
+
+---
+
+## BOM (Bill of Materials)
+
+### Origen
+
+Export **CSV desde Unleashed** (u otro origen con el mismo esquema) subido a **`aim-csv-files`** o **`csv-files`**.
+
+**Selección del archivo**: se listan objetos del bucket; se prefieren CSV cuyo nombre empiece por **`bom`** o **`billofmaterials`** (sin distinguir mayúsculas); si hay varios, el **más reciente** por `updated_at`. Si no hay coincidencias, se intentan nombres fijos: `BillOfMaterialsList.csv`, `bom_cleaned_min.csv`, `BOM.csv`.
+
+**Formato**: columnas típicas `*Assembled Product Code`, `Component Product Code`, `*Quantity` (cabeceras con `*` se normalizan al parsear). Filas con ensamblado vacío **heredan** el código de la fila anterior (formato Unleashed).
+
+### Código compartido
+
+La lógica vive en **`supabase/functions/_shared/bom.ts`**:
+
+- `downloadBOMFromBucket`
+- `parseBomCsv` (deduplica par `assembly_sku` + `component_sku`)
+- `insertBomComponentsBatched` (inserciones en lotes hacia `aim2026_bom_components`)
+
+### Tablas
+
+| Tabla | Contenido |
+|-------|-----------|
+| **`aim2026_assembled_products`** | Un registro por SKU **ensamblado** (lista para filtros / lógica ROD) |
+| **`aim2026_bom_components`** | Una fila por par **assembly_sku → component_sku** con **quantity_per_assembly** |
+
+### Cómo se pueblan
+
+1. **`aim2026-csv-load`** con **`step: "bom"`** (botón **“Reload BOM only”** en Settings → CSV Data Reload): solo actualiza **`aim2026_assembled_products`** y **`aim2026_bom_components`** desde el último CSV BOM en Storage; **no** toca ventas, SOH, producción ni KPIs.
+2. **`aim2026-csv-load`** (paso **`production`** o **`all`**): además del BOM, procesa **`ProductionEnquiryList.csv`** (demanda/uso de componentes).
+3. **`aim2026-sync-unleashed`**: rellena solo **`aim2026_assembled_products`** desde la API; **no** escribe `aim2026_bom_components`.
+4. **`aim2026-get-dashboard`** (`action`: `kpi_cache`): si **`aim2026_assembled_products`** está **vacía**, o si **`aim2026_bom_components`** está **vacía**, descarga el BOM desde Storage, parsea con el mismo módulo compartido y **rellena** lo que falte (así, tras un sync Unleashed que dejó componentes vacíos, el primer load del dashboard puede **backfillear** el BOM desde el CSV). Si las tablas ya tienen datos y subís un BOM nuevo, usá **`step: bom`** o el reload completo con paso production.
+
+El front recibe `assembledProductSKUs` y `bomComponents` en la respuesta del dashboard para detalle de SKU / BOM en UI.
+
+---
+
+## Edge Functions (referencia)
+
+| Función | Rol breve |
+|---------|-----------|
+| `parse-csv-data` | Dashboard Economic legacy desde `csv-files` |
+| `aim2026-csv-load` | Carga AIM desde Storage → tablas `aim2026_*` |
+| `aim2026-get-dashboard` | Lecturas AIM + backfill BOM si hace falta |
+| `parse-xero-costs` | P&amp;L Xero (xlsx en `csv-files`) |
+| `ecommerce-load-csv` | Bucket `ecom` → `ecommerce_*` |
+| `ecommerce-sync`, `ecommerce-sync-shopify`, `ecommerce-sync-meta` | APIs → `ecommerce_*` |
+| `aim2026-sync-unleashed`, `aim2026-calc-kpis-v2`, etc. | Sync y KPIs |
+
+---
+
+## Cálculos destacados (Economic)
+
+- **Canales**: mezcla Unleashed + Shopify; exclusiones de canales tipo Shopify en Unleashed.
+- **ROAS semanal**: Shopify / gasto Meta por semana (lunes inicio).
+- **SKUs top**: márgenes usando `costs` / costes cargados.
+
+Lógica principal en `App.tsx` (`channelAnalysis`, `weeklyROAS`, `topSKUs`, etc.).
+
+---
+
+## Manual upload / fallback
+
+Algunas pantallas permiten subir CSV manualmente o abrir Storage desde la UI; el flujo principal AIM pasa por **Settings / Reload** y el bucket **`aim-csv-files`**.
+
+---
+
+## Desarrollo
+
+- Nuevos orígenes: añadir parser en la edge correspondiente, tipos en el cliente y documentar aquí el bucket y nombre de archivo.
+- **No** commitear `service_role`, tokens de Supabase ni claves de APIs en el repo.
+
+---
+
+## Deployment
+
+1. Configurar Supabase (migraciones, buckets, secrets de funciones).
+2. `npm run build` y desplegar el estático.
+3. `supabase functions deploy …` para las funciones que cambien.
+
+Para deploy con CLI hace falta `supabase login` o `SUPABASE_ACCESS_TOKEN` en el entorno (no compartir en chats).

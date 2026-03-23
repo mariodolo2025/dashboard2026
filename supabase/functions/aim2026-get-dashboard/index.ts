@@ -12,6 +12,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { parse as parseCsv } from "https://deno.land/std@0.224.0/csv/parse.ts";
+import {
+  downloadBOMFromBucket,
+  insertBomComponentsBatched,
+  parseBomCsv,
+} from "../_shared/bom.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -66,76 +71,6 @@ function parseUnleashedDate(dateVal: any): string {
   try { return new Date(dateVal).toISOString().slice(0, 10); } catch { return ""; }
 }
 
-// ─── BOM fallback: find by pattern (BOM*, BillOfMaterials*) then read assembled SKUs ─
-async function fetchAssembledFromBOM(supabase: any): Promise<string[]> {
-  const buckets = ["aim-csv-files", "csv-files"];
-  let blob: Blob | null = null;
-
-  for (const bucket of buckets) {
-    const { data: files, error } = await supabase.storage.from(bucket).list();
-    if (error || !files?.length) continue;
-    const bomFiles = files.filter(
-      (f: { name: string }) =>
-        (f.name.toLowerCase().startsWith("bom") ||
-          f.name.toLowerCase().startsWith("billofmaterials")) &&
-        f.name.toLowerCase().endsWith(".csv")
-    );
-    if (bomFiles.length > 0) {
-      bomFiles.sort((a: { updated_at?: string }, b: { updated_at?: string }) =>
-        (b.updated_at || "").localeCompare(a.updated_at || "")
-      );
-      const { data, error: dlErr } = await supabase.storage
-        .from(bucket)
-        .download(bomFiles[0].name);
-      if (!dlErr && data) {
-        blob = data;
-        break;
-      }
-    }
-  }
-
-  if (!blob) {
-    for (const name of ["BillOfMaterialsList.csv", "bom_cleaned_min.csv", "BOM.csv"]) {
-      for (const bucket of buckets) {
-        const { data, error } = await supabase.storage.from(bucket).download(name);
-        if (!error && data) {
-          blob = data;
-          break;
-        }
-      }
-      if (blob) break;
-    }
-  }
-  if (!blob) return [];
-
-  const text = await blob.text();
-  const rows = parseCsv(text, { skipFirstRow: false, lazyQuotes: true }) as string[][];
-  if (!rows || rows.length < 2) return [];
-
-  let headerIndex = -1;
-  let productCodeCol = -1;
-  for (let i = 0; i < Math.min(10, rows.length); i++) {
-    const vals = rows[i].map((v) => String(v || "").toLowerCase().trim());
-    if (vals.some((v) => v.includes("enquiry as of") || v.includes("report"))) continue;
-    const idx = vals.findIndex((v) => v.includes("product code") || v === "productcode" || v === "sku");
-    if (idx >= 0) {
-      headerIndex = i;
-      productCodeCol = idx;
-      break;
-    }
-  }
-  if (headerIndex < 0 || productCodeCol < 0) return [];
-
-  const skus = new Set<string>();
-  let currentAssembly = "";
-  for (let i = headerIndex + 1; i < rows.length; i++) {
-    const assemblyVal = String(rows[i][productCodeCol] ?? "").trim();
-    if (assemblyVal) currentAssembly = assemblyVal;
-    if (currentAssembly) skus.add(currentAssembly);
-  }
-  return Array.from(skus);
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return jsonResponse(null, 200);
@@ -187,22 +122,58 @@ Deno.serve(async (req: Request) => {
         .select("sku");
       if (!assembledErr && assembledRows && assembledRows.length > 0) {
         assembledProductSKUs = assembledRows.map((r: { sku: string }) => r.sku);
-      } else {
-        assembledProductSKUs = await fetchAssembledFromBOM(supabase);
-        if (assembledProductSKUs.length > 0) {
-          await supabase.from("aim2026_assembled_products").delete().gte("sku", "");
-          await supabase.from("aim2026_assembled_products").insert(
-            assembledProductSKUs.map((sku) => ({ sku }))
-          );
-        }
       }
 
-      let bomComponents: Array<{ assembly_sku: string; component_sku: string; quantity_per_assembly: number }> = [];
+      let bomComponents: Array<{
+        assembly_sku: string;
+        component_sku: string;
+        quantity_per_assembly: number;
+      }> = [];
       const { data: bomRows } = await supabase
         .from("aim2026_bom_components")
         .select("assembly_sku, component_sku, quantity_per_assembly");
       if (bomRows && bomRows.length > 0) {
-        bomComponents = bomRows;
+        bomComponents = bomRows as typeof bomComponents;
+      }
+
+      const needAssembled = assembledProductSKUs.length === 0;
+      const needBomComponents = bomComponents.length === 0;
+      if (needAssembled || needBomComponents) {
+        const blob = await downloadBOMFromBucket(supabase);
+        if (blob) {
+          const { assembledSKUs, components } = parseBomCsv(await blob.text());
+
+          if (needAssembled && assembledSKUs.size > 0) {
+            await supabase.from("aim2026_assembled_products").delete().gte("sku", "");
+            const { error: insAsmErr } = await supabase
+              .from("aim2026_assembled_products")
+              .insert(Array.from(assembledSKUs, (sku) => ({ sku })));
+            if (insAsmErr) {
+              console.error("aim2026_assembled_products insert (BOM backfill):", insAsmErr);
+            } else {
+              assembledProductSKUs = Array.from(assembledSKUs);
+              console.log(`BOM backfill: ${assembledProductSKUs.length} assembled SKUs`);
+            }
+          }
+
+          if (needBomComponents && components.length > 0) {
+            const { error: delBomErr } = await supabase
+              .from("aim2026_bom_components")
+              .delete()
+              .gte("assembly_sku", "");
+            if (delBomErr) {
+              console.error("aim2026_bom_components delete (backfill):", delBomErr);
+            } else {
+              await insertBomComponentsBatched(supabase, components);
+              bomComponents = components.map((c) => ({
+                assembly_sku: c.assembly_sku,
+                component_sku: c.component_sku,
+                quantity_per_assembly: c.quantity_per_assembly,
+              }));
+              console.log(`BOM backfill: ${bomComponents.length} component rows`);
+            }
+          }
+        }
       }
 
       return jsonResponse({

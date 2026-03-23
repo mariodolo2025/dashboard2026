@@ -32,6 +32,7 @@ import {
   Upload,
   Database,
   FileUp,
+  Layers,
   FlaskConical,
   Download,
   Brain,
@@ -45,6 +46,7 @@ import {
   loadLeadTimesFromCSV,
   recalculateKPIs,
   reloadFromCSVs,
+  reloadBomFromStorage,
   generatePurchaseCSV,
   fetchSalesForStatus,
   uploadSalesCSV,
@@ -316,8 +318,38 @@ function LeadTimesSection({ defaultLeadTimeDays }: { defaultLeadTimeDays: number
 
 function CSVReloadSection() {
   const [loading, setLoading] = useState(false);
+  const [bomLoading, setBomLoading] = useState(false);
   const [progress, setProgress] = useState<CsvReloadProgress | null>(null);
   const [result, setResult] = useState<{ success: boolean; message: string; errors: string[] } | null>(null);
+  const [bomResult, setBomResult] = useState<{ success: boolean; message: string; errors: string[] } | null>(null);
+
+  const handleBomOnly = async () => {
+    if (
+      !confirm(
+        'Reload only BOM from Storage? This updates aim2026_assembled_products and aim2026_bom_components from the latest BOM_*.csv (or BillOfMaterials*.csv). Sales, SOH, and production data are not touched.'
+      )
+    ) {
+      return;
+    }
+    setBomLoading(true);
+    setBomResult(null);
+    try {
+      const res = await reloadBomFromStorage();
+      setBomResult({
+        success: res.success,
+        message: res.message,
+        errors: res.errors,
+      });
+    } catch (e) {
+      setBomResult({
+        success: false,
+        message: e instanceof Error ? e.message : 'Unknown error',
+        errors: [],
+      });
+    } finally {
+      setBomLoading(false);
+    }
+  };
 
   const handleReload = async () => {
     if (!confirm('This will reload ALL data from CSV files in the Supabase bucket and recalculate KPIs. Existing demand history will be replaced. Continue?')) return;
@@ -350,11 +382,33 @@ function CSVReloadSection() {
           </p>
         </div>
 
+        <div className="bg-muted/20 rounded-md px-3 py-2 border border-dashed border-muted-foreground/25">
+          <p className="text-[10px] text-muted-foreground leading-relaxed mb-2">
+            <strong>BOM only:</strong> use when you uploaded a new <code className="text-[9px]">BOM_*.csv</code> and
+            only need <code className="text-[9px]">aim2026_assembled_products</code> +{' '}
+            <code className="text-[9px]">aim2026_bom_components</code> refreshed — no KPI recalculation.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleBomOnly}
+            disabled={loading || bomLoading}
+            className="gap-1.5 text-xs w-full"
+          >
+            {bomLoading ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Layers size={13} />
+            )}
+            {bomLoading ? 'Reloading BOM…' : 'Reload BOM only (from Storage)'}
+          </Button>
+        </div>
+
         <Button
           variant="outline"
           size="sm"
           onClick={handleReload}
-          disabled={loading}
+          disabled={loading || bomLoading}
           className="gap-1.5 text-xs w-full"
         >
           {loading ? (
@@ -378,6 +432,35 @@ function CSVReloadSection() {
             <p className="text-[10px] text-muted-foreground text-center">
               {progress.label} ({progress.progress}%)
             </p>
+          </div>
+        )}
+
+        {bomResult && (
+          <div
+            className={cn(
+              'rounded-md px-3 py-2 text-[10px] space-y-1',
+              bomResult.success
+                ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300'
+                : 'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300'
+            )}
+          >
+            <div className="flex items-start gap-1.5">
+              {bomResult.success ? (
+                <CheckCircle size={12} className="mt-0.5 flex-shrink-0" />
+              ) : (
+                <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+              )}
+              <span className="leading-relaxed">{bomResult.message}</span>
+            </div>
+            {bomResult.errors.length > 0 && (
+              <ul className="ml-4 space-y-0.5 list-disc">
+                {bomResult.errors.map((err, i) => (
+                  <li key={i} className="text-[9px]">
+                    {err}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 

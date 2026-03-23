@@ -157,6 +157,48 @@ export async function loadFromCSV(
   };
 }
 
+/** Refresh only BOM tables from latest BOM_*.csv in Storage (no SOH/sales/production CSVs). */
+export async function reloadBomFromStorage(): Promise<{
+  success: boolean;
+  assemblies: number;
+  components: number;
+  message: string;
+  errors: string[];
+}> {
+  try {
+    const result = await callFunction<{
+      success: boolean;
+      step: string;
+      result: Record<string, number>;
+      errors: string[];
+      durationMs: number;
+    }>('aim2026-csv-load', { step: 'bom' });
+
+    const assemblies = result.result?.bomAssemblies ?? 0;
+    const components = result.result?.bomComponents ?? 0;
+    const errs = result.errors ?? [];
+    const ok = result.success !== false && errs.length === 0;
+
+    return {
+      success: ok,
+      assemblies,
+      components,
+      message: ok
+        ? `BOM updated: ${assemblies} assembled SKUs, ${components} component lines`
+        : errs.join('; ') || 'BOM reload failed',
+      errors: errs,
+    };
+  } catch (e) {
+    return {
+      success: false,
+      assemblies: 0,
+      components: 0,
+      message: e instanceof Error ? e.message : 'Failed to reload BOM',
+      errors: [e instanceof Error ? e.message : String(e)],
+    };
+  }
+}
+
 /** Load lead times from ProductList.csv (calls the 'leadtimes' step of csv-load) */
 export async function loadLeadTimesFromCSV(): Promise<{
   success: boolean;

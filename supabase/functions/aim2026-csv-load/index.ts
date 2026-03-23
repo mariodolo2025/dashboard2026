@@ -12,7 +12,8 @@
 //   - costs.csv                 → aim2026_sku_parameters (product_cost_china)
 //   - PurchaseEnquiryList.csv   → aim2026_soh_snapshots (Container/DHL/On Production)
 //   - ProductList.csv           → aim2026_sku_parameters (lead_time_days)
-//   - BillOfMaterialsList.csv   → assembled product detection for ROD
+//   - BOM*.csv / BillOfMaterialsList.csv → aim2026_assembled_products + aim2026_bom_components (shared _shared/bom.ts)
+//   - step "bom" only → refresh those two tables from latest BOM CSV (no ProductionEnquiryList)
 //
 // Bucket strategy: tries 'aim-csv-files' first, falls back to 'csv-files'.
 // After loading, the sync button only needs to fetch incremental updates.
@@ -21,6 +22,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { parse } from "https://deno.land/std@0.224.0/csv/parse.ts";
+import {
+  downloadBOMFromBucket,
+  insertBomComponentsBatched,
+  parseBomCsv,
+} from "../_shared/bom.ts";
 
 // ─── CORS ──────────────────────────────────────────────────────────────────
 
@@ -65,41 +71,6 @@ async function downloadFromBucket(
   return null;
 }
 
-/** Find BOM file by pattern (BOM*, BillOfMaterials*) - names vary with date/time. Returns blob or null. */
-async function downloadBOMFromBucket(supabase: any): Promise<Blob | null> {
-  const buckets = ["aim-csv-files", "csv-files"];
-  const FIXED_NAMES = ["BillOfMaterialsList.csv", "bom_cleaned_min.csv", "BOM.csv"];
-
-  for (const bucket of buckets) {
-    const { data: files, error } = await supabase.storage.from(bucket).list();
-    if (error || !files?.length) continue;
-
-    const bomFiles = files.filter(
-      (f: { name: string }) =>
-        (f.name.toLowerCase().startsWith("bom") ||
-          f.name.toLowerCase().startsWith("billofmaterials")) &&
-        f.name.toLowerCase().endsWith(".csv")
-    );
-
-    if (bomFiles.length > 0) {
-      bomFiles.sort((a: { updated_at?: string }, b: { updated_at?: string }) =>
-        (b.updated_at || "").localeCompare(a.updated_at || "")
-      );
-      const name = bomFiles[0].name;
-      const { data, error: dlErr } = await supabase.storage.from(bucket).download(name);
-      if (!dlErr && data) {
-        console.log(`✓ BOM: downloaded "${name}" from ${bucket} (${data.size} bytes)`);
-        return data;
-      }
-    }
-  }
-
-  return downloadFromBucket(supabase, "BillOfMaterialsList.csv", [
-    "bom_cleaned_min.csv",
-    "BOM.csv",
-  ]);
-}
-
 // ─── CSV Parsing Helpers ───────────────────────────────────────────────────
 
 const HEADER_KEYWORDS: Record<string, Record<string, string[]>> = {
@@ -142,23 +113,6 @@ const HEADER_KEYWORDS: Record<string, Record<string, string[]>> = {
     "Assembly Status": ["assembly status"],
     "Product Group": ["product group", "productgroup", "group"],
     "Total Cost": ["total cost", "cost"],
-  },
-  bom: {
-    "Assembly Product Code": [
-      "assembly product code",
-      "assembly product",
-      "assembly",
-      "product code",
-      "productcode",
-      "sku",
-    ],
-    "Component Product Code": [
-      "component product code",
-      "component product",
-      "component",
-      "component code",
-    ],
-    Quantity: ["quantity", "qty", "*quantity"],
   },
 };
 
@@ -347,64 +301,6 @@ async function loadSOHFromCSV(
   }
 
   return { sohRows: sohInserts.length, productRows: productUpserts.length };
-}
-
-// ─── Load BOM (Bill of Materials) ─────────────────────────────────────────
-// Returns assembled SKUs + components. Rows with empty Assembly inherit from previous row.
-
-function loadBOM(bomText: string): {
-  assembledSKUs: Set<string>;
-  components: Array<{ assembly_sku: string; component_sku: string; quantity_per_assembly: number }>;
-} {
-  const assembledSKUs = new Set<string>();
-  const components: Array<{
-    assembly_sku: string;
-    component_sku: string;
-    quantity_per_assembly: number;
-  }> = [];
-
-  try {
-    const rawData: string[][] = parse(bomText, { skipFirstRow: false, lazyQuotes: true });
-    const { headerIndex, headerMap } = findHeaderRow(rawData, "bom");
-    const dataRows = rawData.slice(headerIndex + 1);
-
-    const assemblyCol = headerMap["Assembly Product Code"];
-    const componentCol = headerMap["Component Product Code"];
-    const qtyCol = headerMap["Quantity"];
-
-    if (assemblyCol === undefined) {
-      console.warn("BOM: no Assembly Product Code column found");
-      return { assembledSKUs, components };
-    }
-
-    let currentAssembly = "";
-    for (const row of dataRows) {
-      const assemblyVal = String(row[assemblyCol] ?? "").trim();
-      if (assemblyVal) currentAssembly = assemblyVal;
-      if (!currentAssembly) continue;
-
-      assembledSKUs.add(currentAssembly);
-
-      if (componentCol !== undefined) {
-        const componentVal = String(row[componentCol] ?? "").trim();
-        if (componentVal) {
-          const qty = qtyCol !== undefined ? toNumber(row[qtyCol]) : 1;
-          const qtyNum = qty > 0 ? qty : 1;
-          components.push({
-            assembly_sku: currentAssembly,
-            component_sku: componentVal,
-            quantity_per_assembly: qtyNum,
-          });
-        }
-      }
-    }
-    console.log(
-      `BOM: ${assembledSKUs.size} assembled products, ${components.length} component rows`
-    );
-  } catch (e) {
-    console.warn("BOM parsing failed (non-critical):", e);
-  }
-  return { assembledSKUs, components };
 }
 
 // ─── Load Sales from CSV → Demand History ─────────────────────────────────
@@ -1128,6 +1024,73 @@ Deno.serve(async (req: Request) => {
     const errors: string[] = [];
     const result: Record<string, number> = {};
 
+    // ── BOM only (latest BOM_*.csv — does not touch production/demand) ──
+    if (step === "bom") {
+      const bomBlob = await downloadBOMFromBucket(supabase);
+      if (!bomBlob) {
+        return jsonResponse({
+          success: false,
+          step,
+          result: {},
+          errors: [
+            "No BOM CSV found in aim-csv-files or csv-files (BOM_*.csv, BillOfMaterials*.csv, BillOfMaterialsList.csv, etc.)",
+          ],
+          durationMs: Date.now() - startTime,
+        });
+      }
+      try {
+        const { assembledSKUs, components } = parseBomCsv(await bomBlob.text());
+        if (assembledSKUs.size === 0 && components.length === 0) {
+          return jsonResponse({
+            success: false,
+            step,
+            result: { bomAssemblies: 0, bomComponents: 0 },
+            errors: ["BOM file parsed but no assemblies or components found"],
+            durationMs: Date.now() - startTime,
+          });
+        }
+        if (assembledSKUs.size > 0) {
+          const { error: delErr } = await supabase.from("aim2026_assembled_products").delete().gte("sku", "");
+          if (delErr) console.error("aim2026_assembled_products delete (bom step):", delErr);
+          const { error: insErr } = await supabase
+            .from("aim2026_assembled_products")
+            .insert(Array.from(assembledSKUs, (sku) => ({ sku })));
+          if (insErr) {
+            return jsonResponse({
+              success: false,
+              step,
+              result: {},
+              errors: [`aim2026_assembled_products: ${insErr.message}`],
+              durationMs: Date.now() - startTime,
+            });
+          }
+        }
+        if (components.length > 0) {
+          const { error: delBomErr } = await supabase.from("aim2026_bom_components").delete().gte("assembly_sku", "");
+          if (delBomErr) console.error("aim2026_bom_components delete (bom step):", delBomErr);
+          await insertBomComponentsBatched(supabase, components);
+        }
+        return jsonResponse({
+          success: true,
+          step,
+          result: {
+            bomAssemblies: assembledSKUs.size,
+            bomComponents: components.length,
+          },
+          errors: [],
+          durationMs: Date.now() - startTime,
+        });
+      } catch (e) {
+        return jsonResponse({
+          success: false,
+          step,
+          result: {},
+          errors: [`BOM: ${e instanceof Error ? e.message : String(e)}`],
+          durationMs: Date.now() - startTime,
+        });
+      }
+    }
+
     // ── SOH step ──────────────────────────────────────────────────
     if (step === "soh" || step === "all") {
       const blob = await downloadFromBucket(supabase, "SOHList.csv");
@@ -1238,7 +1201,7 @@ Deno.serve(async (req: Request) => {
 
       if (bomBlob) {
         try {
-          const bomResult = loadBOM(await bomBlob.text());
+          const bomResult = parseBomCsv(await bomBlob.text());
           assembledSKUs = bomResult.assembledSKUs;
           bomComponents = bomResult.components;
         } catch {
@@ -1258,14 +1221,8 @@ Deno.serve(async (req: Request) => {
       if (bomComponents.length > 0) {
         const { error: delBomErr } = await supabase.from("aim2026_bom_components").delete().gte("assembly_sku", "");
         if (delBomErr) console.error("aim2026_bom_components delete error:", delBomErr);
-        const bomInsertRows = bomComponents.map((c) => ({
-          assembly_sku: c.assembly_sku,
-          component_sku: c.component_sku,
-          quantity_per_assembly: c.quantity_per_assembly,
-        }));
-        const { error: insBomErr } = await supabase.from("aim2026_bom_components").insert(bomInsertRows);
-        if (insBomErr) console.error("aim2026_bom_components insert error:", insBomErr);
-        else console.log(`BOM components: ${bomComponents.length} rows saved`);
+        await insertBomComponentsBatched(supabase, bomComponents);
+        console.log(`BOM components: ${bomComponents.length} rows saved (batched)`);
       }
 
       if (blob) {

@@ -132,6 +132,24 @@ function extractPeriodEndDate(worksheet: any, range: XLSX.Range): string | undef
   return undefined;
 }
 
+/** P&L summary / section rows — not individual expense lines */
+function shouldSkipPlAccountRow(name: string): boolean {
+  const n = name.trim();
+  if (!n) return true;
+  const lower = n.toLowerCase();
+  if (lower.startsWith('total ')) return true;
+  if (lower === 'net profit' || lower.startsWith('net profit ')) return true;
+  if (lower === 'gross profit' || lower.startsWith('gross profit ')) return true;
+  if (
+    lower === 'operating expenses' ||
+    lower === 'trading income' ||
+    lower === 'cost of sales'
+  ) {
+    return true;
+  }
+  return false;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -201,7 +219,10 @@ Deno.serve(async (req: Request) => {
 
     const items: CostItem[] = [];
 
-    for (let row = 18; row <= 47; row++) {
+    const firstAccountRow = 18;
+    const lastAccountRow = Math.min(range.e.r, 200);
+
+    for (let row = firstAccountRow; row <= lastAccountRow; row++) {
       const nameCell = worksheet[XLSX.utils.encode_cell({ r: row, c: 0 })];
 
       if (!nameCell || !nameCell.v) {
@@ -209,7 +230,7 @@ Deno.serve(async (req: Request) => {
       }
 
       const itemName = String(nameCell.v).trim();
-      if (!itemName) {
+      if (!itemName || shouldSkipPlAccountRow(itemName)) {
         continue;
       }
 
