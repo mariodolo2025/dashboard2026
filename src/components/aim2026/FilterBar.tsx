@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
+import { cn } from '@/lib/utils';
 import type { AIM2026Filters, ABCClass, StockStatus } from '@/lib/aim2026/types';
 import { DEFAULT_FILTERS, TOGGLEABLE_COLUMNS, DEMAND_MODE_OPTIONS } from '@/lib/aim2026/types';
 
