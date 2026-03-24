@@ -331,6 +331,41 @@ async function loadDemandDetailSummary(
   return { breakdownMap, channelSplit };
 }
 
+// Load BOM components — used to attribute component demand to the correct channel.
+// Returns: componentSku → list of { assemblySku, bomQty }
+async function loadBomComponents(
+  supabase: any
+): Promise<Map<string, Array<{ assemblySku: string; bomQty: number }>>> {
+  const allData: any[] = [];
+  let offset = 0;
+  let hasMore = true;
+  while (hasMore) {
+    const { data, error } = await supabase
+      .from("aim2026_bom_components")
+      .select("assembly_sku, component_sku, quantity")
+      .range(offset, offset + 999);
+    if (error) {
+      console.warn(`[${VERSION}] Could not load BOM components: ${error.message}`);
+      break;
+    }
+    allData.push(...(data ?? []));
+    hasMore = (data?.length ?? 0) === 1000;
+    offset += 1000;
+  }
+  console.log(`[${VERSION}] Loaded ${allData.length} BOM component rows`);
+  const map = new Map<string, Array<{ assemblySku: string; bomQty: number }>>();
+  for (const row of allData) {
+    const component = String(row.component_sku ?? "").trim();
+    const assembly = String(row.assembly_sku ?? "").trim();
+    const qty = Number(row.quantity ?? 1);
+    if (!component || !assembly) continue;
+    const list = map.get(component) ?? [];
+    list.push({ assemblySku: assembly, bomQty: qty });
+    map.set(component, list);
+  }
+  return map;
+}
+
 // ─── KPI Calculations ──────────────────────────────────────────────────────
 
 /** Compute weight for a month based on how many days fall within [rangeFrom, rangeTo] */
@@ -542,15 +577,36 @@ Deno.serve(async (req: Request) => {
     console.log(`[${VERSION}] Demand mode: ${demandMode}`);
 
     // ── Load all data ────────────────────────────────────────────
-    const [config, skuParams, sohMap, demandMap, demandDetailResult] = await Promise.all([
+    const [config, skuParams, sohMap, demandMap, demandDetailResult, bomComponentMap] = await Promise.all([
       loadConfig(supabase),
       loadSKUParameters(supabase),
       loadTodaySOH(supabase),
       loadDemandHistory(supabase, dateRangeStart, dateRangeEnd),
       loadDemandDetailSummary(supabase, dateRangeStart, dateRangeEnd),
+      loadBomComponents(supabase),
     ]);
     const demandDetailMap = demandDetailResult.breakdownMap;
     const channelSplitMap = demandDetailResult.channelSplit;
+
+    // ── Build assembly B2C fraction map ─────────────────────────
+    // For component SKUs, demand comes mostly from componentUsage (assembly production),
+    // not from direct sales. We weight each parent assembly's B2C fraction by the BOM
+    // quantity to get an effective B2C fraction for the component's assembly-derived demand.
+    const assemblyB2cFractionMap = new Map<string, number>();
+    for (const [componentSku, parents] of bomComponentMap) {
+      let totalWeighted = 0;
+      let b2cWeighted = 0;
+      for (const { assemblySku, bomQty } of parents) {
+        const split = channelSplitMap.get(assemblySku);
+        if (!split) continue;
+        const total = split.b2b + split.b2c;
+        totalWeighted += total * bomQty;
+        b2cWeighted += split.b2c * bomQty;
+      }
+      if (totalWeighted > 0) {
+        assemblyB2cFractionMap.set(componentSku, b2cWeighted / totalWeighted);
+      }
+    }
 
     // ── Compute ABC Classification ───────────────────────────────
     const skuRevenues: { sku: string; revenue: number }[] = [];
@@ -726,8 +782,26 @@ Deno.serve(async (req: Request) => {
           availableChina: chinaWH.available,
           allocatedTotal,
           projectedDemand: Math.round(demandStats.avgMonthly),
-          demandB2b: Math.round(channelSplitMap.get(sku)?.b2b ?? 0),
-          demandB2c: Math.round(channelSplitMap.get(sku)?.b2c ?? 0),
+          ...(() => {
+            // Direct sales channel split
+            const directSplit = channelSplitMap.get(sku) ?? { b2b: 0, b2c: 0 };
+            // Weighted component usage for this SKU (same weights used in calcDemandStats)
+            const mWeights = useWeightedDemand
+              ? demandMonths.map((m) => getMonthWeight(m.periodDate, rangeFrom!, rangeTo!))
+              : demandMonths.map(() => 1);
+            const weightedCompUsage = demandMonths.reduce(
+              (sum, m, i) => sum + m.componentUsage * (mWeights[i] ?? 1),
+              0
+            );
+            // Assembly-attributed B2C: fraction derived from BOM parent assemblies' sales
+            const assemblyFraction = assemblyB2cFractionMap.get(sku) ?? 0;
+            const assemblyB2c = assemblyFraction * weightedCompUsage;
+            const assemblyB2b = (1 - assemblyFraction) * weightedCompUsage;
+            return {
+              demandB2b: Math.round(directSplit.b2b + assemblyB2b),
+              demandB2c: Math.round(directSplit.b2c + assemblyB2c),
+            };
+          })(),
           demandTrend: demandStats.trend,
           demandTrendPercent: Math.round(demandStats.trendPercent * 10) / 10,
           reorderPoint,
