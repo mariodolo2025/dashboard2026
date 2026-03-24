@@ -787,23 +787,36 @@ Deno.serve(async (req: Request) => {
           allocatedTotal,
           projectedDemand: Math.round(demandStats.avgMonthly),
           ...(() => {
-            // Direct sales channel split
+            const projDemand = Math.round(demandStats.avgMonthly);
+            if (projDemand === 0) return { demandB2b: 0, demandB2c: 0 };
+
+            // directSplit is a TOTAL over the filtered period (all statuses)
             const directSplit = channelSplitMap.get(sku) ?? { b2b: 0, b2c: 0 };
-            // Weighted component usage for this SKU (same weights used in calcDemandStats)
+
+            // weightedCompUsageTotal: keep as period TOTAL (same units as directSplit)
+            // so the fraction is computed consistently
             const mWeights = useWeightedDemand
               ? demandMonths.map((m) => getMonthWeight(m.periodDate, rangeFrom!, rangeTo!))
               : demandMonths.map(() => 1);
-            const weightedCompUsage = demandMonths.reduce(
+            const weightedCompUsageTotal = demandMonths.reduce(
               (sum, m, i) => sum + m.componentUsage * (mWeights[i] ?? 1),
               0
             );
-            // Assembly-attributed B2C: fraction derived from BOM parent assemblies' sales
+
+            // Assembly B2C fraction: weighted by BOM-parent sales
             const assemblyFraction = assemblyB2cFractionMap.get(sku) ?? 0;
-            const assemblyB2c = assemblyFraction * weightedCompUsage;
-            const assemblyB2b = (1 - assemblyFraction) * weightedCompUsage;
+
+            // Overall B2C fraction = (direct_b2c + assembly_b2c) / (direct_total + comp_total)
+            const b2cNumerator = directSplit.b2c + assemblyFraction * weightedCompUsageTotal;
+            const totalDenominator = directSplit.b2b + directSplit.b2c + weightedCompUsageTotal;
+
+            const b2cFraction = totalDenominator > 0 ? b2cNumerator / totalDenominator : 0;
+
+            // Apply fraction to projectedDemand so B2B + B2C = projectedDemand exactly
+            const demandB2c = Math.round(projDemand * b2cFraction);
             return {
-              demandB2b: Math.round(directSplit.b2b + assemblyB2b),
-              demandB2c: Math.round(directSplit.b2c + assemblyB2c),
+              demandB2c,
+              demandB2b: projDemand - demandB2c,
             };
           })(),
           demandTrend: demandStats.trend,
