@@ -330,7 +330,7 @@ Deno.serve(async (req: Request) => {
       while (true) {
         let query = supabase
           .from("aim2026_demand_detail")
-          .select("period_date, status, quantity, warehouse")
+          .select("period_date, status, quantity, warehouse, customer_type")
           .eq("sku", sku)
           .eq("type", "sale")
           .order("period_date", { ascending: true })
@@ -354,16 +354,35 @@ Deno.serve(async (req: Request) => {
         return s.length >= 7 ? `${s}-01` : d;
       }
 
-      const breakdownMap = new Map<string, { completed: number; placed: number; parked: number; backordered: number }>();
+      // B2C = Shopify / Web / B2C customer types; everything else is B2B
+      function isB2C(customerType: string): boolean {
+        const ct = String(customerType ?? "").toLowerCase().trim();
+        return ct === "shopify" || ct === "b2c" || ct === "web" || ct.includes("shopify");
+      }
+
+      const breakdownMap = new Map<string, {
+        completed: number; placed: number; parked: number; backordered: number;
+        b2b: number; b2c: number;
+      }>();
       for (const row of detailRows) {
         const key = toMonthKey(row.period_date);
-        const existing = breakdownMap.get(key) ?? { completed: 0, placed: 0, parked: 0, backordered: 0 };
+        const existing = breakdownMap.get(key) ?? { completed: 0, placed: 0, parked: 0, backordered: 0, b2b: 0, b2c: 0 };
         const status = String(row.status ?? "").toLowerCase();
         const qty = Number(row.quantity ?? 0);
-        if (status === "completed") existing.completed += qty;
-        else if (status === "placed") existing.placed += qty;
-        else if (status === "parked") existing.parked += qty;
-        else if (status === "backordered") existing.backordered += qty;
+        if (status === "completed") {
+          existing.completed += qty;
+          if (isB2C(row.customer_type)) {
+            existing.b2c += qty;
+          } else {
+            existing.b2b += qty;
+          }
+        } else if (status === "placed") {
+          existing.placed += qty;
+        } else if (status === "parked") {
+          existing.parked += qty;
+        } else if (status === "backordered") {
+          existing.backordered += qty;
+        }
         breakdownMap.set(key, existing);
       }
 
@@ -393,6 +412,8 @@ Deno.serve(async (req: Request) => {
           quantity_placed: b?.placed ?? 0,
           quantity_parked: b?.parked ?? 0,
           quantity_backordered: b?.backordered ?? 0,
+          quantity_b2b: b?.b2b ?? 0,
+          quantity_b2c: b?.b2c ?? 0,
         };
       });
 

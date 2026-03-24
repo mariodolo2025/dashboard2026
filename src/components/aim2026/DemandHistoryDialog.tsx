@@ -30,6 +30,7 @@ import {
   Download,
   Loader2,
   Warehouse,
+  SplitSquareHorizontal,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { SKURow, TrendDirection } from '@/lib/aim2026/types';
@@ -55,6 +56,8 @@ interface DemandMonth {
   totalDemand: number; // Sales + Comp Usage + Placed + Backordered (+ Parked if enabled)
   revenue: number;
   movingAvg: number;
+  quantityB2b: number; // Completed B2B sales
+  quantityB2c: number; // Completed B2C (Shopify/Web) sales
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -77,17 +80,19 @@ async function fetchDemandHistory(sku: string, warehouse = 'all'): Promise<Deman
     if (!json.success || !json.data) return [];
 
     // Group by month (use quantity_completed, quantity_placed, quantity_parked when available)
-    const monthMap = new Map<string, { sold: number; placed: number; parked: number; backordered: number; revenue: number; compUsage: number }>();
+    const monthMap = new Map<string, { sold: number; placed: number; parked: number; backordered: number; revenue: number; compUsage: number; b2b: number; b2c: number }>();
     for (const row of json.data) {
       const d = new Date(row.period_date);
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const existing = monthMap.get(key) ?? { sold: 0, placed: 0, parked: 0, backordered: 0, revenue: 0, compUsage: 0 };
+      const existing = monthMap.get(key) ?? { sold: 0, placed: 0, parked: 0, backordered: 0, revenue: 0, compUsage: 0, b2b: 0, b2c: 0 };
       existing.sold += Number(row.quantity_completed ?? row.quantity_sold ?? 0);
       existing.placed += Number(row.quantity_placed ?? 0);
       existing.parked += Number(row.quantity_parked ?? 0);
       existing.backordered += Number(row.quantity_backordered ?? 0);
       existing.revenue += Number(row.revenue ?? 0);
       existing.compUsage += Number(row.component_usage ?? 0);
+      existing.b2b += Number(row.quantity_b2b ?? 0);
+      existing.b2c += Number(row.quantity_b2c ?? 0);
       monthMap.set(key, existing);
     }
 
@@ -111,6 +116,8 @@ async function fetchDemandHistory(sku: string, warehouse = 'all'): Promise<Deman
         totalDemand: Math.round(totalDemand),
         revenue: Math.round(val.revenue),
         movingAvg: 0,
+        quantityB2b: Math.round(val.b2b),
+        quantityB2c: Math.round(val.b2c),
       };
     });
 
@@ -212,6 +219,7 @@ export function DemandHistoryDialog({ open, onOpenChange, sku }: DemandHistoryDi
   const [loading, setLoading] = useState(false);
   const [downloadingMonth, setDownloadingMonth] = useState<string | null>(null);
   const [selectedWarehouse, setSelectedWarehouse] = useState('all');
+  const [showChannelSplit, setShowChannelSplit] = useState(false);
 
   // Fetch demand data when dialog opens or warehouse changes
   useEffect(() => {
@@ -340,6 +348,17 @@ export function DemandHistoryDialog({ open, onOpenChange, sku }: DemandHistoryDi
                     <span className={cn('text-sm font-bold', trendColor)}>{trendLabel}</span>
                   </div>
                 </div>
+                {/* B2B/B2C totals when split is active */}
+                {showChannelSplit && (() => {
+                  const totalB2b = demandData.reduce((s, d) => s + d.quantityB2b, 0);
+                  const totalB2c = demandData.reduce((s, d) => s + d.quantityB2c, 0);
+                  return (
+                    <>
+                      <StatPill label="B2B 12M" value={totalB2b.toLocaleString()} color="text-blue-600 dark:text-blue-400" />
+                      <StatPill label="B2C 12M" value={totalB2c.toLocaleString()} color="text-violet-600 dark:text-violet-400" />
+                    </>
+                  );
+                })()}
               </div>
 
               {/* ── Main Chart ────────────────────────────────────────────── */}
@@ -460,25 +479,100 @@ export function DemandHistoryDialog({ open, onOpenChange, sku }: DemandHistoryDi
 
               {/* ── Monthly Breakdown Table ────────────────────────────────── */}
               <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                  Monthly Breakdown
-                  <span className="text-[9px] ml-2 font-normal normal-case text-blue-500/70">
-                    Click demand value to download CSV
-                  </span>
-                </h3>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                    Monthly Breakdown
+                    <span className="text-[9px] ml-1 font-normal normal-case text-blue-500/70">
+                      · Click Sales to download CSV
+                    </span>
+                  </h3>
+                  <button
+                    onClick={() => setShowChannelSplit((v) => !v)}
+                    className={cn(
+                      'flex items-center gap-1.5 text-[10px] font-medium px-2 py-1 rounded-md border transition-colors',
+                      showChannelSplit
+                        ? 'bg-violet-100 dark:bg-violet-900/40 border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300'
+                        : 'bg-muted/40 border-border/40 text-muted-foreground hover:text-foreground hover:bg-muted/70'
+                    )}
+                    title="Toggle B2B / B2C channel split"
+                  >
+                    <SplitSquareHorizontal size={11} />
+                    B2B / B2C
+                  </button>
+                </div>
+
                 <div className="border rounded-lg overflow-hidden">
-                  <div className="grid grid-cols-7 text-[10px] uppercase tracking-wider font-medium text-muted-foreground bg-muted/50 px-3 py-2">
-                    <span>Month</span>
-                    <span className="text-right">Sales</span>
-                    <span className="text-right">Placed</span>
-                    <span className="text-right">Parked</span>
-                    <span className="text-right">Comp. Usage</span>
-                    <span className="text-right">Revenue</span>
-                    <span className="text-right">vs Avg</span>
-                  </div>
+                  {/* Header — switches between normal (7 cols) and split (8 cols) */}
+                  {showChannelSplit ? (
+                    <div className="grid grid-cols-8 text-[10px] uppercase tracking-wider font-medium text-muted-foreground bg-muted/50 px-3 py-2">
+                      <span>Month</span>
+                      <span className="text-right text-blue-600 dark:text-blue-400">B2B</span>
+                      <span className="text-right text-violet-600 dark:text-violet-400">B2C</span>
+                      <span className="text-right">Placed</span>
+                      <span className="text-right">Parked</span>
+                      <span className="text-right">Comp. Usage</span>
+                      <span className="text-right">Revenue</span>
+                      <span className="text-right">vs Avg</span>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-7 text-[10px] uppercase tracking-wider font-medium text-muted-foreground bg-muted/50 px-3 py-2">
+                      <span>Month</span>
+                      <span className="text-right">Sales</span>
+                      <span className="text-right">Placed</span>
+                      <span className="text-right">Parked</span>
+                      <span className="text-right">Comp. Usage</span>
+                      <span className="text-right">Revenue</span>
+                      <span className="text-right">vs Avg</span>
+                    </div>
+                  )}
+
                   {demandData.map((d, i) => {
                     const vsAvg = stats.avg > 0 ? ((d.totalDemand - stats.avg) / stats.avg) * 100 : 0;
                     const isDownloading = downloadingMonth === d.yearMonth;
+
+                    if (showChannelSplit) {
+                      return (
+                        <div
+                          key={i}
+                          className="grid grid-cols-8 text-xs px-3 py-1.5 border-t border-border/30 hover:bg-muted/20 transition-colors"
+                        >
+                          <span className="text-muted-foreground">{d.fullMonth}</span>
+                          <button
+                            onClick={() => handleMonthDownload(d.yearMonth, d.fullMonth)}
+                            disabled={isDownloading}
+                            className="text-right tabular-nums font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 hover:underline cursor-pointer transition-colors flex items-center justify-end gap-1 disabled:opacity-50 disabled:cursor-wait"
+                            title={`Download transactions for ${d.fullMonth}`}
+                          >
+                            {isDownloading ? <Loader2 size={10} className="animate-spin" /> : <Download size={9} className="opacity-40" />}
+                            {d.quantityB2b > 0 ? d.quantityB2b.toLocaleString() : '—'}
+                          </button>
+                          <span className="text-right tabular-nums font-medium text-violet-600 dark:text-violet-400">
+                            {d.quantityB2c > 0 ? d.quantityB2c.toLocaleString() : '—'}
+                          </span>
+                          <span className="text-right tabular-nums text-muted-foreground">
+                            {d.quantityPlaced > 0 ? d.quantityPlaced.toLocaleString() : '—'}
+                          </span>
+                          <span className="text-right tabular-nums text-muted-foreground">
+                            {d.quantityParked > 0 ? d.quantityParked.toLocaleString() : '—'}
+                          </span>
+                          <span className="text-right tabular-nums text-muted-foreground">
+                            {d.componentUsage > 0 ? d.componentUsage.toLocaleString() : '—'}
+                          </span>
+                          <span className="text-right tabular-nums text-muted-foreground">
+                            {d.revenue > 0 ? `$${d.revenue.toLocaleString()}` : '—'}
+                          </span>
+                          <span
+                            className={cn(
+                              'text-right tabular-nums font-medium',
+                              vsAvg > 0 ? 'text-emerald-600' : vsAvg < -10 ? 'text-red-500' : 'text-muted-foreground'
+                            )}
+                          >
+                            {vsAvg > 0 ? '+' : ''}{vsAvg.toFixed(1)}%
+                          </span>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div
                         key={i}
