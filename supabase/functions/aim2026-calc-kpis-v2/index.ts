@@ -250,12 +250,22 @@ async function loadDemandHistory(
   return map;
 }
 
+// B2C customer types (matches classification in demand_history action)
+function isB2CCustomerType(customerType: string): boolean {
+  const ct = String(customerType ?? "").toLowerCase().trim();
+  return ct === "shopify" || ct === "b2c" || ct === "web" || ct.includes("shopify");
+}
+
 // Load demand_detail (sales) and aggregate by SKU + period + status.
+// Also computes per-SKU B2B/B2C totals from completed sales.
 async function loadDemandDetailSummary(
   supabase: any,
   startDate?: string,
   endDate?: string
-): Promise<Map<string, Map<string, { placed: number; backordered: number; parked: number }>>> {
+): Promise<{
+  breakdownMap: Map<string, Map<string, { placed: number; backordered: number; parked: number }>>;
+  channelSplit: Map<string, { b2b: number; b2c: number }>;
+}> {
   const allData: any[] = [];
   const pageSize = 1000;
   let offset = 0;
@@ -264,7 +274,7 @@ async function loadDemandDetailSummary(
   while (hasMore) {
     let query = supabase
       .from("aim2026_demand_detail")
-      .select("sku, period_date, status, quantity")
+      .select("sku, period_date, status, quantity, customer_type")
       .eq("type", "sale")
       .range(offset, offset + pageSize - 1);
     if (startDate) query = query.gte("period_date", startDate);
@@ -287,24 +297,38 @@ async function loadDemandDetailSummary(
     return s.length >= 7 ? `${s}-01` : d;
   }
 
-  const bySku = new Map<string, Map<string, { placed: number; backordered: number; parked: number }>>();
+  const breakdownMap = new Map<string, Map<string, { placed: number; backordered: number; parked: number }>>();
+  const channelSplit = new Map<string, { b2b: number; b2c: number }>();
+
   for (const row of allData) {
     const sku = row.sku;
     const period = toMonthKey(row.period_date);
     const status = String(row.status ?? "").toLowerCase();
     if (!sku || !period) continue;
 
-    const skuMap = bySku.get(sku) ?? new Map<string, { placed: number; backordered: number; parked: number }>();
-    const existing = skuMap.get(period) ?? { placed: 0, backordered: 0, parked: 0 };
     const qty = Number(row.quantity ?? 0);
-    if (status === "placed") existing.placed += qty;
-    else if (status === "backordered") existing.backordered += qty;
-    else if (status === "parked") existing.parked += qty;
-    skuMap.set(period, existing);
-    bySku.set(sku, skuMap);
+
+    if (status === "completed") {
+      // Accumulate B2B/B2C per SKU
+      const split = channelSplit.get(sku) ?? { b2b: 0, b2c: 0 };
+      if (isB2CCustomerType(row.customer_type)) {
+        split.b2c += qty;
+      } else {
+        split.b2b += qty;
+      }
+      channelSplit.set(sku, split);
+    } else {
+      const skuMap = breakdownMap.get(sku) ?? new Map<string, { placed: number; backordered: number; parked: number }>();
+      const existing = skuMap.get(period) ?? { placed: 0, backordered: 0, parked: 0 };
+      if (status === "placed") existing.placed += qty;
+      else if (status === "backordered") existing.backordered += qty;
+      else if (status === "parked") existing.parked += qty;
+      skuMap.set(period, existing);
+      breakdownMap.set(sku, skuMap);
+    }
   }
 
-  return bySku;
+  return { breakdownMap, channelSplit };
 }
 
 // ─── KPI Calculations ──────────────────────────────────────────────────────
@@ -518,13 +542,15 @@ Deno.serve(async (req: Request) => {
     console.log(`[${VERSION}] Demand mode: ${demandMode}`);
 
     // ── Load all data ────────────────────────────────────────────
-    const [config, skuParams, sohMap, demandMap, demandDetailMap] = await Promise.all([
+    const [config, skuParams, sohMap, demandMap, demandDetailResult] = await Promise.all([
       loadConfig(supabase),
       loadSKUParameters(supabase),
       loadTodaySOH(supabase),
       loadDemandHistory(supabase, dateRangeStart, dateRangeEnd),
       loadDemandDetailSummary(supabase, dateRangeStart, dateRangeEnd),
     ]);
+    const demandDetailMap = demandDetailResult.breakdownMap;
+    const channelSplitMap = demandDetailResult.channelSplit;
 
     // ── Compute ABC Classification ───────────────────────────────
     const skuRevenues: { sku: string; revenue: number }[] = [];
@@ -700,6 +726,8 @@ Deno.serve(async (req: Request) => {
           availableChina: chinaWH.available,
           allocatedTotal,
           projectedDemand: Math.round(demandStats.avgMonthly),
+          demandB2b: Math.round(channelSplitMap.get(sku)?.b2b ?? 0),
+          demandB2c: Math.round(channelSplitMap.get(sku)?.b2c ?? 0),
           demandTrend: demandStats.trend,
           demandTrendPercent: Math.round(demandStats.trendPercent * 10) / 10,
           reorderPoint,

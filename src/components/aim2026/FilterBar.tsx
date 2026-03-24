@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2, SplitSquareHorizontal, Loader2 } from 'lucide-react';
+import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2, SplitSquareHorizontal } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -119,7 +119,6 @@ interface FilterBarProps {
   onRestoreClick?: () => void;
   isMaximized?: boolean;
   splitDemand?: boolean;
-  channelSplitLoading?: boolean;
   onToggleSplit?: () => void;
 }
 
@@ -137,7 +136,6 @@ export function FilterBar({
   onRestoreClick,
   isMaximized = false,
   splitDemand = false,
-  channelSplitLoading = false,
   onToggleSplit,
 }: FilterBarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -406,7 +404,6 @@ export function FilterBar({
                 {onToggleSplit && (
                   <button
                     onClick={onToggleSplit}
-                    disabled={channelSplitLoading}
                     className={cn(
                       'flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-md border transition-colors h-8',
                       splitDemand
@@ -415,10 +412,7 @@ export function FilterBar({
                     )}
                     title="Split Demand column into B2B and B2C"
                   >
-                    {channelSplitLoading
-                      ? <Loader2 size={12} className="animate-spin" />
-                      : <SplitSquareHorizontal size={12} />
-                    }
+                    <SplitSquareHorizontal size={12} />
                     B2B / B2C split
                   </button>
                 )}
