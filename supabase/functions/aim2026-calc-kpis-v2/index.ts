@@ -308,16 +308,20 @@ async function loadDemandDetailSummary(
 
     const qty = Number(row.quantity ?? 0);
 
-    if (status === "completed") {
-      // Accumulate B2B/B2C per SKU
-      const split = channelSplit.get(sku) ?? { b2b: 0, b2c: 0 };
-      if (isB2CCustomerType(row.customer_type)) {
-        split.b2c += qty;
-      } else {
-        split.b2b += qty;
-      }
-      channelSplit.set(sku, split);
+    // Accumulate B2B/B2C for ALL demand statuses so the split covers the full
+    // projected demand (completed + placed + backordered + parked) and so that
+    // assembly B2C fractions correctly capture backordered B2C orders.
+    const split = channelSplit.get(sku) ?? { b2b: 0, b2c: 0 };
+    if (isB2CCustomerType(row.customer_type)) {
+      split.b2c += qty;
     } else {
+      split.b2b += qty;
+    }
+    channelSplit.set(sku, split);
+
+    // placed / backordered / parked also go to the breakdown map (for the
+    // per-period demand detail used elsewhere — unchanged behaviour).
+    if (status !== "completed") {
       const skuMap = breakdownMap.get(sku) ?? new Map<string, { placed: number; backordered: number; parked: number }>();
       const existing = skuMap.get(period) ?? { placed: 0, backordered: 0, parked: 0 };
       if (status === "placed") existing.placed += qty;
