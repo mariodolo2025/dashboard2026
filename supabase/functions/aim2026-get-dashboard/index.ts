@@ -669,6 +669,65 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // ─── Demand Channel Split (B2B / B2C per SKU for main table) ───
+    // Returns [{sku, b2b, b2c}] aggregated from aim2026_demand_detail
+    // completed sales grouped by customer_type, optional date range filter.
+    if (action === "demand_channel_split") {
+      const from: string | undefined = body?.from;  // YYYY-MM-DD
+      const to: string | undefined = body?.to;      // YYYY-MM-DD
+
+      function isB2CSplit(customerType: string): boolean {
+        const ct = String(customerType ?? "").toLowerCase().trim();
+        return ct === "shopify" || ct === "b2c" || ct === "web" || ct.includes("shopify");
+      }
+
+      const perSku = new Map<string, { b2b: number; b2c: number }>();
+      const pageSize = 1000;
+      let offset = 0;
+
+      while (true) {
+        let query = supabase
+          .from("aim2026_demand_detail")
+          .select("sku, customer_type, quantity")
+          .eq("type", "sale")
+          .eq("status", "completed")
+          .range(offset, offset + pageSize - 1);
+
+        if (from) query = query.gte("period_date", from);
+        if (to)   query = query.lte("period_date", to);
+
+        const { data: page, error } = await query;
+        if (error) {
+          return jsonResponse({ success: false, message: error.message }, 500);
+        }
+        if (!page || page.length === 0) break;
+
+        for (const row of page) {
+          const sku = String(row.sku ?? "").trim();
+          if (!sku) continue;
+          const qty = Number(row.quantity ?? 0);
+          const entry = perSku.get(sku) ?? { b2b: 0, b2c: 0 };
+          if (isB2CSplit(row.customer_type)) {
+            entry.b2c += qty;
+          } else {
+            entry.b2b += qty;
+          }
+          perSku.set(sku, entry);
+        }
+
+        if (page.length < pageSize) break;
+        offset += pageSize;
+      }
+
+      const result = Array.from(perSku.entries()).map(([sku, v]) => ({
+        sku,
+        b2b: Math.round(v.b2b),
+        b2c: Math.round(v.b2c),
+      }));
+
+      return jsonResponse({ success: true, data: result, from: from ?? null, to: to ?? null });
+    }
+
     // ─── Recent Orders (for SKU detail popup) ───────────────────
     if (action === "recent_orders") {
       const sku = body?.sku;

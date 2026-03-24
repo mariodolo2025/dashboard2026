@@ -135,6 +135,8 @@ interface InventoryTableProps {
   fullHeight?: boolean;
   /** When true, data is already fully filtered (e.g. includes assembled filter); do not apply filters again */
   dataIsFullyFiltered?: boolean;
+  /** When true, replaces the Demand column with separate B2B and B2C columns */
+  splitDemand?: boolean;
 }
 
 export function InventoryTable({
@@ -150,6 +152,7 @@ export function InventoryTable({
   onExportSelectedSKUsChange,
   fullHeight = false,
   dataIsFullyFiltered = false,
+  splitDemand = false,
 }: InventoryTableProps) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'projectedDemand', desc: true },
@@ -389,32 +392,75 @@ export function InventoryTable({
     }
 
     // Demand & reorder columns (always visible)
-    cols.push(
-      // Projected Demand
-      {
-        accessorKey: 'projectedDemand',
+    if (splitDemand) {
+      // B2B demand column
+      cols.push({
+        id: 'demandB2b',
+        accessorFn: (row) => row.demandB2b ?? 0,
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="projectedDemand" className="justify-end">
-            Demand
+          <SortHeader column={column} className="justify-end">
+            <span className="text-blue-600 dark:text-blue-400">B2B</span>
           </SortHeader>
         ),
         cell: ({ row }) => (
           <button
             onClick={() => onDemandClick(row.original.sku)}
-            className="flex items-center justify-end w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors group font-medium"
+            className="flex items-center justify-end w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium text-blue-600 dark:text-blue-400"
           >
-            <span className="w-4 flex-shrink-0 flex justify-center mr-0.5">
-              <TrendIndicator
-                direction={row.original.demandTrend}
-                size="sm"
-                className="opacity-60 group-hover:opacity-100"
-              />
-            </span>
-            <span className="text-right">{formatNum(row.original.projectedDemand)}</span>
+            {formatNum(row.original.demandB2b ?? 0)}
           </button>
         ),
-        size: 90,
-      },
+        size: 80,
+      });
+      // B2C demand column
+      cols.push({
+        id: 'demandB2c',
+        accessorFn: (row) => row.demandB2c ?? 0,
+        header: ({ column }) => (
+          <SortHeader column={column} className="justify-end">
+            <span className="text-violet-600 dark:text-violet-400">B2C</span>
+          </SortHeader>
+        ),
+        cell: ({ row }) => (
+          <button
+            onClick={() => onDemandClick(row.original.sku)}
+            className="flex items-center justify-end w-full text-[13px] tabular-nums hover:text-violet-600 dark:hover:text-violet-400 transition-colors font-medium text-violet-600 dark:text-violet-400"
+          >
+            {formatNum(row.original.demandB2c ?? 0)}
+          </button>
+        ),
+        size: 80,
+      });
+    } else {
+      cols.push(
+        // Projected Demand
+        {
+          accessorKey: 'projectedDemand',
+          header: ({ column }) => (
+            <SortHeader column={column} kpiKey="projectedDemand" className="justify-end">
+              Demand
+            </SortHeader>
+          ),
+          cell: ({ row }) => (
+            <button
+              onClick={() => onDemandClick(row.original.sku)}
+              className="flex items-center justify-end w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors group font-medium"
+            >
+              <span className="w-4 flex-shrink-0 flex justify-center mr-0.5">
+                <TrendIndicator
+                  direction={row.original.demandTrend}
+                  size="sm"
+                  className="opacity-60 group-hover:opacity-100"
+                />
+              </span>
+              <span className="text-right">{formatNum(row.original.projectedDemand)}</span>
+            </button>
+          ),
+          size: 90,
+        },
+      );
+    }
+    cols.push(
       // Reorder Point
       {
         accessorKey: 'reorderPoint',
@@ -676,6 +722,7 @@ export function InventoryTable({
     someRowsSelected,
     exportSelectedSKUs,
     onExportSelectedSKUsChange,
+    splitDemand,
   ]);
 
   // ─── Table instance ──────────────────────────────────────────────────────

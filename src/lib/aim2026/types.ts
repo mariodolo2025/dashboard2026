@@ -52,6 +52,9 @@ export interface SKURow {
   projectedDemand: number;
   demandTrend: TrendDirection;
   demandTrendPercent: number;
+  // Channel split (loaded lazily when B2B/B2C split is toggled)
+  demandB2b?: number;
+  demandB2c?: number;
   // Reorder
   reorderPoint: number;
   safetyStock: number;

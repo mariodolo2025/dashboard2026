@@ -1313,6 +1313,33 @@ export async function uploadProductionCSV(csvContent: string): Promise<UploadPro
   return data;
 }
 
+// ─── Demand Channel Split (B2B / B2C per SKU) ────────────────────────────
+
+export interface DemandChannelSplitItem {
+  sku: string;
+  b2b: number;
+  b2c: number;
+}
+
+/**
+ * Fetches B2B / B2C completed-sales totals per SKU from aim2026_demand_detail.
+ * Pass date strings as YYYY-MM-DD to restrict to a specific date range.
+ */
+export async function fetchDemandChannelSplit(
+  from?: string,
+  to?: string
+): Promise<DemandChannelSplitItem[]> {
+  try {
+    const result = await callFunction<{ success: boolean; data: DemandChannelSplitItem[] }>(
+      'aim2026-get-dashboard',
+      { action: 'demand_channel_split', from, to }
+    );
+    return result.data ?? [];
+  } catch {
+    return [];
+  }
+}
+
 // ─── CSV Download Helper ──────────────────────────────────────────────────
 
 export function downloadAsCSV(rows: Record<string, any>[], filename: string): void {

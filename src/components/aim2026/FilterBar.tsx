@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2 } from 'lucide-react';
+import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2, SplitSquareHorizontal, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -117,6 +117,9 @@ interface FilterBarProps {
   onMaximizeClick?: () => void;
   onRestoreClick?: () => void;
   isMaximized?: boolean;
+  splitDemand?: boolean;
+  channelSplitLoading?: boolean;
+  onToggleSplit?: () => void;
 }
 
 export function FilterBar({
@@ -132,6 +135,9 @@ export function FilterBar({
   onMaximizeClick,
   onRestoreClick,
   isMaximized = false,
+  splitDemand = false,
+  channelSplitLoading = false,
+  onToggleSplit,
 }: FilterBarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -395,6 +401,26 @@ export function FilterBar({
                     </SelectContent>
                   </Select>
                 </div>
+
+                {onToggleSplit && (
+                  <button
+                    onClick={onToggleSplit}
+                    disabled={channelSplitLoading}
+                    className={cn(
+                      'flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-md border transition-colors h-8',
+                      splitDemand
+                        ? 'bg-violet-100 dark:bg-violet-900/40 border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300'
+                        : 'bg-muted/40 border-border/40 text-muted-foreground hover:text-foreground hover:bg-muted/70'
+                    )}
+                    title="Split Demand column into B2B and B2C"
+                  >
+                    {channelSplitLoading
+                      ? <Loader2 size={12} className="animate-spin" />
+                      : <SplitSquareHorizontal size={12} />
+                    }
+                    B2B / B2C split
+                  </button>
+                )}
 
                 {onShowAssembledProductsChange != null && (
                   <div className="flex items-center space-x-2">

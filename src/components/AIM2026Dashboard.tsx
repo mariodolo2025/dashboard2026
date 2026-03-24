@@ -25,6 +25,7 @@ import {
   createPurchaseOrder,
   recalcKPIsForDateRange,
   recalcKPIsForDemandMode,
+  fetchDemandChannelSplit,
 } from '@/lib/aim2026/api';
 import { runFullCSVSync, type CSVSyncProgress } from '@/lib/aim2026/csvSync';
 
@@ -101,6 +102,11 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const [showAssembledProducts, setShowAssembledProducts] = useState(false);
   const [insightFilterSKUs, setInsightFilterSKUs] = useState<string[] | null>(null);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
+
+  // B2B / B2C demand channel split
+  const [splitDemand, setSplitDemand] = useState(false);
+  const [channelSplitLoading, setChannelSplitLoading] = useState(false);
+  const [channelSplitMap, setChannelSplitMap] = useState<Map<string, { b2b: number; b2c: number }>>(new Map());
 
   // ─── Load real data from Supabase ──────────────────────────────────────────
 
@@ -311,6 +317,16 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     insightFilterSKUs,
   ]);
 
+  // Merge B2B/B2C split data into rows when split is active
+  const filteredDataWithSplit = useMemo<SKURow[]>(() => {
+    if (!splitDemand || channelSplitMap.size === 0) return filteredData;
+    return filteredData.map((r) => {
+      const split = channelSplitMap.get(r.sku);
+      if (!split) return r;
+      return { ...r, demandB2b: split.b2b, demandB2c: split.b2c };
+    });
+  }, [filteredData, splitDemand, channelSplitMap]);
+
   const filteredCount = filteredData.length;
 
   // Keep row selection in sync with the current filtered view.
@@ -473,6 +489,44 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     },
     [skuData]
   );
+
+  // ─── B2B/B2C Split Handler ───────────────────────────────────────────────
+
+  const handleToggleSplit = useCallback(async () => {
+    const next = !splitDemand;
+    setSplitDemand(next);
+    if (!next) return; // turning off — no fetch needed
+
+    setChannelSplitLoading(true);
+    try {
+      const from = dateRange?.from ? format(dateRange.from, 'yyyy-MM-dd') : undefined;
+      const to = dateRange?.to ? format(dateRange.to, 'yyyy-MM-dd') : undefined;
+      const items = await fetchDemandChannelSplit(from, to);
+      const map = new Map<string, { b2b: number; b2c: number }>();
+      for (const item of items) map.set(item.sku, { b2b: item.b2b, b2c: item.b2c });
+      setChannelSplitMap(map);
+    } catch {
+      // keep split enabled but map empty (graceful degradation)
+    } finally {
+      setChannelSplitLoading(false);
+    }
+  }, [splitDemand, dateRange]);
+
+  // Re-fetch split data whenever the date range changes while split is active
+  useEffect(() => {
+    if (!splitDemand) return;
+    setChannelSplitLoading(true);
+    const from = dateRange?.from ? format(dateRange.from, 'yyyy-MM-dd') : undefined;
+    const to = dateRange?.to ? format(dateRange.to, 'yyyy-MM-dd') : undefined;
+    fetchDemandChannelSplit(from, to)
+      .then((items) => {
+        const map = new Map<string, { b2b: number; b2c: number }>();
+        for (const item of items) map.set(item.sku, { b2b: item.b2b, b2c: item.b2c });
+        setChannelSplitMap(map);
+      })
+      .catch(() => {})
+      .finally(() => setChannelSplitLoading(false));
+  }, [splitDemand, dateRange?.from?.getTime(), dateRange?.to?.getTime()]);
 
   // ─── PO Builder Handlers ──────────────────────────────────────────────────
 
@@ -875,6 +929,9 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
               onShowAssembledProductsChange={setShowAssembledProducts}
               assembledCount={assembledProductSKUs.size}
               onMaximizeClick={() => setTableMaximized(true)}
+              splitDemand={splitDemand}
+              channelSplitLoading={channelSplitLoading}
+              onToggleSplit={handleToggleSplit}
             />
           </div>
 
@@ -981,9 +1038,9 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
 
           {/* ─── Main Inventory Table ─────────────────────────────────────── */}
           <InventoryTable
-            data={filteredData}
+            data={filteredDataWithSplit}
             filters={filters}
-            loading={loading}
+            loading={loading || channelSplitLoading}
             onSKUClick={handleSKUClick}
             onDemandClick={handleDemandClick}
             poBuilderMode={poBuilderMode}
@@ -992,6 +1049,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             exportSelectedSKUs={exportSelectedSKUs}
             onExportSelectedSKUsChange={setExportSelectedSKUs}
             dataIsFullyFiltered
+            splitDemand={splitDemand}
           />
         </>
       )}
@@ -1084,6 +1142,9 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                   assembledCount={assembledProductSKUs.size}
                   onRestoreClick={() => setTableMaximized(false)}
                   isMaximized
+                  splitDemand={splitDemand}
+                  channelSplitLoading={channelSplitLoading}
+                  onToggleSplit={handleToggleSplit}
                 />
               </div>
               {filteredData.length > 0 && (
@@ -1127,9 +1188,9 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
               )}
               <div className="flex-1 min-h-0 flex flex-col">
                 <InventoryTable
-                  data={filteredData}
+                  data={filteredDataWithSplit}
                   filters={filters}
-                  loading={loading}
+                  loading={loading || channelSplitLoading}
                   onSKUClick={handleSKUClick}
                   onDemandClick={handleDemandClick}
                   poBuilderMode={poBuilderMode}
@@ -1139,6 +1200,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                   onExportSelectedSKUsChange={setExportSelectedSKUs}
                   fullHeight
                   dataIsFullyFiltered
+                  splitDemand={splitDemand}
                 />
               </div>
             </div>
