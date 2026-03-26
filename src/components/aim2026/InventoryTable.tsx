@@ -18,6 +18,7 @@ import { ABCBadge } from './ABCBadge';
 import { TrendIndicator } from './TrendIndicator';
 import { ColumnTooltip } from './ColumnTooltip';
 import type { SKURow, AIM2026Filters, StockStatus } from '@/lib/aim2026/types';
+import { matchesSkuProductSearch } from '@/lib/aim2026/searchFilter';
 import { useState } from 'react';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -178,11 +179,9 @@ export function InventoryTable({
 
     let result = data;
 
-    if (filters.search) {
-      const term = filters.search.toLowerCase();
-      result = result.filter(
-        (r) =>
-          r.sku.toLowerCase().includes(term) || r.product.toLowerCase().includes(term)
+    if (filters.search.trim()) {
+      result = result.filter((r) =>
+        matchesSkuProductSearch(r.sku, r.product, filters.search)
       );
     }
 

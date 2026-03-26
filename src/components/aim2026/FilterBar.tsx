@@ -171,7 +171,7 @@ export function FilterBar({
         <div className="relative flex-1 min-w-[220px] max-w-sm">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/50" />
           <Input
-            placeholder="Search SKU or product..."
+            placeholder="Search SKU or product… (comma = multiple)"
             value={filters.search}
             onChange={(e) => update({ search: e.target.value })}
             className="pl-9 pr-8 h-9 text-sm bg-muted/30 border-border/50 focus:bg-background transition-colors"

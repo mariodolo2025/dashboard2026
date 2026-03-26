@@ -15,6 +15,8 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
@@ -214,12 +216,14 @@ function CustomTooltip({
   label,
   skus,
   inbounds,
+  chartUsesSoh,
 }: {
   active?: boolean;
   payload?: any[];
   label?: string;
   skus: { sku: string; color: string; product: string }[];
   inbounds: InboundRow[];
+  chartUsesSoh: boolean;
 }) {
   if (!active || !payload?.length) return null;
 
@@ -252,7 +256,11 @@ function CustomTooltip({
                 <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
                 <span className="truncate max-w-[140px]">
                   {meta?.product ?? p.dataKey}
-                  {chinaVal != null && <span className="text-muted-foreground font-normal ml-0.5">(Main)</span>}
+                  {chinaVal != null && (
+                    <span className="text-muted-foreground font-normal ml-0.5">
+                      (Main, {chartUsesSoh ? 'SOH' : 'available'})
+                    </span>
+                  )}
                 </span>
               </span>
             <span className={cn('font-mono font-semibold tabular-nums', (p.value ?? 0) <= 0 ? 'text-red-500' : '')}>
@@ -266,7 +274,10 @@ function CustomTooltip({
               )}>
                 <span className="flex items-center gap-1">
                   <Warehouse size={9} />
-                  <span>China WH{chinaVal === 0 ? ' ⚠' : ''}</span>
+                  <span>
+                    China WH ({chartUsesSoh ? 'SOH' : 'available'})
+                    {chinaVal === 0 ? ' ⚠' : ''}
+                  </span>
                 </span>
                 <span className="font-mono font-medium tabular-nums">{chinaVal.toLocaleString()} u</span>
               </div>
@@ -282,7 +293,7 @@ function CustomTooltip({
                     China ships today
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>Available before shipment</span>
+                    <span>{chartUsesSoh ? 'SOH before shipment' : 'Available before shipment'}</span>
                     <span className="font-mono font-medium text-foreground">{Math.round(shipSource).toLocaleString()} u</span>
                   </div>
                   <div className="flex justify-between gap-3">
@@ -360,6 +371,8 @@ export function RealInboundStockDialog({
   const [inboundsMap, setInboundsMap]       = useState<Record<string, RecentOrder[]>>({});
   const [fetchedFor, setFetchedFor]         = useState<string>('');
   const [useChinaWH, setUseChinaWH]         = useState(false);
+  /** When true, Main + China starting stock use SOH; when false, use available (sellable) */
+  const [chartUsesSoh, setChartUsesSoh]     = useState(false);
   /** When true, override the production-PO heuristic and show ALL Placed orders */
   const [showAllPlaced, setShowAllPlaced]   = useState(false);
 
@@ -465,7 +478,8 @@ export function RealInboundStockDialog({
           ...regularArrivals,
           ...planned.map((s) => ({ etaDay: s.etaDay, quantity: s.quantity })),
         ];
-        const rawCurve = buildCurveRaw(row.availableMainWH, dailyDemand, allMainArrivals, daysToTarget);
+        const mainStart = chartUsesSoh ? row.sohMainWH : row.availableMainWH;
+        const rawCurve = buildCurveRaw(mainStart, dailyDemand, allMainArrivals, daysToTarget);
         const stockoutDay = findFinalStockoutDay(rawCurve);
 
         if (stockoutDay === null || stockoutDay <= prevStockoutDay) break;
@@ -474,7 +488,7 @@ export function RealInboundStockDialog({
         const chinaArrivalDay = Math.max(DHL_LEAD_DAYS, stockoutDay - CHINA_BUFFER_DAYS);
         const chinaShipDay    = Math.max(0, chinaArrivalDay - DHL_LEAD_DAYS);
 
-        let chinaStockAtShip = row.availableChina ?? 0;
+        let chinaStockAtShip = chartUsesSoh ? (row.sohChina ?? 0) : (row.availableChina ?? 0);
         for (const po of prodPOs) {
           if (po.etaDay <= chinaShipDay) chinaStockAtShip += po.quantity;
         }
@@ -507,7 +521,7 @@ export function RealInboundStockDialog({
       }
     }
     return out;
-  }, [useChinaWH, warehouseDemandMap, chartSKUs, poInbounds, daysToTarget, today]);
+  }, [useChinaWH, chartUsesSoh, warehouseDemandMap, chartSKUs, poInbounds, daysToTarget, today]);
 
   // ── Combined inbound list (PO + optional China) ────────────────────────────
   const allInbounds: InboundRow[] = useMemo(
@@ -528,13 +542,14 @@ export function RealInboundStockDialog({
       const arrivals = allInbounds
         .filter((ib) => ib.sku === row.sku && !ib.isProductionArrival)
         .map((ib) => ({ etaDay: ib.etaDay, quantity: ib.quantity }));
-      curves[row.sku] = buildCurve(row.availableMainWH, dailyDemand, arrivals, daysToTarget);
+      const mainStart = chartUsesSoh ? row.sohMainWH : row.availableMainWH;
+      curves[row.sku] = buildCurve(mainStart, dailyDemand, arrivals, daysToTarget);
 
-      // China stock curve: starts at availableChina
+      // China stock curve: starts at availableChina or SOH China
       //   + production PO arrivals on their etaDay
       //   − China→Main shipments on their shipDay
       //   − China daily demand
-      const chinaAvail = row.availableChina ?? 0;
+      const chinaAvail = chartUsesSoh ? (row.sohChina ?? 0) : (row.availableChina ?? 0);
       const chinaDailyDemand = warehouseDemandMap?.get(row.sku)
         ? (warehouseDemandMap.get(row.sku)! / 30)
         : 0;
@@ -627,7 +642,7 @@ export function RealInboundStockDialog({
       points.push(pt);
     }
     return points;
-  }, [chartSKUs, allInbounds, chinaArrivals, warehouseDemandMap, daysToTarget, today]);
+  }, [chartSKUs, allInbounds, chinaArrivals, warehouseDemandMap, daysToTarget, today, chartUsesSoh]);
 
   // ── Stockout markers (red dots) ───────────────────────────────────────────
   type StockoutMarker = { sku: string; label: string; y: number; type: 'main' | 'china' };
@@ -759,6 +774,21 @@ export function RealInboundStockDialog({
                 Purchase Orders
               </Button>
 
+              <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-2 py-1">
+                <Checkbox
+                  id="real-inbound-use-soh"
+                  checked={chartUsesSoh}
+                  onCheckedChange={(v) => setChartUsesSoh(v === true)}
+                />
+                <Label
+                  htmlFor="real-inbound-use-soh"
+                  className="text-xs font-normal cursor-pointer leading-none"
+                  title="Use warehouse on hand (SOH) instead of available sellable stock for Main and China starting balances"
+                >
+                  Use SOH
+                </Label>
+              </div>
+
               {/* Refresh */}
               <Button
                 size="icon"
@@ -803,6 +833,11 @@ export function RealInboundStockDialog({
                   <h3 className="text-sm font-semibold flex items-center gap-1.5">
                     <TrendingDown size={14} className="text-primary" />
                     Stock Projection
+                    {chartUsesSoh && (
+                      <span className="ml-1 text-[10px] font-normal text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded-full border border-amber-200 dark:border-amber-800">
+                        SOH
+                      </span>
+                    )}
                     {useChinaWH && (
                       <span className="ml-1 text-[10px] font-normal text-violet-600 bg-violet-50 dark:bg-violet-950/30 px-1.5 py-0.5 rounded-full border border-violet-200 dark:border-violet-800">
                         + China WH (90%)
@@ -857,6 +892,28 @@ export function RealInboundStockDialog({
                   </div>
                 </div>
 
+                {chartUsesSoh ? (
+                  <p className="text-[11px] text-muted-foreground mb-2 leading-snug border-l-2 border-amber-400/60 pl-2">
+                    Starting balances for <span className="font-medium text-foreground">Main</span>
+                    {useChinaWH && (
+                      <>
+                        {' '}
+                        and <span className="font-medium text-foreground">China WH</span>
+                      </>
+                    )}{' '}
+                    use <span className="font-medium text-foreground">SOH</span> (warehouse on hand). Uncheck{' '}
+                    <span className="font-medium text-foreground">Use SOH</span> to chart{' '}
+                    <span className="font-medium text-foreground">available</span> (sellable) units.
+                  </p>
+                ) : (
+                  useChinaWH && (
+                    <p className="text-[11px] text-muted-foreground mb-2 leading-snug border-l-2 border-violet-400/60 pl-2">
+                      China WH series uses <span className="font-medium text-foreground">available</span> stock (sellable
+                      units), not total SOH. It can show 0 while SOH China is still positive if units are allocated or
+                      reserved.
+                    </p>
+                  )
+                )}
                 {chartData.length === 0 ? (
                   <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
                     No data available.
@@ -876,7 +933,13 @@ export function RealInboundStockDialog({
                         width={52}
                       />
                       <RechartsTooltip
-                        content={<CustomTooltip skus={skuMeta} inbounds={allInbounds} />}
+                        content={
+                          <CustomTooltip
+                            skus={skuMeta}
+                            inbounds={allInbounds}
+                            chartUsesSoh={chartUsesSoh}
+                          />
+                        }
                         cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }}
                       />
 
@@ -1168,7 +1231,10 @@ export function RealInboundStockDialog({
               <p className="text-[10px] text-muted-foreground px-1 pb-1">
                 Showing <strong>DHL + Container</strong> status orders, plus <strong>Purchase Orders</strong> (auto-excluding any whose qty matches the SKU&apos;s onProduction value).
                 {showAllPlaced && ' Override active: all purchase orders shown, including production POs (arriving at China warehouse).'}
-                {useChinaWH && ' China WH orders are planned (90% of available SOH China, arriving 3d before projected stockout).'}
+                {useChinaWH &&
+                  (chartUsesSoh
+                    ? ' China WH orders are planned (90% of China stock at ship day, arriving 3d before projected stockout).'
+                    : ' China WH orders are planned (90% of available SOH China, arriving 3d before projected stockout).')}
                 {' '}Daily demand = monthly avg ÷ 30.
               </p>
             </>

@@ -26,6 +26,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { AIM2026Filters, SKURow, KPISummary, SyncStatus, StockValuationTotals, StockValuationHistoryRecord, AIM2026Config, POBuilderItem } from '@/lib/aim2026/types';
+import { matchesSkuProductSearch } from '@/lib/aim2026/searchFilter';
 import type { BOMComponent } from '@/lib/aim2026/api';
 import { DEFAULT_FILTERS, DEFAULT_CONFIG } from '@/lib/aim2026/types';
 import {
@@ -318,10 +319,9 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
       const set = new Set(insightFilterSKUs);
       result = result.filter((r) => set.has(r.sku));
     }
-    if (filters.search) {
-      const term = filters.search.toLowerCase();
-      result = result.filter(
-        (r) => r.sku.toLowerCase().includes(term) || r.product.toLowerCase().includes(term)
+    if (filters.search.trim()) {
+      result = result.filter((r) =>
+        matchesSkuProductSearch(r.sku, r.product, filters.search)
       );
     }
     if (filters.abcClass !== 'all') result = result.filter((r) => r.abcClass === filters.abcClass);
