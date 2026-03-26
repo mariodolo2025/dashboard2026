@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import {
   format,
   differenceInDays,
@@ -377,7 +377,28 @@ export function RealInboundStockDialog({
   const [showAllPlaced, setShowAllPlaced]   = useState(false);
 
   const daysToTarget = Math.max(1, differenceInDays(startOfDay(targetDate), today));
-  const chartSKUs    = filteredData.slice(0, 10);
+  const chartSKUs    = useMemo(() => filteredData.slice(0, 10), [filteredData]);
+  const chartSkuKey  = useMemo(() => chartSKUs.map((r) => r.sku).join(','), [chartSKUs]);
+
+  /** SKUs whose Main (+ hidden tooltip) series are drawn on the chart */
+  const [visibleSkus, setVisibleSkus] = useState<Set<string>>(new Set());
+
+  useLayoutEffect(() => {
+    setVisibleSkus(new Set(chartSKUs.map((r) => r.sku)));
+  }, [chartSkuKey, chartSKUs]);
+
+  const toggleSkuVisible = useCallback((sku: string) => {
+    setVisibleSkus((prev) => {
+      const next = new Set(prev);
+      if (next.has(sku)) next.delete(sku);
+      else next.add(sku);
+      return next;
+    });
+  }, []);
+
+  const showAllChartSkus = useCallback(() => {
+    setVisibleSkus(new Set(chartSKUs.map((r) => r.sku)));
+  }, [chartSKUs]);
 
   // ── Fetch PO data per SKU ─────────────────────────────────────────────────
   const skuKey = chartSKUs.map((r) => r.sku).join(',');
@@ -651,6 +672,7 @@ export function RealInboundStockDialog({
     const markers: StockoutMarker[] = [];
 
     for (const row of chartSKUs) {
+      if (!visibleSkus.has(row.sku)) continue;
       let prevMain = -1;
       let prevChina = -1;
       for (const pt of chartData) {
@@ -670,7 +692,7 @@ export function RealInboundStockDialog({
       }
     }
     return markers;
-  }, [chartData, chartSKUs]);
+  }, [chartData, chartSKUs, visibleSkus]);
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const quickDays  = [30, 60, 90, 180];
@@ -683,6 +705,11 @@ export function RealInboundStockDialog({
       ? (warehouseDemandMap.get(r.sku)! / 30)
       : 0,
   }));
+  const skuMetaVisible = useMemo(
+    () => skuMeta.filter((m) => visibleSkus.has(m.sku)),
+    [skuMeta, visibleSkus]
+  );
+  const chartHasVisibleSeries = visibleSkus.size > 0;
   const targetLabel   = format(targetDate, 'dd MMM');
   const chartHeightPx = maximized ? 580 : 320;
 
@@ -830,28 +857,55 @@ export function RealInboundStockDialog({
               {/* ── Stock Curve ─────────────────────────────────────────────── */}
               <div className="rounded-lg border bg-card p-4">
                 <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                  <h3 className="text-sm font-semibold flex items-center gap-1.5">
-                    <TrendingDown size={14} className="text-primary" />
-                    Stock Projection
-                    {chartUsesSoh && (
-                      <span className="ml-1 text-[10px] font-normal text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded-full border border-amber-200 dark:border-amber-800">
-                        SOH
-                      </span>
+                  <div className="flex items-center gap-2 flex-wrap min-w-0">
+                    <h3 className="text-sm font-semibold flex items-center gap-1.5">
+                      <TrendingDown size={14} className="text-primary" />
+                      Stock Projection
+                      {chartUsesSoh && (
+                        <span className="ml-1 text-[10px] font-normal text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded-full border border-amber-200 dark:border-amber-800">
+                          SOH
+                        </span>
+                      )}
+                      {useChinaWH && (
+                        <span className="ml-1 text-[10px] font-normal text-violet-600 bg-violet-50 dark:bg-violet-950/30 px-1.5 py-0.5 rounded-full border border-violet-200 dark:border-violet-800">
+                          + China WH (90%)
+                        </span>
+                      )}
+                    </h3>
+                    {chartSKUs.length > 1 && visibleSkus.size < chartSKUs.length && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs shrink-0"
+                        onClick={showAllChartSkus}
+                      >
+                        Show all
+                      </Button>
                     )}
-                    {useChinaWH && (
-                      <span className="ml-1 text-[10px] font-normal text-violet-600 bg-violet-50 dark:bg-violet-950/30 px-1.5 py-0.5 rounded-full border border-violet-200 dark:border-violet-800">
-                        + China WH (90%)
-                      </span>
-                    )}
-                  </h3>
+                  </div>
                   <div className="flex flex-wrap items-center gap-3">
                     {skuMeta.map((m) => (
-                      <div key={m.sku} className="flex items-center gap-2">
-                        {/* Colour swatch + product name */}
-                        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <span className="w-3 h-0.5 inline-block rounded" style={{ backgroundColor: m.color }} />
+                      <div
+                        key={m.sku}
+                        className={cn(
+                          'flex items-center gap-2',
+                          !visibleSkus.has(m.sku) && 'opacity-45'
+                        )}
+                      >
+                        <Checkbox
+                          id={`real-inbound-legend-${m.sku}`}
+                          checked={visibleSkus.has(m.sku)}
+                          onCheckedChange={() => toggleSkuVisible(m.sku)}
+                          className="shrink-0"
+                        />
+                        <Label
+                          htmlFor={`real-inbound-legend-${m.sku}`}
+                          className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer font-normal"
+                        >
+                          <span className="w-3 h-0.5 inline-block rounded shrink-0" style={{ backgroundColor: m.color }} />
                           {m.product}
-                        </span>
+                        </Label>
                         {/* Daily demand chip (Main) */}
                         {m.dailyDemand > 0 && (
                           <span
@@ -918,6 +972,10 @@ export function RealInboundStockDialog({
                   <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
                     No data available.
                   </div>
+                ) : !chartHasVisibleSeries ? (
+                  <div className="flex items-center justify-center py-12 text-muted-foreground text-sm text-center px-4">
+                    Select at least one product in the legend to show the chart.
+                  </div>
                 ) : (
                   <ResponsiveContainer width="100%" height={chartHeightPx}>
                     <ComposedChart data={chartData} margin={{ top: 28, right: 16, left: 8, bottom: 8 }}>
@@ -957,7 +1015,13 @@ export function RealInboundStockDialog({
 
                       {/* Arrival vertical markers (Main arrivals only) */}
                       {allInbounds
-                        .filter((ib) => ib.etaDay > 0 && ib.etaDay <= daysToTarget && !ib.isProductionArrival)
+                        .filter(
+                          (ib) =>
+                            visibleSkus.has(ib.sku) &&
+                            ib.etaDay > 0 &&
+                            ib.etaDay <= daysToTarget &&
+                            !ib.isProductionArrival
+                        )
                         .map((ib, idx) => (
                           <ReferenceLine
                             key={`vline-${idx}`}
@@ -970,7 +1034,7 @@ export function RealInboundStockDialog({
                         ))}
 
                       {/* Stock curve lines */}
-                      {skuMeta.map((m) => (
+                      {skuMetaVisible.map((m) => (
                         <Line
                           key={m.sku}
                           type="monotone"
@@ -984,7 +1048,7 @@ export function RealInboundStockDialog({
                       ))}
 
                       {/* Hidden series for arrival qty (tooltip only) */}
-                      {skuMeta.map((m) => (
+                      {skuMetaVisible.map((m) => (
                         <Line
                           key={`${m.sku}_arr`}
                           dataKey={`${m.sku}_arr`}
@@ -997,7 +1061,7 @@ export function RealInboundStockDialog({
                       ))}
 
                       {/* Hidden series for China stock (tooltip only) */}
-                      {skuMeta.map((m) => (
+                      {skuMetaVisible.map((m) => (
                         <Line
                           key={`${m.sku}_china`}
                           dataKey={`${m.sku}_china`}
@@ -1010,7 +1074,7 @@ export function RealInboundStockDialog({
                       ))}
 
                       {/* Hidden series for China ship-day tooltip details */}
-                      {skuMeta.map((m) => (
+                      {skuMetaVisible.map((m) => (
                         <Line
                           key={`${m.sku}_chinaShip`}
                           dataKey={`${m.sku}_chinaShip`}
@@ -1021,7 +1085,7 @@ export function RealInboundStockDialog({
                           isAnimationActive={false}
                         />
                       ))}
-                      {skuMeta.map((m) => (
+                      {skuMetaVisible.map((m) => (
                         <Line
                           key={`${m.sku}_chinaShipSource`}
                           dataKey={`${m.sku}_chinaShipSource`}
@@ -1035,7 +1099,13 @@ export function RealInboundStockDialog({
 
                       {/* Arrival marker dots on the Main curve (exclude production arrivals at China) */}
                       {allInbounds
-                        .filter((ib) => ib.etaDay > 0 && ib.etaDay <= daysToTarget && !ib.isProductionArrival)
+                        .filter(
+                          (ib) =>
+                            visibleSkus.has(ib.sku) &&
+                            ib.etaDay > 0 &&
+                            ib.etaDay <= daysToTarget &&
+                            !ib.isProductionArrival
+                        )
                         .map((ib, idx) => {
                           const dayLabel = format(addDays(today, ib.etaDay), 'dd MMM');
                           const point = chartData.find((p) => p.label === dayLabel);
@@ -1067,7 +1137,15 @@ export function RealInboundStockDialog({
 
                       {/* Green dots on China ship days */}
                       {allInbounds
-                        .filter((ib) => ib.isChinaWH && !ib.isProductionArrival && ib.shipDay != null && ib.shipDay > 0 && ib.shipDay <= daysToTarget)
+                        .filter(
+                          (ib) =>
+                            visibleSkus.has(ib.sku) &&
+                            ib.isChinaWH &&
+                            !ib.isProductionArrival &&
+                            ib.shipDay != null &&
+                            ib.shipDay > 0 &&
+                            ib.shipDay <= daysToTarget
+                        )
                         .map((ib, idx) => {
                           const dayLabel = format(addDays(today, ib.shipDay!), 'dd MMM');
                           const point = chartData.find((p) => p.label === dayLabel);
