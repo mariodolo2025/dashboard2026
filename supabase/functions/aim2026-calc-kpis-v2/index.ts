@@ -346,7 +346,7 @@ async function loadBomComponents(
   while (hasMore) {
     const { data, error } = await supabase
       .from("aim2026_bom_components")
-      .select("assembly_sku, component_sku, quantity")
+      .select("assembly_sku, component_sku, quantity_per_assembly")
       .range(offset, offset + 999);
     if (error) {
       console.warn(`[${VERSION}] Could not load BOM components: ${error.message}`);
@@ -361,7 +361,7 @@ async function loadBomComponents(
   for (const row of allData) {
     const component = String(row.component_sku ?? "").trim();
     const assembly = String(row.assembly_sku ?? "").trim();
-    const qty = Number(row.quantity ?? 1);
+    const qty = Number(row.quantity_per_assembly ?? 1);
     if (!component || !assembly) continue;
     const list = map.get(component) ?? [];
     list.push({ assemblySku: assembly, bomQty: qty });

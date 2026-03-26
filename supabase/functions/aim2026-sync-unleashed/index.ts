@@ -23,6 +23,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parse as parseCsv } from "https://deno.land/std@0.224.0/csv/parse.ts";
 
 // ─── CORS ──────────────────────────────────────────────────────────────────
 
@@ -863,7 +864,8 @@ async function syncAssemblies(
     }
     if (!asmPeriod) continue;
 
-    const warehouse = String(asm.Warehouse?.WarehouseName ?? "").trim() || "Unknown";
+    const wh = asm.Warehouse ?? asm.DestinationWarehouse ?? asm.SourceWarehouse;
+    const warehouse = String(wh?.WarehouseName ?? "").trim() || "Unknown";
 
     for (const line of asm.AssemblyLines ?? []) {
       const componentCode = (line.Product?.ProductCode ?? "").trim();
@@ -1039,9 +1041,257 @@ async function syncAssemblies(
   return totalAgg;
 }
 
+/** Step 6: Supplement assembly component_usage from ProductionEnquiryList.csv.
+ * Runs AFTER all API assembly chunks. Fills in component_usage for warehouses
+ * that the Unleashed API didn't cover (e.g., China-W assemblies only in CSV).
+ * Only writes where DB currently has component_usage = 0. */
+async function supplementAssemblyCSV(supabase: any): Promise<number> {
+  const rangeStart = (() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 12);
+    d.setDate(1);
+    return d.toISOString().slice(0, 7) + "-01";
+  })();
+
+  let csvBlob: Blob | null = null;
+  for (const bucket of ["aim-csv-files", "csv-files"]) {
+    const { data, error } = await supabase.storage.from(bucket).download("ProductionEnquiryList.csv");
+    if (!error && data) { csvBlob = data; break; }
+  }
+  if (!csvBlob) {
+    console.log("supplement_assembly_csv: ProductionEnquiryList.csv not found");
+    return 0;
+  }
+
+  const text = await csvBlob.text();
+  const rawData: string[][] = parseCsv(text, { skipFirstRow: false, lazyQuotes: true });
+
+  // Simple header finder for production CSV
+  const PROD_KEYWORDS: Record<string, string[]> = {
+    "Product Code": ["product code", "productcode", "sku"],
+    "Quantity": ["quantity", "qty"],
+    "Assembly Number": ["assembly number", "assembly no"],
+    "Assembly Date": ["assembly date"],
+    "Warehouse": ["warehouse", "location"],
+    "Assembly Status": ["assembly status"],
+  };
+  let headerIdx = 0;
+  const hMap: Record<string, number> = {};
+  for (let i = 0; i < Math.min(10, rawData.length); i++) {
+    const vals = rawData[i].map(v => String(v || "").toLowerCase().trim());
+    if (vals.some(v => v.includes("enquiry") || v.includes("report"))) continue;
+    let matched = 0;
+    for (const [key, kws] of Object.entries(PROD_KEYWORDS)) {
+      for (let c = 0; c < vals.length; c++) {
+        if (kws.some(kw => vals[c].includes(kw))) { hMap[key] = c; matched++; break; }
+      }
+    }
+    if (matched >= 3) { headerIdx = i; break; }
+  }
+
+  const { data: asmSkuRows } = await supabase.from("aim2026_assembled_products").select("sku");
+  const assembledSKUs = new Set((asmSkuRows ?? []).map((r: any) => r.sku));
+
+  // Aggregate component_usage by (period, sku, warehouse) and (period, sku) for All
+  const whAgg = new Map<string, number>();
+  const allAgg = new Map<string, number>();
+  const detailRows: any[] = [];
+  let parsed = 0;
+
+  const dataRows = rawData.slice(headerIdx + 1);
+  const toNum = (v: any): number => {
+    if (!v) return 0;
+    let s = String(v).replace(/,/g, "").trim();
+    if (/^\s*\(.*\)\s*$/.test(s)) s = "-" + s.replace(/[()]/g, "");
+    s = s.replace(/[^0-9.-]/g, "");
+    return parseFloat(s) || 0;
+  };
+  const parseDate = (v: any): Date | null => {
+    if (!v) return null;
+    const s = String(v).trim();
+    const m = s.match(/^([0-3]?\d)[\/.-]([0-1]?\d)[\/.-](\d{2,4})$/);
+    if (m) {
+      let y = parseInt(m[3], 10); if (y < 100) y += 2000;
+      const dt = new Date(Date.UTC(y, parseInt(m[2], 10) - 1, parseInt(m[1], 10)));
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+    const dt = new Date(s);
+    return isNaN(dt.getTime()) ? null : dt;
+  };
+
+  for (const row of dataRows) {
+    const sku = String(row[hMap["Product Code"]] ?? "").trim();
+    if (!sku) continue;
+
+    const asmNum = String(row[hMap["Assembly Number"]] ?? "").trim();
+    const rawQty = toNum(row[hMap["Quantity"]]);
+    if (!asmNum || asmNum.toUpperCase().startsWith("DSM") || rawQty >= 0) continue;
+
+    if (hMap["Assembly Status"] !== undefined) {
+      const st = String(row[hMap["Assembly Status"]] ?? "").trim().toLowerCase();
+      if (st && st !== "completed") continue;
+    }
+
+    if (assembledSKUs.has(sku)) continue;
+
+    const qty = Math.abs(rawQty);
+    let orderDate: Date | null = null;
+    if (hMap["Assembly Date"] !== undefined) orderDate = parseDate(row[hMap["Assembly Date"]]);
+    if (!orderDate) continue;
+
+    const periodDate = orderDate.toISOString().slice(0, 7) + "-01";
+    if (periodDate < rangeStart) continue;
+
+    const warehouse = hMap["Warehouse"] !== undefined
+      ? String(row[hMap["Warehouse"]] ?? "").trim() || "Unknown"
+      : "Unknown";
+
+    whAgg.set(`${periodDate}|${sku}|${warehouse}`, (whAgg.get(`${periodDate}|${sku}|${warehouse}`) ?? 0) + qty);
+    allAgg.set(`${periodDate}|${sku}`, (allAgg.get(`${periodDate}|${sku}`) ?? 0) + qty);
+
+    detailRows.push({
+      period_date: periodDate, sku, type: "component_usage",
+      order_date: orderDate.toISOString().slice(0, 10),
+      order_number: asmNum, customer: `Assembly ${asmNum}`,
+      quantity: Math.round(qty * 100) / 100, amount: 0,
+      status: "Completed", warehouse, product_group: "", customer_type: "",
+    });
+    parsed++;
+  }
+
+  console.log(`supplement_assembly_csv: parsed ${parsed} CSV rows → ${whAgg.size} per-wh, ${allAgg.size} All aggregates`);
+  if (whAgg.size === 0) return 0;
+
+  // Load existing DB rows to check which ones still have component_usage = 0
+  const uniqueSkus = [...new Set([...whAgg.keys()].map(k => k.split("|")[1]))];
+  const uniquePeriods = [...new Set([...whAgg.keys()].map(k => k.split("|")[0]))];
+
+  const existingMap = new Map<string, { id: number; component_usage: number }>();
+  for (let i = 0; i < uniqueSkus.length; i += 50) {
+    const batch = uniqueSkus.slice(i, i + 50);
+    const { data } = await supabase
+      .from("aim2026_demand_history")
+      .select("id, period_date, sku, warehouse, component_usage")
+      .in("sku", batch)
+      .in("period_date", uniquePeriods)
+      .limit(10000);
+    for (const r of data ?? []) {
+      existingMap.set(`${r.period_date}|${r.sku}|${r.warehouse}`, {
+        id: r.id,
+        component_usage: Number(r.component_usage ?? 0),
+      });
+    }
+  }
+
+  const updates: { id: number; component_usage: number }[] = [];
+  const inserts: any[] = [];
+  let skippedApi = 0;
+
+  // Per-warehouse: only fill where DB has 0
+  for (const [key, compQty] of whAgg) {
+    const [periodDate, sku, warehouse] = key.split("|");
+    const rounded = Math.round(compQty * 100) / 100;
+    const existing = existingMap.get(key);
+
+    if (existing) {
+      if (existing.component_usage > 0) { skippedApi++; continue; }
+      updates.push({ id: existing.id, component_usage: rounded });
+    } else {
+      inserts.push({
+        period_date: periodDate, sku, warehouse,
+        quantity_sold: 0, revenue: 0, component_usage: rounded,
+      });
+    }
+  }
+
+  // "All" aggregate: ADD CSV values for warehouses that were supplemented
+  // (the API may have partially populated "All" — we add the missing portion)
+  const supplementedSkuPeriods = new Set<string>();
+  for (const [key] of whAgg) {
+    const parts = key.split("|");
+    const dbKey = key;
+    const existing = existingMap.get(dbKey);
+    if (!existing || existing.component_usage === 0) {
+      supplementedSkuPeriods.add(`${parts[0]}|${parts[1]}`);
+    }
+  }
+  for (const skuPeriod of supplementedSkuPeriods) {
+    const csvAllQty = allAgg.get(skuPeriod);
+    if (!csvAllQty) continue;
+    const [periodDate, sku] = skuPeriod.split("|");
+    const allKey = `${periodDate}|${sku}|All`;
+    const existing = existingMap.get(allKey);
+    const rounded = Math.round(csvAllQty * 100) / 100;
+
+    if (existing) {
+      updates.push({ id: existing.id, component_usage: existing.component_usage + rounded });
+    } else {
+      inserts.push({
+        period_date: periodDate, sku, warehouse: "All",
+        quantity_sold: 0, revenue: 0, component_usage: rounded,
+      });
+    }
+  }
+
+  console.log(`supplement_assembly_csv: ${updates.length} updates, ${inserts.length} inserts (skipped ${skippedApi} API-populated rows)`);
+
+  for (let i = 0; i < updates.length; i += 50) {
+    const chunk = updates.slice(i, i + 50);
+    await Promise.all(chunk.map(u =>
+      supabase.from("aim2026_demand_history")
+        .update({ component_usage: u.component_usage })
+        .eq("id", u.id)
+    ));
+  }
+
+  for (let i = 0; i < inserts.length; i += 200) {
+    const batch = inserts.slice(i, i + 200);
+    const { error } = await supabase.from("aim2026_demand_history").insert(batch);
+    if (error) {
+      for (const row of batch) {
+        const { data: ex } = await supabase.from("aim2026_demand_history")
+          .select("id, component_usage")
+          .eq("period_date", row.period_date).eq("sku", row.sku).eq("warehouse", row.warehouse)
+          .limit(1);
+        if (ex?.[0]) {
+          if (Number(ex[0].component_usage ?? 0) === 0) {
+            await supabase.from("aim2026_demand_history")
+              .update({ component_usage: row.component_usage })
+              .eq("id", ex[0].id);
+          }
+        } else {
+          await supabase.from("aim2026_demand_history").insert(row);
+        }
+      }
+    }
+  }
+
+  // Insert detail rows (only for supplemented warehouses)
+  const supplementedWarehouses = new Set<string>();
+  for (const [key] of whAgg) {
+    const parts = key.split("|");
+    const existing = existingMap.get(key);
+    if (!existing || existing.component_usage === 0) {
+      supplementedWarehouses.add(parts[2]);
+    }
+  }
+
+  if (supplementedWarehouses.size > 0) {
+    const filteredDetails = detailRows.filter(d => supplementedWarehouses.has(d.warehouse));
+    for (let i = 0; i < filteredDetails.length; i += 200) {
+      const batch = filteredDetails.slice(i, i + 200);
+      const { error } = await supabase.from("aim2026_demand_detail").insert(batch);
+      if (error) console.error("supplement detail insert error:", error);
+    }
+    console.log(`supplement_assembly_csv: inserted ${filteredDetails.length} detail rows for warehouses: ${[...supplementedWarehouses].join(', ')}`);
+  }
+
+  return updates.length + inserts.length;
+}
+
 // ─── Main Handler ──────────────────────────────────────────────────────────
 // Accepts JSON body with optional `step` parameter:
-//   step = "products" | "soh" | "sales" | "purchase" | "assemblies" | "all" (default)
+//   step = "products" | "soh" | "sales" | "purchase" | "assemblies" | "supplement_assembly_csv" | "all" (default)
 // The frontend calls each step sequentially for reliability.
 
 Deno.serve(async (req: Request) => {
@@ -1152,6 +1402,19 @@ Deno.serve(async (req: Request) => {
         const msg = e instanceof Error ? e.message : String(e);
         errors.push(`Assemblies sync failed: ${msg}`);
         console.error("Assemblies sync error:", e);
+      }
+    }
+
+    if (step === "supplement_assembly_csv" || step === "all") {
+      try {
+        const supplemented = await supplementAssemblyCSV(supabase);
+        if (supplemented > 0) {
+          console.log(`CSV supplement: ${supplemented} rows filled from ProductionEnquiryList.csv`);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push(`Assembly CSV supplement failed: ${msg}`);
+        console.error("Assembly CSV supplement error:", e);
       }
     }
 

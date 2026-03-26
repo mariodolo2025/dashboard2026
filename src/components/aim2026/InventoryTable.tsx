@@ -66,18 +66,20 @@ function SortHeader({
 }) {
   const sorted = column.getIsSorted();
   const content = kpiKey ? <ColumnTooltip kpiKey={kpiKey}>{children}</ColumnTooltip> : children;
-
+  const isCentered = className?.includes('justify-center');
   return (
     <button
       onClick={column.getToggleSortingHandler()}
       className={cn(
-        'flex items-center text-xs font-medium text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap group w-full relative',
+        'flex items-center text-xs font-medium text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap group w-full min-w-0',
+        isCentered ? 'relative gap-0' : 'gap-1',
         className
       )}
     >
       {content}
       <span className={cn(
-        'ml-1 transition-opacity flex-shrink-0',
+        'transition-opacity flex h-3 w-3 items-center justify-center flex-shrink-0',
+        isCentered && 'absolute right-0',
         sorted ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'
       )}>
         {sorted === 'asc' ? (
@@ -137,6 +139,12 @@ interface InventoryTableProps {
   dataIsFullyFiltered?: boolean;
   /** When true, replaces the Demand column with separate B2B and B2C columns */
   splitDemand?: boolean;
+  /** Currently selected warehouse for demand display (null = all combined) */
+  warehouseDemandFilter?: string | null;
+  /** Per-SKU demand for the selected warehouse */
+  warehouseDemandMap?: Map<string, number> | null;
+  /** Callback when user clicks a WH Demand number (triggers CSV download) */
+  onWhDemandClick?: (sku: string) => void;
 }
 
 export function InventoryTable({
@@ -153,6 +161,9 @@ export function InventoryTable({
   fullHeight = false,
   dataIsFullyFiltered = false,
   splitDemand = false,
+  warehouseDemandFilter = null,
+  warehouseDemandMap = null,
+  onWhDemandClick,
 }: InventoryTableProps) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'projectedDemand', desc: true },
@@ -273,7 +284,7 @@ export function InventoryTable({
       {
         accessorKey: 'sohMainWH',
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="sohMainWH" className="justify-end">
+          <SortHeader column={column} kpiKey="sohMainWH" className="justify-center">
             SOH Main
           </SortHeader>
         ),
@@ -282,7 +293,7 @@ export function InventoryTable({
           return (
             <span
               className={cn(
-                'text-[13px] tabular-nums text-right block w-full',
+                'text-[13px] tabular-nums text-center block w-full',
                 isLow && 'text-red-600 dark:text-red-400 font-medium'
               )}
             >
@@ -296,12 +307,12 @@ export function InventoryTable({
       {
         accessorKey: 'sohChina',
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="sohChina" className="justify-end">
+          <SortHeader column={column} kpiKey="sohChina" className="justify-center">
             SOH China
           </SortHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-[13px] tabular-nums text-right block w-full">
+          <span className="text-[13px] tabular-nums text-center block w-full">
             {formatNum(row.original.sohChina)}
           </span>
         ),
@@ -315,12 +326,12 @@ export function InventoryTable({
         {
           accessorKey: 'container',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="container" className="justify-end">
+            <SortHeader column={column} kpiKey="container" className="justify-center">
               Container
             </SortHeader>
           ),
           cell: ({ row }) => (
-            <span className="text-[13px] tabular-nums text-right block w-full text-blue-600 dark:text-blue-400">
+            <span className="text-[13px] tabular-nums text-center block w-full text-blue-600 dark:text-blue-400">
               {formatNum(row.original.container)}
             </span>
           ),
@@ -329,12 +340,12 @@ export function InventoryTable({
         {
           accessorKey: 'dhl',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="dhl" className="justify-end">
+            <SortHeader column={column} kpiKey="dhl" className="justify-center">
               DHL
             </SortHeader>
           ),
           cell: ({ row }) => (
-            <span className="text-[13px] tabular-nums text-right block w-full text-orange-600 dark:text-orange-400">
+            <span className="text-[13px] tabular-nums text-center block w-full text-orange-600 dark:text-orange-400">
               {formatNum(row.original.dhl)}
             </span>
           ),
@@ -343,12 +354,12 @@ export function InventoryTable({
         {
           accessorKey: 'onProduction',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="onProduction" className="justify-end">
+            <SortHeader column={column} kpiKey="onProduction" className="justify-center">
               On Prod.
             </SortHeader>
           ),
           cell: ({ row }) => (
-            <span className="text-[13px] tabular-nums text-right block w-full text-purple-600 dark:text-purple-400">
+            <span className="text-[13px] tabular-nums text-center block w-full text-purple-600 dark:text-purple-400">
               {formatNum(row.original.onProduction)}
             </span>
           ),
@@ -363,12 +374,12 @@ export function InventoryTable({
         {
           accessorKey: 'allocatedTotal',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="allocatedMainWH" className="justify-end">
+            <SortHeader column={column} kpiKey="allocatedMainWH" className="justify-center">
               Allocated
             </SortHeader>
           ),
           cell: ({ row }) => (
-            <span className="text-[13px] tabular-nums text-right block w-full">
+            <span className="text-[13px] tabular-nums text-center block w-full">
               {formatNum(row.original.allocatedTotal)}
             </span>
           ),
@@ -377,12 +388,12 @@ export function InventoryTable({
         {
           accessorKey: 'availableMainWH',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="availableMainWH" className="justify-end">
+            <SortHeader column={column} kpiKey="availableMainWH" className="justify-center">
               Available
             </SortHeader>
           ),
           cell: ({ row }) => (
-            <span className="text-[13px] tabular-nums text-right block w-full font-medium">
+            <span className="text-[13px] tabular-nums text-center block w-full font-medium">
               {formatNum(row.original.availableMainWH)}
             </span>
           ),
@@ -398,14 +409,14 @@ export function InventoryTable({
         id: 'demandB2b',
         accessorFn: (row) => row.demandB2b ?? 0,
         header: ({ column }) => (
-          <SortHeader column={column} className="justify-end">
+          <SortHeader column={column} className="justify-center">
             <span className="text-blue-600 dark:text-blue-400">B2B</span>
           </SortHeader>
         ),
         cell: ({ row }) => (
           <button
             onClick={() => onDemandClick(row.original.sku)}
-            className="flex items-center justify-end w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium text-blue-600 dark:text-blue-400"
+            className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium text-blue-600 dark:text-blue-400"
           >
             {formatNum(row.original.demandB2b ?? 0)}
           </button>
@@ -417,14 +428,14 @@ export function InventoryTable({
         id: 'demandB2c',
         accessorFn: (row) => row.demandB2c ?? 0,
         header: ({ column }) => (
-          <SortHeader column={column} className="justify-end">
+          <SortHeader column={column} className="justify-center">
             <span className="text-violet-600 dark:text-violet-400">B2C</span>
           </SortHeader>
         ),
         cell: ({ row }) => (
           <button
             onClick={() => onDemandClick(row.original.sku)}
-            className="flex items-center justify-end w-full text-[13px] tabular-nums hover:text-violet-600 dark:hover:text-violet-400 transition-colors font-medium text-violet-600 dark:text-violet-400"
+            className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-violet-600 dark:hover:text-violet-400 transition-colors font-medium text-violet-600 dark:text-violet-400"
           >
             {formatNum(row.original.demandB2c ?? 0)}
           </button>
@@ -437,14 +448,14 @@ export function InventoryTable({
         {
           accessorKey: 'projectedDemand',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="projectedDemand" className="justify-end">
+            <SortHeader column={column} kpiKey="projectedDemand" className="justify-center">
               Demand
             </SortHeader>
           ),
           cell: ({ row }) => (
             <button
               onClick={() => onDemandClick(row.original.sku)}
-              className="flex items-center justify-end w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors group font-medium"
+              className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors group font-medium"
             >
               <span className="w-4 flex-shrink-0 flex justify-center mr-0.5">
                 <TrendIndicator
@@ -453,24 +464,62 @@ export function InventoryTable({
                   className="opacity-60 group-hover:opacity-100"
                 />
               </span>
-              <span className="text-right">{formatNum(row.original.projectedDemand)}</span>
+              <span className="text-center">{formatNum(row.original.projectedDemand)}</span>
             </button>
           ),
           size: 90,
         },
       );
     }
+
+    // Warehouse-specific demand column (shown when a WH filter is active)
+    if (warehouseDemandFilter && warehouseDemandMap) {
+      const whLabel = warehouseDemandFilter.length > 12
+        ? warehouseDemandFilter.slice(0, 10) + '…'
+        : warehouseDemandFilter;
+      cols.push({
+        id: 'warehouseDemand',
+        accessorFn: (row) => warehouseDemandMap.get(row.sku) ?? 0,
+        header: ({ column }) => (
+          <SortHeader column={column} className="justify-center">
+            <span className="text-emerald-600 dark:text-emerald-400" title={`Demand from ${warehouseDemandFilter}`}>
+              {whLabel}
+            </span>
+          </SortHeader>
+        ),
+        cell: ({ row }) => {
+          const qty = warehouseDemandMap.get(row.original.sku) ?? 0;
+          return (
+            <div className="block w-full text-center text-[13px] tabular-nums font-medium text-emerald-600 dark:text-emerald-400">
+              {qty > 0 ? (
+                <button
+                  className="hover:underline cursor-pointer"
+                  title="Click to download CSV detail"
+                  onClick={() => onWhDemandClick?.(row.original.sku)}
+                >
+                  {formatNum(qty)}
+                </button>
+              ) : (
+                <span className="text-muted-foreground/40">—</span>
+              )}
+            </div>
+          );
+        },
+        size: 85,
+      });
+    }
+
     cols.push(
       // Reorder Point
       {
         accessorKey: 'reorderPoint',
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="reorderPoint" className="justify-end">
+          <SortHeader column={column} kpiKey="reorderPoint" className="justify-center">
             ROP
           </SortHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-[13px] tabular-nums text-right block w-full text-muted-foreground">
+          <span className="text-[13px] tabular-nums text-center block w-full text-muted-foreground">
             {formatNum(row.original.reorderPoint)}
           </span>
         ),
@@ -480,7 +529,7 @@ export function InventoryTable({
       {
         accessorKey: 'suggestedQty',
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="suggestedQty" className="justify-end">
+          <SortHeader column={column} kpiKey="suggestedQty" className="justify-center">
             Sug. Qty
           </SortHeader>
         ),
@@ -496,7 +545,7 @@ export function InventoryTable({
               <button
                 onClick={() => onSugQtyClick?.(row.original)}
                 className={cn(
-                  'text-[13px] tabular-nums text-right block w-full font-semibold transition-all rounded px-1 -mx-1',
+                  'text-[13px] tabular-nums text-center block w-full font-semibold transition-all rounded px-1 -mx-1',
                   isSelected
                     ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400'
                     : isSoft
@@ -513,7 +562,7 @@ export function InventoryTable({
           return (
             <span
               className={cn(
-                'text-[13px] tabular-nums text-right block w-full',
+                'text-[13px] tabular-nums text-center block w-full',
                 qty > 0 && 'text-blue-600 dark:text-blue-400 font-semibold',
                 isSoft && 'text-amber-500 dark:text-amber-400 font-medium'
               )}
@@ -534,12 +583,12 @@ export function InventoryTable({
         {
           accessorKey: 'targetStockLevel',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="targetStockLevel" className="justify-end">
+            <SortHeader column={column} kpiKey="targetStockLevel" className="justify-center">
               Target
             </SortHeader>
           ),
           cell: ({ row }) => (
-            <span className="text-[13px] tabular-nums text-right block w-full text-muted-foreground">
+            <span className="text-[13px] tabular-nums text-center block w-full text-muted-foreground">
               {formatNum(row.original.targetStockLevel)}
             </span>
           ),
@@ -549,7 +598,7 @@ export function InventoryTable({
         {
           accessorKey: 'pipeline',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="pipeline" className="justify-end">
+            <SortHeader column={column} kpiKey="pipeline" className="justify-center">
               Pipeline
             </SortHeader>
           ),
@@ -558,7 +607,7 @@ export function InventoryTable({
             return (
               <span
                 className={cn(
-                  'text-[13px] tabular-nums text-right block w-full',
+                  'text-[13px] tabular-nums text-center block w-full',
                   p > 0 && 'text-cyan-600 dark:text-cyan-400'
                 )}
               >
@@ -572,12 +621,12 @@ export function InventoryTable({
         {
           accessorKey: 'safetyStock',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="safetyStock" className="justify-end">
+            <SortHeader column={column} kpiKey="safetyStock" className="justify-center">
               Safety
             </SortHeader>
           ),
           cell: ({ row }) => (
-            <span className="text-[13px] tabular-nums text-right block w-full text-muted-foreground">
+            <span className="text-[13px] tabular-nums text-center block w-full text-muted-foreground">
               {formatNum(row.original.safetyStock)}
             </span>
           ),
@@ -587,12 +636,12 @@ export function InventoryTable({
         {
           accessorKey: 'leadTimeDays',
           header: ({ column }) => (
-            <SortHeader column={column} kpiKey="leadTimeDays" className="justify-end">
+            <SortHeader column={column} kpiKey="leadTimeDays" className="justify-center">
               L/T
             </SortHeader>
           ),
           cell: ({ row }) => (
-            <span className="text-[13px] tabular-nums text-right block w-full text-muted-foreground">
+            <span className="text-[13px] tabular-nums text-center block w-full text-muted-foreground">
               {row.original.leadTimeDays}d
             </span>
           ),
@@ -606,14 +655,14 @@ export function InventoryTable({
       {
         accessorKey: 'daysOfCover',
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="daysOfCover" className="justify-end">
+          <SortHeader column={column} kpiKey="daysOfCover" className="justify-center">
             Cover
           </SortHeader>
         ),
         cell: ({ row }) => (
           <span
             className={cn(
-              'text-[13px] tabular-nums text-right block w-full',
+              'text-[13px] tabular-nums text-center block w-full',
               getDaysOfCoverColor(row.original.daysOfCover)
             )}
           >
@@ -628,12 +677,12 @@ export function InventoryTable({
       {
         accessorKey: 'turnover',
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="turnover" className="justify-end">
+          <SortHeader column={column} kpiKey="turnover" className="justify-center">
             Turn.
           </SortHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-[13px] tabular-nums text-right block w-full">
+          <span className="text-[13px] tabular-nums text-center block w-full">
             {row.original.turnover > 0 ? row.original.turnover.toFixed(1) : '—'}
           </span>
         ),
@@ -643,14 +692,14 @@ export function InventoryTable({
       {
         accessorKey: 'marginPercent',
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="marginPercent" className="justify-end">
+          <SortHeader column={column} kpiKey="marginPercent" className="justify-center">
             Margin
           </SortHeader>
         ),
         cell: ({ row }) => (
           <span
             className={cn(
-              'text-[13px] tabular-nums text-right block w-full',
+              'text-[13px] tabular-nums text-center block w-full',
               getMarginColor(row.original.marginPercent)
             )}
           >
@@ -665,14 +714,14 @@ export function InventoryTable({
       {
         accessorKey: 'gmroi',
         header: ({ column }) => (
-          <SortHeader column={column} kpiKey="gmroi" className="justify-end">
+          <SortHeader column={column} kpiKey="gmroi" className="justify-center">
             GMROI
           </SortHeader>
         ),
         cell: ({ row }) => (
           <span
             className={cn(
-              'text-[13px] tabular-nums text-right block w-full',
+              'text-[13px] tabular-nums text-center block w-full',
               getGMROIColor(row.original.gmroi)
             )}
           >
@@ -723,6 +772,9 @@ export function InventoryTable({
     exportSelectedSKUs,
     onExportSelectedSKUsChange,
     splitDemand,
+    warehouseDemandFilter,
+    warehouseDemandMap,
+    onWhDemandClick,
   ]);
 
   // ─── Table instance ──────────────────────────────────────────────────────
@@ -799,7 +851,7 @@ export function InventoryTable({
               return (
                 <div
                   key={header.id}
-                  className="px-3 py-2.5 text-left font-medium flex-shrink-0 min-w-0"
+                  className="px-3 py-2.5 text-left font-medium flex-shrink-0 min-w-0 flex items-center"
                   style={{ width: size, flex: `${size} 0 0%` }}
                 >
                   {header.isPlaceholder
@@ -847,7 +899,7 @@ export function InventoryTable({
                   return (
                     <div
                       key={cell.id}
-                      className="px-3 flex items-center flex-shrink-0 min-w-0"
+                      className="px-3 flex items-center flex-shrink-0 min-w-0 text-left"
                       style={{
                         width: size,
                         flex: `${size} 0 0%`,

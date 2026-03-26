@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
-import { Package, AlertTriangle, RotateCcw, TrendingUp, Percent, CalendarClock, Brain, Sparkles } from 'lucide-react';
+import { Package, AlertTriangle, RotateCcw, TrendingUp, Percent, CalendarClock, Brain, Sparkles, HelpCircle } from 'lucide-react';
 import { Card } from '@/components/ui/card';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { TrendIndicator } from './TrendIndicator';
 import type { KPISummary } from '@/lib/aim2026/types';
 
@@ -110,6 +111,24 @@ function KPICard({
             <div className="flex items-center gap-1.5 text-muted-foreground">
               <span className="opacity-60">{icon}</span>
               <span className="text-xs font-medium tracking-wide uppercase truncate">{label}</span>
+              {helpText && (
+                <TooltipProvider delayDuration={300}>
+                  <Tooltip>
+                    <TooltipTrigger asChild onClick={(e) => e.stopPropagation()}>
+                      <span className="ml-auto cursor-help opacity-40 hover:opacity-80 transition-opacity">
+                        <HelpCircle size={11} />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="bottom"
+                      align="start"
+                      className="max-w-[220px] text-[11px] leading-snug"
+                    >
+                      {helpText}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
             </div>
 
             {/* Value row */}
@@ -134,16 +153,9 @@ function KPICard({
               )}
             </div>
 
-            {/* Subtitle */}
+            {/* Subtitle — fixed height, no hover expansion */}
             {subtitle && (
               <p className="text-[11px] text-muted-foreground/70 leading-tight">{subtitle}</p>
-            )}
-
-            {/* Help text on hover */}
-            {helpText && (
-              <p className="text-[10px] text-muted-foreground/50 leading-tight mt-0.5 hidden group-hover:block transition-all">
-                {helpText}
-              </p>
             )}
           </div>
 

@@ -440,6 +440,23 @@ export async function syncUnleashed(
     }
   }
 
+  // Supplement assembly component_usage from CSV for warehouses not covered by API
+  onProgress?.({
+    status: 'syncing',
+    currentStep: 'Supplementing assembly data from CSV...',
+    progress: 76,
+  });
+
+  try {
+    await callFunction<{ success: boolean; errors: string[] }>(
+      'aim2026-sync-unleashed',
+      { step: 'supplement_assembly_csv' }
+    );
+  } catch (e) {
+    console.error('Assembly CSV supplement failed:', e);
+    allErrors.push(`Assembly CSV supplement: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // Reload costs from CSV to ensure costs.csv values take precedence
   onProgress?.({
     status: 'syncing',
@@ -1338,6 +1355,63 @@ export async function fetchDemandChannelSplit(
       'aim2026-get-dashboard',
       { action: 'demand_channel_split', from, to }
     );
+    return result.data ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// ─── Demand Warehouse Split (per SKU, per warehouse) ──────────────────────
+
+export interface DemandWarehouseSplitItem {
+  sku: string;
+  warehouse: string;
+  qty: number;
+}
+
+export interface DemandWarehouseSplitResult {
+  data: DemandWarehouseSplitItem[];
+  warehouses: string[];
+}
+
+/**
+ * Fetches demand totals per SKU per warehouse from aim2026_demand_history.
+ * quantity_sold is per-warehouse; component_usage comes from "All" aggregate
+ * so component demand is visible regardless of assembly warehouse.
+ */
+export async function fetchDemandWarehouseSplit(
+  from?: string,
+  to?: string,
+): Promise<DemandWarehouseSplitResult> {
+  try {
+    const result = await callFunction<{
+      success: boolean;
+      data: DemandWarehouseSplitItem[];
+      warehouses: string[];
+    }>('aim2026-get-dashboard', { action: 'demand_warehouse_split', from, to });
+    return {
+      data: result.data ?? [],
+      warehouses: result.warehouses ?? [],
+    };
+  } catch {
+    return { data: [], warehouses: [] };
+  }
+}
+
+/**
+ * Fetches per-warehouse per-month demand detail rows for a single SKU
+ * (for CSV download).
+ */
+export async function fetchWhDemandDetail(
+  sku: string,
+  from?: string,
+  to?: string,
+): Promise<Record<string, unknown>[]> {
+  try {
+    const result = await callFunction<{
+      success: boolean;
+      data: Record<string, unknown>[];
+    }>('aim2026-get-dashboard', { action: 'wh_demand_detail', sku, from, to });
     return result.data ?? [];
   } catch {
     return [];

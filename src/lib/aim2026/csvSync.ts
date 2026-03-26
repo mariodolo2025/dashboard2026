@@ -373,14 +373,14 @@ async function updateProduction(
     return ex !== `${f[7]}|${f[8]}|${f[9]}`;
   });
 
-  onProgress({ step: 'Uploading Production CSV...', phase: 'production', progress: 67 });
-
-  const mergedCSV = [`Production Enquiry as of ${au},,,,,,,,,`, colHeaders, ...allNewLines, ...keptLines, ''].join('\n');
-  await uploadProductionCSV(mergedCSV);
+  // NOTE: We intentionally do NOT upload the merged CSV back to the bucket.
+  // The user's manually-uploaded ProductionEnquiryList.csv is the source of truth
+  // and contains warehouse attributions (e.g. China-W) that the API doesn't fully
+  // reproduce due to pagination limits and warehouse field differences.
 
   const deltaCSV = [`Production Enquiry DELTA (new or changed) as of ${au},,,,,,,,,`, colHeaders, ...deltaLines, ''].join('\n');
 
-  onProgress({ step: `Production: ${allNewLines.length} new rows, ${deltaLines.length} changed`, phase: 'production', progress: 70 });
+  onProgress({ step: `Production: ${allNewLines.length} API rows, ${deltaLines.length} changed (CSV preserved)`, phase: 'production', progress: 70 });
 
   return { blob: new Blob([deltaCSV], { type: 'text/csv;charset=utf-8;' }) };
 }

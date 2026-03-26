@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from 'react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon, Download } from 'lucide-react';
+import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon, Download, BarChart2, ChevronDown, Truck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
@@ -17,6 +17,14 @@ import { POBuilderPanel } from './aim2026/POBuilderPanel';
 import { QtyConfirmDialog } from './aim2026/QtyConfirmDialog';
 import { AIInsightsDialog } from './aim2026/AIInsightsDialog';
 import { AIM2026ExportCSVDialog } from './aim2026/AIM2026ExportCSVDialog';
+import { FutureProjectedDemandDialog } from './aim2026/FutureProjectedDemandDialog';
+import { RealInboundStockDialog } from './aim2026/RealInboundStockDialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import type { AIM2026Filters, SKURow, KPISummary, SyncStatus, StockValuationTotals, StockValuationHistoryRecord, AIM2026Config, POBuilderItem } from '@/lib/aim2026/types';
 import type { BOMComponent } from '@/lib/aim2026/api';
 import { DEFAULT_FILTERS, DEFAULT_CONFIG } from '@/lib/aim2026/types';
@@ -25,7 +33,11 @@ import {
   createPurchaseOrder,
   recalcKPIsForDateRange,
   recalcKPIsForDemandMode,
+  fetchDemandWarehouseSplit,
+  fetchWhDemandDetail,
+  downloadAsCSV,
 } from '@/lib/aim2026/api';
+import type { DemandWarehouseSplitItem } from '@/lib/aim2026/api';
 import { runFullCSVSync, type CSVSyncProgress } from '@/lib/aim2026/csvSync';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -87,10 +99,19 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const [demandSKU, setDemandSKU] = useState<SKURow | null>(null);
   const [valuationOpen, setValuationOpen] = useState(false);
   const [aiInsightsOpen, setAIInsightsOpen] = useState(false);
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [realInboundOpen, setRealInboundOpen] = useState(false);
 
-  // PO Builder state
+  // PO Builder state — cart persists in localStorage across panel toggles
   const [poBuilderMode, setPOBuilderMode] = useState(false);
-  const [poItems, setPOItems] = useState<POBuilderItem[]>([]);
+  const [poItems, setPOItems] = useState<POBuilderItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('aim2026-po-draft');
+      return saved ? (JSON.parse(saved) as POBuilderItem[]) : [];
+    } catch {
+      return [];
+    }
+  });
   const [poCreating, setPOCreating] = useState(false);
   const [qtyDialogOpen, setQtyDialogOpen] = useState(false);
   const [qtyDialogRow, setQtyDialogRow] = useState<SKURow | null>(null);
@@ -104,6 +125,12 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
 
   // B2B / B2C demand channel split (pure display toggle — data is in SKURow already)
   const [splitDemand, setSplitDemand] = useState(false);
+
+  // Warehouse demand split (fetched on demand)
+  const [warehouseDemandFilter, setWarehouseDemandFilter] = useState<string | null>(null);
+  const [warehouseDemandData, setWarehouseDemandData] = useState<DemandWarehouseSplitItem[]>([]);
+  const [warehouseList, setWarehouseList] = useState<string[]>([]);
+  const [warehouseDemandLoading, setWarehouseDemandLoading] = useState(false);
 
   // ─── Load real data from Supabase ──────────────────────────────────────────
 
@@ -483,6 +510,110 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     setSplitDemand((v) => !v);
   }, []);
 
+  // ─── Warehouse Demand Handler ──────────────────────────────────────────
+
+  // Derive month-boundary date strings for warehouse demand queries
+  const whDemandFrom = useMemo(() => {
+    if (!dateRange?.from) return undefined;
+    const f = dateRange.from;
+    return `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-01`;
+  }, [dateRange?.from?.getTime()]);
+
+  const whDemandTo = useMemo(() => {
+    if (!dateRange?.to) return undefined;
+    const t = dateRange.to;
+    const last = new Date(t.getFullYear(), t.getMonth() + 1, 0);
+    return `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
+  }, [dateRange?.to?.getTime()]);
+
+  const hasPartialWhDemandRange = useMemo(
+    () => Boolean(dateRange?.from) !== Boolean(dateRange?.to),
+    [dateRange?.from?.getTime(), dateRange?.to?.getTime()]
+  );
+
+  // Lazily load warehouse names when the user first opens the "More" section
+  const loadWarehouseListIfNeeded = useCallback(() => {
+    if (warehouseList.length > 0 || warehouseDemandLoading || hasPartialWhDemandRange) return;
+    setWarehouseDemandLoading(true);
+    fetchDemandWarehouseSplit(whDemandFrom, whDemandTo)
+      .then((r) => {
+        setWarehouseList(r.warehouses);
+        if (r.data.length > 0) setWarehouseDemandData(r.data);
+      })
+      .catch(() => {})
+      .finally(() => setWarehouseDemandLoading(false));
+  }, [warehouseList.length, warehouseDemandLoading, hasPartialWhDemandRange, whDemandFrom, whDemandTo]);
+
+  const handleWarehouseDemandChange = useCallback(async (warehouse: string | null) => {
+    setWarehouseDemandFilter(warehouse);
+    if (!warehouse) {
+      return;
+    }
+    if (hasPartialWhDemandRange) {
+      setWarehouseDemandData([]);
+      return;
+    }
+    // If data hasn't been fetched yet, fetch now
+    if (warehouseDemandData.length === 0) {
+      setWarehouseDemandLoading(true);
+      try {
+        const result = await fetchDemandWarehouseSplit(whDemandFrom, whDemandTo);
+        setWarehouseDemandData(result.data);
+        setWarehouseList(result.warehouses);
+      } catch {
+        setWarehouseDemandData([]);
+      } finally {
+        setWarehouseDemandLoading(false);
+      }
+    }
+  }, [warehouseDemandData.length, hasPartialWhDemandRange, whDemandFrom, whDemandTo]);
+
+  // Re-fetch warehouse demand data when date range changes and a filter is active
+  useEffect(() => {
+    if (!warehouseDemandFilter) return;
+    if (hasPartialWhDemandRange) {
+      setWarehouseDemandData([]);
+      return;
+    }
+    setWarehouseDemandLoading(true);
+    fetchDemandWarehouseSplit(whDemandFrom, whDemandTo)
+      .then((r) => {
+        setWarehouseDemandData(r.data);
+        setWarehouseList(r.warehouses);
+      })
+      .catch(() => {})
+      .finally(() => setWarehouseDemandLoading(false));
+  }, [whDemandFrom, whDemandTo, warehouseDemandFilter, hasPartialWhDemandRange]);
+
+  // Pre-compute per-SKU demand for the selected warehouse
+  const warehouseDemandMap = useMemo(() => {
+    if (!warehouseDemandFilter || warehouseDemandData.length === 0) return null;
+    const map = new Map<string, number>();
+    for (const item of warehouseDemandData) {
+      if (item.warehouse === warehouseDemandFilter) {
+        map.set(item.sku, (map.get(item.sku) ?? 0) + item.qty);
+      }
+    }
+    return map;
+  }, [warehouseDemandFilter, warehouseDemandData]);
+
+  // ─── WH Demand CSV Download ─────────────────────────────────────────────
+
+  const handleWhDemandClick = useCallback(async (sku: string) => {
+    const rows = await fetchWhDemandDetail(sku, whDemandFrom, whDemandTo);
+    if (rows.length === 0) return;
+    const csvRows = rows.map((r) => ({
+      SKU: String(r.sku ?? ''),
+      Warehouse: String(r.warehouse ?? ''),
+      Period: String(r.period_date ?? ''),
+      Quantity_Sold: Number(r.quantity_sold ?? 0),
+      Component_Usage: Number(r.component_usage ?? 0),
+      Total: Number(r.quantity_sold ?? 0) + Number(r.component_usage ?? 0),
+      Revenue: Math.round(Number(r.revenue ?? 0) * 100) / 100,
+    }));
+    downloadAsCSV(csvRows, `wh_demand_${sku}_${warehouseDemandFilter ?? 'all'}.csv`);
+  }, [whDemandFrom, whDemandTo, warehouseDemandFilter]);
+
   // ─── PO Builder Handlers ──────────────────────────────────────────────────
 
   const poSelectedSKUs = useMemo(
@@ -529,6 +660,17 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const handlePOClear = useCallback(() => {
     setPOItems([]);
   }, []);
+
+  // Persist draft cart to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      if (poItems.length > 0) {
+        localStorage.setItem('aim2026-po-draft', JSON.stringify(poItems));
+      } else {
+        localStorage.removeItem('aim2026-po-draft');
+      }
+    } catch { /* storage unavailable */ }
+  }, [poItems]);
 
   // Close maximized table on Escape
   useEffect(() => {
@@ -579,19 +721,11 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     }
   }, [poItems]);
 
+  // Toggle the PO panel — items are NEVER discarded on close; they persist in
+  // localStorage until the user explicitly clears them or sends the PO.
   const handleTogglePOMode = useCallback(() => {
-    setPOBuilderMode((prev) => {
-      if (prev) {
-        // Exiting PO mode — if items exist, ask to confirm
-        if (poItems.length > 0) {
-          const discard = confirm('Discard PO draft with ' + poItems.length + ' items?');
-          if (!discard) return true; // keep mode
-          setPOItems([]);
-        }
-      }
-      return !prev;
-    });
-  }, [poItems.length]);
+    setPOBuilderMode((prev) => !prev);
+  }, []);
 
   // ─── Format last sync time ────────────────────────────────────────────────
 
@@ -678,21 +812,48 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             className={`h-8 gap-1.5 text-xs font-medium ${
               poBuilderMode
                 ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                : poItems.length > 0
+                ? 'border-blue-400 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30'
                 : ''
             }`}
           >
-            {poBuilderMode ? (
-              <>
-                <X size={14} />
-                Exit PO Mode
-              </>
-            ) : (
-              <>
-                <ShoppingCart size={14} />
-                Create Purchase Order
-              </>
+            <ShoppingCart size={14} />
+            {poBuilderMode
+              ? 'Hide PO Draft'
+              : poItems.length > 0
+              ? 'PO Draft'
+              : 'Create Purchase Order'}
+            {poItems.length > 0 && (
+              <span className="inline-flex items-center justify-center bg-blue-600 text-white text-[9px] font-bold rounded-full min-w-[16px] h-[16px] px-1 leading-none">
+                {poItems.length}
+              </span>
             )}
           </Button>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs font-medium"
+                disabled={loading || filteredCount === 0}
+              >
+                <BarChart2 size={14} />
+                Reports
+                <ChevronDown size={12} className="text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setReportsOpen(true)}>
+                <BarChart2 size={13} className="mr-2 text-muted-foreground" />
+                Future Projected Demand
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setRealInboundOpen(true)}>
+                <Truck size={13} className="mr-2 text-muted-foreground" />
+                Real Inbound Stock Curve
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <Button
             onClick={() => setExportCSVOpen(true)}
@@ -886,6 +1047,11 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
               onMaximizeClick={() => setTableMaximized(true)}
               splitDemand={splitDemand}
               onToggleSplit={handleToggleSplit}
+              warehouseList={warehouseList}
+              warehouseDemandFilter={warehouseDemandFilter}
+              onWarehouseDemandChange={handleWarehouseDemandChange}
+              warehouseDemandLoading={warehouseDemandLoading}
+              onLoadWarehouseList={loadWarehouseListIfNeeded}
             />
           </div>
 
@@ -997,6 +1163,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             loading={loading}
             onSKUClick={handleSKUClick}
             onDemandClick={handleDemandClick}
+            onWhDemandClick={handleWhDemandClick}
             poBuilderMode={poBuilderMode}
             poSelectedSKUs={poSelectedSKUs}
             onSugQtyClick={handleSugQtyClick}
@@ -1004,6 +1171,8 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             onExportSelectedSKUsChange={setExportSelectedSKUs}
             dataIsFullyFiltered
             splitDemand={splitDemand}
+            warehouseDemandFilter={warehouseDemandFilter}
+            warehouseDemandMap={warehouseDemandMap}
           />
         </>
       )}
@@ -1098,6 +1267,11 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                   isMaximized
                   splitDemand={splitDemand}
                   onToggleSplit={handleToggleSplit}
+                  warehouseList={warehouseList}
+                  warehouseDemandFilter={warehouseDemandFilter}
+                  onWarehouseDemandChange={handleWarehouseDemandChange}
+                  warehouseDemandLoading={warehouseDemandLoading}
+                  onLoadWarehouseList={loadWarehouseListIfNeeded}
                 />
               </div>
               {filteredData.length > 0 && (
@@ -1146,6 +1320,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                   loading={loading}
                   onSKUClick={handleSKUClick}
                   onDemandClick={handleDemandClick}
+                  onWhDemandClick={handleWhDemandClick}
                   poBuilderMode={poBuilderMode}
                   poSelectedSKUs={poSelectedSKUs}
                   onSugQtyClick={handleSugQtyClick}
@@ -1154,6 +1329,8 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                   fullHeight
                   dataIsFullyFiltered
                   splitDemand={splitDemand}
+                  warehouseDemandFilter={warehouseDemandFilter}
+                  warehouseDemandMap={warehouseDemandMap}
                 />
               </div>
             </div>
@@ -1220,6 +1397,20 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
         selectedRowSKUs={exportSelectedSKUs}
         dateRange={dateRange}
         setDateRange={setDateRange}
+      />
+
+      <FutureProjectedDemandDialog
+        open={reportsOpen}
+        onOpenChange={setReportsOpen}
+        filteredData={exportSelectedSKUs.size > 0 ? filteredData.filter((r) => exportSelectedSKUs.has(r.sku)) : filteredData}
+        dateRange={dateRange}
+      />
+
+      <RealInboundStockDialog
+        open={realInboundOpen}
+        onOpenChange={setRealInboundOpen}
+        filteredData={exportSelectedSKUs.size > 0 ? filteredData.filter((r) => exportSelectedSKUs.has(r.sku)) : filteredData}
+        warehouseDemandMap={warehouseDemandMap}
       />
 
       {/* ─── PO Builder Components ─────────────────────────────────────────── */}

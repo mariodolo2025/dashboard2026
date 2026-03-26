@@ -728,6 +728,102 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ success: true, data: result, from: from ?? null, to: to ?? null });
     }
 
+    // ─── Demand Warehouse Split (per SKU, per warehouse) ────────
+    // Returns [{sku, warehouse, qty}] where qty = quantity_sold + component_usage
+    // per warehouse. China-W component_usage is populated by the
+    // supplement_assembly_csv step from ProductionEnquiryList.csv.
+    if (action === "demand_warehouse_split") {
+      const from: string | undefined = body?.from;
+      const to: string | undefined = body?.to;
+
+      const perSkuWh = new Map<string, number>();
+      const warehouses = new Set<string>();
+      const pageSize = 1000;
+      let offset = 0;
+
+      while (true) {
+        let query = supabase
+          .from("aim2026_demand_history")
+          .select("sku, warehouse, quantity_sold, component_usage")
+          .neq("warehouse", "All")
+          .range(offset, offset + pageSize - 1);
+
+        if (from) query = query.gte("period_date", from);
+        if (to)   query = query.lte("period_date", to);
+
+        const { data: page, error } = await query;
+        if (error) {
+          return jsonResponse({ success: false, message: error.message }, 500);
+        }
+        if (!page || page.length === 0) break;
+
+        for (const row of page) {
+          const sku = String(row.sku ?? "").trim();
+          const wh  = String(row.warehouse ?? "").trim();
+          if (!sku || !wh) continue;
+          warehouses.add(wh);
+          const qty = Number(row.quantity_sold ?? 0) + Number(row.component_usage ?? 0);
+          if (qty > 0) {
+            const key = `${sku}|${wh}`;
+            perSkuWh.set(key, (perSkuWh.get(key) ?? 0) + qty);
+          }
+        }
+
+        if (page.length < pageSize) break;
+        offset += pageSize;
+      }
+
+      const data = Array.from(perSkuWh.entries()).map(([key, qty]) => {
+        const [sku, warehouse] = key.split("|");
+        return { sku, warehouse, qty: Math.round(qty) };
+      });
+
+      return jsonResponse({
+        success: true,
+        data,
+        warehouses: Array.from(warehouses).sort(),
+        from: from ?? null,
+        to: to ?? null,
+      });
+    }
+
+    // ─── WH Demand Detail (CSV download per SKU) ──────────────────
+    if (action === "wh_demand_detail") {
+      const sku: string | undefined = body?.sku;
+      const from: string | undefined = body?.from;
+      const to: string | undefined = body?.to;
+      if (!sku) {
+        return jsonResponse({ success: false, message: "Missing sku" }, 400);
+      }
+
+      const pageSize = 1000;
+      const rows: any[] = [];
+      let offset = 0;
+
+      while (true) {
+        let query = supabase
+          .from("aim2026_demand_history")
+          .select("sku, warehouse, period_date, quantity_sold, component_usage, revenue")
+          .eq("sku", sku)
+          .order("period_date", { ascending: true })
+          .range(offset, offset + pageSize - 1);
+
+        if (from) query = query.gte("period_date", from);
+        if (to) query = query.lte("period_date", to);
+
+        const { data: page, error } = await query;
+        if (error) {
+          return jsonResponse({ success: false, message: error.message }, 500);
+        }
+        if (!page || page.length === 0) break;
+        rows.push(...page);
+        if (page.length < pageSize) break;
+        offset += pageSize;
+      }
+
+      return jsonResponse({ success: true, data: rows, sku });
+    }
+
     // ─── Recent Orders (for SKU detail popup) ───────────────────
     if (action === "recent_orders") {
       const sku = body?.sku;

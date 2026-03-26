@@ -429,3 +429,106 @@ export const KPI_DESCRIPTIONS: Record<string, { title: string; description: stri
     description: 'Supplier lead time in days: production + shipping time. Loaded from ProductList.csv or Unleashed sync.',
   },
 };
+
+// ─── Future Projected Demand Report ─────────────────────────────────────────
+
+/**
+ * Risk levels for the coverage waterfall report.
+ *   SAFE           → full chain covers the target date (no gap)
+ *   ORDER_REQUIRED → gap exists but orderDeadline is today or later (can still act)
+ *   CRITICAL       → gap exists and orderDeadline has already passed (too late)
+ */
+export type RiskLevel = 'SAFE' | 'ORDER_REQUIRED' | 'CRITICAL';
+
+/** A single supply source in the coverage timeline. */
+export interface CoverageSegment {
+  source: 'MAIN' | 'CHINA' | 'DHL' | 'CONTAINER' | 'PRODUCTION';
+  label: string;
+  units: number;
+  /** Estimated day (from today) when this supply physically arrives at Main WH */
+  arrivalDay: number;
+  /**
+   * Day when actual draw-down of this source begins (previous tier exhausted).
+   *   - Main: 0
+   *   - DHL: mainStockoutDay  (arrives day 7, consumed from mainStockoutDay)
+   *   - Container: mainAndDhlStockoutDay
+   *   - China: tier1StockoutDay  (bar starts earlier at arrivalDay for visual overlap)
+   *   - Production: combinedStockoutDay, or tier1StockoutDay if co-shipped with China
+   */
+  consumptionStartDay: number;
+  /**
+   * Day when the transit period begins on the shared timeline.
+   *   - Main: 0 (no transit)
+   *   - DHL/Container: 0 (already in transit from today, no action needed)
+   *   - China: chinaOrderDeadlineDay (transit starts when you place the order)
+   *   - Production: productionReadyDay (transit starts when production is complete in China)
+   */
+  transitStartDay: number;
+  /** How many days this source alone would cover demand (units / dailyDemand) */
+  coveragePotentialDays: number;
+  /** = arrivalDay (start of coverage window on the timeline) */
+  fromDay: number;
+  /** = consumptionStartDay + coveragePotentialDays (end of coverage window) */
+  toDay: number;
+  fromDate: Date;
+  toDate: Date;
+  /** For CHINA / PRODUCTION: latest date to place the DHL order */
+  orderDeadline?: Date;
+  /** True for sources already in transit (DHL, Container) — no action needed */
+  isAutomatic: boolean;
+  /**
+   * True when this PRODUCTION segment ships in the SAME DHL order as the China WH segment.
+   * It arrives at the same arrivalDay as China, not as a separate later wave.
+   */
+  coShippedWithChina: boolean;
+}
+
+/** One point in the waterfall stock chart (for the Stock Curve tab). */
+export interface TimelinePoint {
+  date: Date;
+  stock: number;
+  event?: 'STOCKOUT' | 'DHL_ARRIVAL' | 'CONTAINER_ARRIVAL' | 'PRODUCTION_ARRIVAL' | 'CHINA_ARRIVAL';
+}
+
+export interface SKUProjection {
+  sku: string;
+  product: string;
+  abcClass: ABCClass;
+  dailyDemand: number;
+
+  // Main-only stockout (ignoring all pipeline) — shows urgency without action
+  daysToStockout: number | null;
+  stockoutDate: Date | null;
+
+  // Coverage chain (arrival-time based, for swimlane visualization)
+  coverageChain: CoverageSegment[];
+  /** Last day of combined coverage (combined stockout day, or daysToTarget if fully covered) */
+  totalCoveredDays: number;
+  /** Day when Tier-1 auto supply (Main + DHL + Container) runs out; null = never within target */
+  tier1StockoutDay: number | null;
+  /** Day index when combined supply (with China ordered) runs out; null = no stockout */
+  combinedStockoutDay: number | null;
+  /** Latest date to order China WH via DHL to arrive before Tier-1 stockout */
+  chinaOrderDeadline: Date | null;
+  /**
+   * True when production units will be ready in China before the China DHL order departs,
+   * meaning they are included in the China shipment (china effective units = sohChina + onProduction).
+   */
+  productionIncludedInChina: boolean;
+
+  // Gap analysis
+  gapDays: number;
+  gapUnits: number;
+  /** Latest date to order the gap quantity via DHL to arrive before supply runs out */
+  orderDeadline: Date | null;
+
+  // Order recommendation
+  requiredUnits: number;
+  recommendedOrder: number;   // requiredUnits × 1.1 buffer
+
+  projectedFinalStock: number;
+  riskLevel: RiskLevel;
+
+  // Stock curve data for the chart tab
+  timeline: TimelinePoint[];
+}

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2, SplitSquareHorizontal } from 'lucide-react';
+import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2, SplitSquareHorizontal, Warehouse } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -120,6 +120,11 @@ interface FilterBarProps {
   isMaximized?: boolean;
   splitDemand?: boolean;
   onToggleSplit?: () => void;
+  warehouseList?: string[];
+  warehouseDemandFilter?: string | null;
+  onWarehouseDemandChange?: (warehouse: string | null) => void;
+  warehouseDemandLoading?: boolean;
+  onLoadWarehouseList?: () => void;
 }
 
 export function FilterBar({
@@ -137,6 +142,11 @@ export function FilterBar({
   isMaximized = false,
   splitDemand = false,
   onToggleSplit,
+  warehouseList = [],
+  warehouseDemandFilter = null,
+  onWarehouseDemandChange,
+  warehouseDemandLoading = false,
+  onLoadWarehouseList,
 }: FilterBarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -213,7 +223,11 @@ export function FilterBar({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => setShowAdvanced(!showAdvanced)}
+          onClick={() => {
+            const nextVal = !showAdvanced;
+            setShowAdvanced(nextVal);
+            if (nextVal && onLoadWarehouseList) onLoadWarehouseList();
+          }}
           className="h-9 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
         >
           <SlidersHorizontal size={14} />
@@ -415,6 +429,35 @@ export function FilterBar({
                     <SplitSquareHorizontal size={12} />
                     B2B / B2C split
                   </button>
+                )}
+
+                {onWarehouseDemandChange && warehouseList.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs font-normal text-muted-foreground whitespace-nowrap flex items-center gap-1">
+                      <Warehouse size={11} />
+                      WH Demand
+                    </Label>
+                    <Select
+                      value={warehouseDemandFilter ?? '__none__'}
+                      onValueChange={(v) => onWarehouseDemandChange(v === '__none__' ? null : v)}
+                    >
+                      <SelectTrigger className={cn(
+                        'h-8 w-[160px] text-xs',
+                        warehouseDemandFilter && 'border-emerald-400 text-emerald-700 dark:text-emerald-400'
+                      )}>
+                        <SelectValue placeholder="All (combined)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__" className="text-xs">All (combined)</SelectItem>
+                        {warehouseList.map((wh) => (
+                          <SelectItem key={wh} value={wh} className="text-xs">{wh}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {warehouseDemandLoading && (
+                      <span className="text-[10px] text-muted-foreground animate-pulse">Loading…</span>
+                    )}
+                  </div>
                 )}
 
                 {onShowAssembledProductsChange != null && (
