@@ -605,11 +605,35 @@ export function RealInboundStockDialog({
         const rawCurve = buildCurveRaw(mainStart, dailyDemand, allMainArrivals, daysToTarget);
         const stockoutDay = findFinalStockoutDay(rawCurve);
 
-        if (stockoutDay === null || stockoutDay <= prevStockoutDay) break;
-        prevStockoutDay = stockoutDay;
+        const minEndBridge = dailyDemand * MAIN_CONTAINER_BRIDGE_DAYS;
+        const bridgeEndOk  = mainCurveEndStockAtLeast(
+          mainStart,
+          dailyDemand,
+          allMainArrivals,
+          daysToTarget,
+          minEndBridge,
+        );
 
-        const idealArrivalDay = Math.max(DHL_LEAD_DAYS, stockoutDay - CHINA_BUFFER_DAYS);
-        const idealShipDay    = Math.max(0, idealArrivalDay - DHL_LEAD_DAYS);
+        if (!containerLoadBridge) {
+          if (stockoutDay === null || stockoutDay <= prevStockoutDay) break;
+          prevStockoutDay = stockoutDay;
+        } else {
+          // Bridge mode: also plan when Main is below the 35d target at anchor (no stockout required)
+          if (bridgeEndOk && stockoutDay === null) break;
+          if (stockoutDay !== null) {
+            if (stockoutDay <= prevStockoutDay) break;
+            prevStockoutDay = stockoutDay;
+          }
+        }
+
+        const idealArrivalDay =
+          stockoutDay !== null
+            ? Math.max(DHL_LEAD_DAYS, stockoutDay - CHINA_BUFFER_DAYS)
+            : DHL_LEAD_DAYS;
+        const idealShipDay =
+          stockoutDay !== null
+            ? Math.max(0, idealArrivalDay - DHL_LEAD_DAYS)
+            : 0;
 
         const getChinaStockAtShipDay = (shipDay: number): number => {
           let chinaStockAtShip = chartUsesSoh ? (row.sohChina ?? 0) : (row.availableChina ?? 0);
