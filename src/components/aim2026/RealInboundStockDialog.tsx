@@ -112,8 +112,8 @@ interface InboundRow {
   shipDay?: number;
   /** China→Main ship occurs after the ideal window because stock was insufficient earlier */
   isDeferredShip?: boolean;
-  /** Quantity from “Main need only” mode (target + buffer) instead of 90% of China stock */
-  isNeedBasedShip?: boolean;
+  /** Planned qty from container-load bridge mode (35d Main cover at anchor) vs 90% cap */
+  isContainerBridgeShip?: boolean;
 }
 
 interface CurvePoint {
@@ -217,52 +217,49 @@ function findFinalStockoutDay(curve: number[]): number | null {
   return null;
 }
 
-/** End-of-horizon cover (days of Main demand) when China ships only what Main needs */
-const MAIN_NEED_BUFFER_DAYS = 5;
+/**
+ * Days of Main demand to hold at the anchor date (target) while sea freight from China is in transit.
+ * Only used when "Container load bridge" mode is enabled.
+ */
+const MAIN_CONTAINER_BRIDGE_DAYS = 35;
 
 /**
- * True when Main never goes negative on [0, daysToTarget] and end stock ≥ bufferDays × daily demand.
+ * True when Main end-of-horizon stock (raw curve) is at least minEndStock on `daysToTarget`.
+ * Used for container-bridge planning (backward from anchor); does not enforce non-negative path.
  */
-function mainCurveMeetsTargetAndBuffer(
+function mainCurveEndStockAtLeast(
   mainStart: number,
   dailyDemand: number,
   arrivals: { etaDay: number; quantity: number }[],
   daysToTarget: number,
-  bufferDays: number,
+  minEndStock: number,
 ): boolean {
   const curve = buildCurveRaw(mainStart, dailyDemand, arrivals, daysToTarget);
-  for (let i = 0; i <= daysToTarget; i++) {
-    if (curve[i] < 0) return false;
-  }
-  if (dailyDemand <= 0) return true;
-  const bufferUnits = dailyDemand * bufferDays;
-  return curve[daysToTarget] >= bufferUnits;
+  return curve[daysToTarget] >= minEndStock;
 }
 
 /**
- * Smallest integer Q in [0, maxQ] such that Main meets no-stockout + end buffer with that China arrival.
- * If already satisfied with Q=0 (no shipment), returns 0.
- * If not even maxQ works, returns maxQ (best-effort partial).
+ * Minimum integer Q in [0, maxQ] so that, on the anchor day (daysToTarget), Main stock ≥ bridgeDays × daily demand.
+ * Backward from target: only the end-of-horizon constraint (not full path non-negative).
  */
-function minChinaQtyForMainNeed(
+function minChinaQtyForContainerBridge(
   mainStart: number,
   dailyDemand: number,
   baseArrivals: { etaDay: number; quantity: number }[],
   chinaArrivalDay: number,
   daysToTarget: number,
-  bufferDays: number,
+  bridgeDays: number,
   maxQ: number,
 ): number {
   if (maxQ <= 0) return 0;
+  const minEnd = dailyDemand > 0 ? dailyDemand * bridgeDays : 0;
 
   const withQ = (q: number) => [...baseArrivals, { etaDay: chinaArrivalDay, quantity: q }];
 
-  if (mainCurveMeetsTargetAndBuffer(mainStart, dailyDemand, baseArrivals, daysToTarget, bufferDays)) {
+  if (mainCurveEndStockAtLeast(mainStart, dailyDemand, baseArrivals, daysToTarget, minEnd)) {
     return 0;
   }
-  if (
-    !mainCurveMeetsTargetAndBuffer(mainStart, dailyDemand, withQ(maxQ), daysToTarget, bufferDays)
-  ) {
+  if (!mainCurveEndStockAtLeast(mainStart, dailyDemand, withQ(maxQ), daysToTarget, minEnd)) {
     return maxQ;
   }
 
@@ -270,7 +267,7 @@ function minChinaQtyForMainNeed(
   let hi = maxQ;
   while (lo < hi) {
     const mid = Math.floor((lo + hi) / 2);
-    if (mainCurveMeetsTargetAndBuffer(mainStart, dailyDemand, withQ(mid), daysToTarget, bufferDays)) {
+    if (mainCurveEndStockAtLeast(mainStart, dailyDemand, withQ(mid), daysToTarget, minEnd)) {
       hi = mid;
     } else {
       lo = mid + 1;
@@ -288,13 +285,19 @@ function CustomTooltip({
   skus,
   inbounds,
   chartUsesSoh,
+  containerLoadBridge,
+  bridgeDays,
+  targetLabel,
 }: {
   active?: boolean;
   payload?: any[];
   label?: string;
-  skus: { sku: string; color: string; product: string }[];
+  skus: { sku: string; color: string; product: string; dailyDemand?: number }[];
   inbounds: InboundRow[];
   chartUsesSoh: boolean;
+  containerLoadBridge?: boolean;
+  bridgeDays?: number;
+  targetLabel?: string;
 }) {
   if (!active || !payload?.length) return null;
 
@@ -314,12 +317,26 @@ function CustomTooltip({
     chinaMap[skuKey] = Math.round(c.value ?? 0);
   }
 
+  const showBridgeHint =
+    containerLoadBridge && bridgeDays != null && targetLabel && label === targetLabel;
+
   return (
     <div className="rounded-lg border bg-popover text-popover-foreground shadow-md px-3 py-2 text-xs min-w-[180px]">
       <p className="font-semibold text-[11px] mb-1.5 text-muted-foreground">{label}</p>
+      {showBridgeHint && (
+        <p className="text-[10px] text-amber-700 dark:text-amber-400 mb-2 leading-snug border-l-2 border-amber-400/60 pl-2">
+          Container load day (China). Plan Main ≥{' '}
+          <span className="font-semibold">{bridgeDays}×</span> daily demand at this date to cover sea
+          freight until arrival. China WH below is stock available to load.
+        </p>
+      )}
       {stocks.map((p) => {
         const meta = skus.find((s) => s.sku === p.dataKey);
         const chinaVal = chinaMap[p.dataKey];
+        const bridgeUnits =
+          meta?.dailyDemand != null && bridgeDays != null
+            ? Math.round(meta.dailyDemand * bridgeDays)
+            : null;
         return (
           <div key={p.dataKey} className="mb-0.5">
             <div className="flex items-center justify-between gap-3">
@@ -338,6 +355,11 @@ function CustomTooltip({
               {Math.round(p.value ?? 0).toLocaleString()} u{(p.value ?? 0) <= 0 ? ' ⚠' : ''}
             </span>
             </div>
+            {showBridgeHint && bridgeUnits != null && (
+              <div className="ml-3.5 text-[10px] text-amber-700/90 dark:text-amber-400/90 mb-0.5">
+                Bridge target at this date: ≥{bridgeUnits.toLocaleString()} u ({bridgeDays}d demand)
+              </div>
+            )}
             {chinaVal != null && (
               <div className={cn(
                 'flex items-center justify-between gap-3 ml-3.5 text-[10px]',
@@ -447,10 +469,10 @@ export function RealInboundStockDialog({
   /** When true, override the production-PO heuristic and show ALL Placed orders */
   const [showAllPlaced, setShowAllPlaced]   = useState(false);
   /**
-   * When Use China WH is on: ship from China only the qty Main needs to avoid stockout through
-   * the target horizon plus MAIN_NEED_BUFFER_DAYS cover (instead of 90% of China stock).
+   * When Use China WH is on: anchor date = container load start in China; plan Main to hold
+   * MAIN_CONTAINER_BRIDGE_DAYS of demand that day; ship min Q from China (capped at 90% of China stock).
    */
-  const [needBasedChinaShip, setNeedBasedChinaShip] = useState(false);
+  const [containerLoadBridge, setContainerLoadBridge] = useState(false);
 
   const daysToTarget = Math.max(1, differenceInDays(startOfDay(targetDate), today));
   const chartSKUs    = useMemo(() => filteredData.slice(0, 10), [filteredData]);
@@ -464,7 +486,7 @@ export function RealInboundStockDialog({
   }, [chartSkuKey, chartSKUs]);
 
   useEffect(() => {
-    if (!useChinaWH) setNeedBasedChinaShip(false);
+    if (!useChinaWH) setContainerLoadBridge(false);
   }, [useChinaWH]);
 
   const toggleSkuVisible = useCallback((sku: string) => {
@@ -618,14 +640,14 @@ export function RealInboundStockDialog({
 
           const chinaArrivalDayCand = d + DHL_LEAD_DAYS;
 
-          if (needBasedChinaShip) {
-            const needQ = minChinaQtyForMainNeed(
+          if (containerLoadBridge) {
+            const needQ = minChinaQtyForContainerBridge(
               mainStart,
               dailyDemand,
               baseArrivalsForNeed,
               chinaArrivalDayCand,
               daysToTarget,
-              MAIN_NEED_BUFFER_DAYS,
+              MAIN_CONTAINER_BRIDGE_DAYS,
               maxShip,
             );
             if (needQ === 0) {
@@ -665,12 +687,12 @@ export function RealInboundStockDialog({
           sourceQty:   Math.round(chosenSource),
           shipDay:     chosenShipDay,
           isDeferredShip,
-          isNeedBasedShip: needBasedChinaShip,
+          isContainerBridgeShip: containerLoadBridge,
         });
       }
     }
     return out;
-  }, [useChinaWH, needBasedChinaShip, chartUsesSoh, warehouseDemandMap, chartSKUs, poInbounds, daysToTarget, today]);
+  }, [useChinaWH, containerLoadBridge, chartUsesSoh, warehouseDemandMap, chartSKUs, poInbounds, daysToTarget, today]);
 
   // ── Combined inbound list (PO + optional China) ────────────────────────────
   const allInbounds: InboundRow[] = useMemo(
@@ -925,17 +947,17 @@ export function RealInboundStockDialog({
                 )}
               >
                 <Checkbox
-                  id="real-inbound-main-need-china"
-                  checked={needBasedChinaShip}
+                  id="real-inbound-container-bridge"
+                  checked={containerLoadBridge}
                   disabled={!useChinaWH}
-                  onCheckedChange={(v) => setNeedBasedChinaShip(v === true)}
+                  onCheckedChange={(v) => setContainerLoadBridge(v === true)}
                 />
                 <Label
-                  htmlFor="real-inbound-main-need-china"
-                  className="text-xs font-normal cursor-pointer leading-none max-w-[200px]"
-                  title="Ship from China only the quantity Main needs to stay in stock through the target date, plus 5 days of cover (instead of 90% of China stock). Still capped by stock in China after the 10% local reserve."
+                  htmlFor="real-inbound-container-bridge"
+                  className="text-xs font-normal cursor-pointer leading-none max-w-[220px]"
+                  title="Target date = container load start in China. Plan Main to hold 35 days of demand that day (sea-freight bridge). Planned China shipment is the minimum quantity (backward from that anchor) to reach that Main level, capped by 90% of China stock at ship day."
                 >
-                  Main need only
+                  Container load bridge
                 </Label>
               </div>
 
@@ -959,7 +981,7 @@ export function RealInboundStockDialog({
                 <Label
                   htmlFor="real-inbound-use-soh"
                   className="text-xs font-normal cursor-pointer leading-none"
-                  title="Use warehouse on hand (SOH) instead of available sellable stock for Main and China starting balances"
+                  title="On: warehouse on hand (SOH) for Main and China starting balances. Off: available (sellable) stock—day-one differences vs SOH often reflect production covering allocated orders in Unleashed."
                 >
                   Use SOH
                 </Label>
@@ -1018,6 +1040,11 @@ export function RealInboundStockDialog({
                       {useChinaWH && (
                         <span className="ml-1 text-[10px] font-normal text-violet-600 bg-violet-50 dark:bg-violet-950/30 px-1.5 py-0.5 rounded-full border border-violet-200 dark:border-violet-800">
                           + China WH (90%)
+                        </span>
+                      )}
+                      {useChinaWH && containerLoadBridge && (
+                        <span className="ml-1 text-[10px] font-normal text-primary bg-primary/10 px-1.5 py-0.5 rounded-full border border-primary/25">
+                          {MAIN_CONTAINER_BRIDGE_DAYS}d bridge
                         </span>
                       )}
                     </h3>
@@ -1109,13 +1136,31 @@ export function RealInboundStockDialog({
                     <span className="font-medium text-foreground">available</span> (sellable) units.
                   </p>
                 ) : (
-                  useChinaWH && (
-                    <p className="text-[11px] text-muted-foreground mb-2 leading-snug border-l-2 border-violet-400/60 pl-2">
-                      China WH series uses <span className="font-medium text-foreground">available</span> stock (sellable
-                      units), not total SOH. It can show 0 while SOH China is still positive if units are allocated or
-                      reserved.
+                  <>
+                    <p className="text-[11px] text-muted-foreground mb-2 leading-snug border-l-2 border-slate-400/50 dark:border-slate-500/40 pl-2">
+                      With <span className="font-medium text-foreground">Use SOH</span> off, curves use{' '}
+                      <span className="font-medium text-foreground">available</span> (sellable) starting stock. Variation
+                      at &quot;Today&quot; versus full SOH is often because{' '}
+                      <span className="font-medium text-foreground">production</span> is applied to cover{' '}
+                      <span className="font-medium text-foreground">allocated</span> orders in Unleashed.
                     </p>
-                  )
+                    {useChinaWH && (
+                      <p className="text-[11px] text-muted-foreground mb-2 leading-snug border-l-2 border-violet-400/60 pl-2">
+                        China WH series uses <span className="font-medium text-foreground">available</span> stock
+                        (sellable units), not total SOH. It can show 0 while SOH China is still positive if units are
+                        allocated or reserved.
+                      </p>
+                    )}
+                  </>
+                )}
+                {containerLoadBridge && useChinaWH && (
+                  <p className="text-[11px] text-muted-foreground mb-2 leading-snug border-l-2 border-primary/50 pl-2">
+                    <span className="font-medium text-foreground">Container load bridge:</span> the vertical line marks
+                    container load start in China. Planned shipments are sized{' '}
+                    <span className="font-medium text-foreground">backward</span> so Main reaches at least{' '}
+                    <span className="font-medium text-foreground">{MAIN_CONTAINER_BRIDGE_DAYS} days</span> of demand on
+                    that date (sea-freight cover), capped by 90% of China stock at ship day.
+                  </p>
                 )}
                 {chartData.length === 0 ? (
                   <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
@@ -1145,6 +1190,9 @@ export function RealInboundStockDialog({
                             skus={skuMeta}
                             inbounds={allInbounds}
                             chartUsesSoh={chartUsesSoh}
+                            containerLoadBridge={containerLoadBridge}
+                            bridgeDays={MAIN_CONTAINER_BRIDGE_DAYS}
+                            targetLabel={targetLabel}
                           />
                         }
                         cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }}
@@ -1159,7 +1207,12 @@ export function RealInboundStockDialog({
                         stroke="hsl(var(--primary))"
                         strokeDasharray="4 4"
                         strokeOpacity={0.7}
-                        label={{ value: 'Target', position: 'insideTopRight', fontSize: 10, fill: 'hsl(var(--primary))' }}
+                        label={{
+                          value: containerLoadBridge ? 'Load' : 'Target',
+                          position: 'insideTopRight',
+                          fontSize: 10,
+                          fill: 'hsl(var(--primary))',
+                        }}
                       />
 
                       {/* Arrival vertical markers (Main arrivals only) */}
@@ -1429,10 +1482,10 @@ export function RealInboundStockDialog({
                                     : 'bg-muted text-muted-foreground'
                                 )}>
                                   {ib.isChinaWH && !ib.isProductionArrival
-                                    ? ib.isNeedBasedShip
+                                    ? ib.isContainerBridgeShip
                                       ? ib.isDeferredShip
-                                        ? 'China WH (need, deferred)'
-                                        : 'China WH (need)'
+                                        ? 'China WH (bridge, deferred)'
+                                        : 'China WH (bridge)'
                                       : ib.isDeferredShip
                                         ? 'China WH (deferred)'
                                         : ib.status
@@ -1467,8 +1520,8 @@ export function RealInboundStockDialog({
                 Showing <strong>DHL + Container</strong> status orders, plus <strong>Purchase Orders</strong> (auto-excluding any whose qty matches the SKU&apos;s onProduction value).
                 {showAllPlaced && ' Override active: all purchase orders shown, including production POs (arriving at China warehouse).'}
                 {useChinaWH &&
-                  (needBasedChinaShip
-                    ? ' China WH (Main need only): planned ship qty is the minimum needed so Main does not go negative through the target date and ends with 5 days of cover; capped by 90% of China stock at ship day. Deferred if China is empty on the ideal ship date.'
+                  (containerLoadBridge
+                    ? ` China WH (container load bridge): target date is container load start in China; Main should hold ${MAIN_CONTAINER_BRIDGE_DAYS} days of demand that day. Planned ship qty is the minimum from China (backward from that anchor) to reach that Main level, capped by 90% of China stock at ship day.`
                     : chartUsesSoh
                     ? ' China WH orders are planned (90% of China stock at ship day; if empty on the ideal ship date, deferred to the first day stock is available).'
                     : ' China WH orders are planned (90% of available China stock at ship day; if empty on the ideal ship date, deferred to the first day stock is available).')}
