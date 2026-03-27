@@ -70,6 +70,11 @@ const DHL_LEAD_DAYS = 7;
  */
 const CHINA_BUFFER_DAYS = 3;
 
+/**
+ * If China has no stock on the ideal ship day (e.g. production PO arrives later),
+ * scan forward day-by-day until the first day with enough stock to ship (deferred shipment).
+ */
+
 /** True when the PO warehouse belongs to the China facility */
 function isChinaWarehouse(wh?: string): boolean {
   if (!wh) return false;
@@ -105,6 +110,10 @@ interface InboundRow {
   sourceQty?: number;
   /** Day offset when shipment leaves China (etaDay - DHL_LEAD_DAYS) */
   shipDay?: number;
+  /** China→Main ship occurs after the ideal window because stock was insufficient earlier */
+  isDeferredShip?: boolean;
+  /** Quantity from “Main need only” mode (target + buffer) instead of 90% of China stock */
+  isNeedBasedShip?: boolean;
 }
 
 interface CurvePoint {
@@ -206,6 +215,68 @@ function findFinalStockoutDay(curve: number[]): number | null {
   // Whole curve already negative from start — no inbound recovers it
   if (curve[0] < 0) return 0;
   return null;
+}
+
+/** End-of-horizon cover (days of Main demand) when China ships only what Main needs */
+const MAIN_NEED_BUFFER_DAYS = 5;
+
+/**
+ * True when Main never goes negative on [0, daysToTarget] and end stock ≥ bufferDays × daily demand.
+ */
+function mainCurveMeetsTargetAndBuffer(
+  mainStart: number,
+  dailyDemand: number,
+  arrivals: { etaDay: number; quantity: number }[],
+  daysToTarget: number,
+  bufferDays: number,
+): boolean {
+  const curve = buildCurveRaw(mainStart, dailyDemand, arrivals, daysToTarget);
+  for (let i = 0; i <= daysToTarget; i++) {
+    if (curve[i] < 0) return false;
+  }
+  if (dailyDemand <= 0) return true;
+  const bufferUnits = dailyDemand * bufferDays;
+  return curve[daysToTarget] >= bufferUnits;
+}
+
+/**
+ * Smallest integer Q in [0, maxQ] such that Main meets no-stockout + end buffer with that China arrival.
+ * If already satisfied with Q=0 (no shipment), returns 0.
+ * If not even maxQ works, returns maxQ (best-effort partial).
+ */
+function minChinaQtyForMainNeed(
+  mainStart: number,
+  dailyDemand: number,
+  baseArrivals: { etaDay: number; quantity: number }[],
+  chinaArrivalDay: number,
+  daysToTarget: number,
+  bufferDays: number,
+  maxQ: number,
+): number {
+  if (maxQ <= 0) return 0;
+
+  const withQ = (q: number) => [...baseArrivals, { etaDay: chinaArrivalDay, quantity: q }];
+
+  if (mainCurveMeetsTargetAndBuffer(mainStart, dailyDemand, baseArrivals, daysToTarget, bufferDays)) {
+    return 0;
+  }
+  if (
+    !mainCurveMeetsTargetAndBuffer(mainStart, dailyDemand, withQ(maxQ), daysToTarget, bufferDays)
+  ) {
+    return maxQ;
+  }
+
+  let lo = 1;
+  let hi = maxQ;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (mainCurveMeetsTargetAndBuffer(mainStart, dailyDemand, withQ(mid), daysToTarget, bufferDays)) {
+      hi = mid;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return lo;
 }
 
 // ─── Custom tooltip ──────────────────────────────────────────────────────────
@@ -375,6 +446,11 @@ export function RealInboundStockDialog({
   const [chartUsesSoh, setChartUsesSoh]     = useState(false);
   /** When true, override the production-PO heuristic and show ALL Placed orders */
   const [showAllPlaced, setShowAllPlaced]   = useState(false);
+  /**
+   * When Use China WH is on: ship from China only the qty Main needs to avoid stockout through
+   * the target horizon plus MAIN_NEED_BUFFER_DAYS cover (instead of 90% of China stock).
+   */
+  const [needBasedChinaShip, setNeedBasedChinaShip] = useState(false);
 
   const daysToTarget = Math.max(1, differenceInDays(startOfDay(targetDate), today));
   const chartSKUs    = useMemo(() => filteredData.slice(0, 10), [filteredData]);
@@ -386,6 +462,10 @@ export function RealInboundStockDialog({
   useLayoutEffect(() => {
     setVisibleSkus(new Set(chartSKUs.map((r) => r.sku)));
   }, [chartSkuKey, chartSKUs]);
+
+  useEffect(() => {
+    if (!useChinaWH) setNeedBasedChinaShip(false);
+  }, [useChinaWH]);
 
   const toggleSkuVisible = useCallback((sku: string) => {
     setVisibleSkus((prev) => {
@@ -506,43 +586,91 @@ export function RealInboundStockDialog({
         if (stockoutDay === null || stockoutDay <= prevStockoutDay) break;
         prevStockoutDay = stockoutDay;
 
-        const chinaArrivalDay = Math.max(DHL_LEAD_DAYS, stockoutDay - CHINA_BUFFER_DAYS);
-        const chinaShipDay    = Math.max(0, chinaArrivalDay - DHL_LEAD_DAYS);
+        const idealArrivalDay = Math.max(DHL_LEAD_DAYS, stockoutDay - CHINA_BUFFER_DAYS);
+        const idealShipDay    = Math.max(0, idealArrivalDay - DHL_LEAD_DAYS);
 
-        let chinaStockAtShip = chartUsesSoh ? (row.sohChina ?? 0) : (row.availableChina ?? 0);
-        for (const po of prodPOs) {
-          if (po.etaDay <= chinaShipDay) chinaStockAtShip += po.quantity;
+        const getChinaStockAtShipDay = (shipDay: number): number => {
+          let chinaStockAtShip = chartUsesSoh ? (row.sohChina ?? 0) : (row.availableChina ?? 0);
+          for (const po of prodPOs) {
+            if (po.etaDay <= shipDay) chinaStockAtShip += po.quantity;
+          }
+          chinaStockAtShip -= chinaDailyDemand * shipDay;
+          for (const prev of planned) {
+            if (prev.shipDay <= shipDay) chinaStockAtShip -= prev.quantity;
+          }
+          return chinaStockAtShip;
+        };
+
+        const baseArrivalsForNeed = [
+          ...regularArrivals,
+          ...planned.map((s) => ({ etaDay: s.etaDay, quantity: s.quantity })),
+        ];
+
+        let chosenShipDay = -1;
+        let chosenSource  = 0;
+        let chosenQty     = 0;
+
+        for (let d = idealShipDay; d <= daysToTarget; d++) {
+          const stock = getChinaStockAtShipDay(d);
+          if (stock <= 0) continue;
+          const maxShip = Math.floor(stock * CHINA_SHIP_RATIO);
+          if (maxShip <= 0) continue;
+
+          const chinaArrivalDayCand = d + DHL_LEAD_DAYS;
+
+          if (needBasedChinaShip) {
+            const needQ = minChinaQtyForMainNeed(
+              mainStart,
+              dailyDemand,
+              baseArrivalsForNeed,
+              chinaArrivalDayCand,
+              daysToTarget,
+              MAIN_NEED_BUFFER_DAYS,
+              maxShip,
+            );
+            if (needQ === 0) {
+              break;
+            }
+            chosenShipDay = d;
+            chosenSource  = stock;
+            chosenQty     = needQ;
+            break;
+          }
+
+          if (maxShip < CHINA_MIN_SHIP_QTY) continue;
+          chosenShipDay = d;
+          chosenSource  = stock;
+          chosenQty     = maxShip;
+          break;
         }
-        chinaStockAtShip -= chinaDailyDemand * chinaShipDay;
-        for (const prev of planned) {
-          if (prev.shipDay <= chinaShipDay) chinaStockAtShip -= prev.quantity;
-        }
 
-        if (chinaStockAtShip <= 0) break;
+        if (chosenShipDay < 0) break;
 
-        const chinaQty = Math.floor(chinaStockAtShip * CHINA_SHIP_RATIO);
-        if (chinaQty < CHINA_MIN_SHIP_QTY) break;
+        const chinaArrivalDay = chosenShipDay + DHL_LEAD_DAYS;
+        const isDeferredShip  = chosenShipDay > idealShipDay;
 
-        planned.push({ etaDay: chinaArrivalDay, quantity: chinaQty, shipDay: chinaShipDay });
+        planned.push({ etaDay: chinaArrivalDay, quantity: chosenQty, shipDay: chosenShipDay });
 
         out.push({
           sku:         row.sku,
           product:     row.product,
           orderNumber: undefined,
           supplier:    'China WH (planned)',
-          orderDate:   format(addDays(today, chinaShipDay), 'yyyy-MM-dd'),
+          orderDate:   format(addDays(today, chosenShipDay), 'yyyy-MM-dd'),
           eta:         format(addDays(today, chinaArrivalDay), 'yyyy-MM-dd'),
           etaDay:      chinaArrivalDay,
-          quantity:    chinaQty,
+          quantity:    chosenQty,
           status:      'China WH',
           isChinaWH:   true,
-          sourceQty:   Math.round(chinaStockAtShip),
-          shipDay:     chinaShipDay,
+          sourceQty:   Math.round(chosenSource),
+          shipDay:     chosenShipDay,
+          isDeferredShip,
+          isNeedBasedShip: needBasedChinaShip,
         });
       }
     }
     return out;
-  }, [useChinaWH, chartUsesSoh, warehouseDemandMap, chartSKUs, poInbounds, daysToTarget, today]);
+  }, [useChinaWH, needBasedChinaShip, chartUsesSoh, warehouseDemandMap, chartSKUs, poInbounds, daysToTarget, today]);
 
   // ── Combined inbound list (PO + optional China) ────────────────────────────
   const allInbounds: InboundRow[] = useMemo(
@@ -789,6 +917,27 @@ export function RealInboundStockDialog({
                 <Warehouse size={13} />
                 Use China WH
               </Button>
+
+              <div
+                className={cn(
+                  'flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-2 py-1',
+                  !useChinaWH && 'opacity-45 pointer-events-none'
+                )}
+              >
+                <Checkbox
+                  id="real-inbound-main-need-china"
+                  checked={needBasedChinaShip}
+                  disabled={!useChinaWH}
+                  onCheckedChange={(v) => setNeedBasedChinaShip(v === true)}
+                />
+                <Label
+                  htmlFor="real-inbound-main-need-china"
+                  className="text-xs font-normal cursor-pointer leading-none max-w-[200px]"
+                  title="Ship from China only the quantity Main needs to stay in stock through the target date, plus 5 days of cover (instead of 90% of China stock). Still capped by stock in China after the 10% local reserve."
+                >
+                  Main need only
+                </Label>
+              </div>
 
               {/* Show-all override — includes production POs */}
               <Button
@@ -1279,7 +1428,15 @@ export function RealInboundStockDialog({
                                     ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
                                     : 'bg-muted text-muted-foreground'
                                 )}>
-                                  {ib.status}
+                                  {ib.isChinaWH && !ib.isProductionArrival
+                                    ? ib.isNeedBasedShip
+                                      ? ib.isDeferredShip
+                                        ? 'China WH (need, deferred)'
+                                        : 'China WH (need)'
+                                      : ib.isDeferredShip
+                                        ? 'China WH (deferred)'
+                                        : ib.status
+                                    : ib.status}
                                 </span>
                               </td>
                               <td className="px-3 py-2 text-right tabular-nums font-semibold">
@@ -1310,9 +1467,11 @@ export function RealInboundStockDialog({
                 Showing <strong>DHL + Container</strong> status orders, plus <strong>Purchase Orders</strong> (auto-excluding any whose qty matches the SKU&apos;s onProduction value).
                 {showAllPlaced && ' Override active: all purchase orders shown, including production POs (arriving at China warehouse).'}
                 {useChinaWH &&
-                  (chartUsesSoh
-                    ? ' China WH orders are planned (90% of China stock at ship day, arriving 3d before projected stockout).'
-                    : ' China WH orders are planned (90% of available SOH China, arriving 3d before projected stockout).')}
+                  (needBasedChinaShip
+                    ? ' China WH (Main need only): planned ship qty is the minimum needed so Main does not go negative through the target date and ends with 5 days of cover; capped by 90% of China stock at ship day. Deferred if China is empty on the ideal ship date.'
+                    : chartUsesSoh
+                    ? ' China WH orders are planned (90% of China stock at ship day; if empty on the ideal ship date, deferred to the first day stock is available).'
+                    : ' China WH orders are planned (90% of available China stock at ship day; if empty on the ideal ship date, deferred to the first day stock is available).')}
                 {' '}Daily demand = monthly avg ÷ 30.
               </p>
             </>
