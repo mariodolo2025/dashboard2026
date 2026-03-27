@@ -39,6 +39,7 @@ import {
   PackageCheck,
   RefreshCw,
   Warehouse,
+  ShoppingCart,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { SKURow } from '@/lib/aim2026/types';
@@ -90,6 +91,10 @@ interface RealInboundStockDialogProps {
   filteredData: SKURow[];
   /** Per-SKU demand for the selected warehouse (from Dashboard state) */
   warehouseDemandMap?: Map<string, number> | null;
+  /**
+   * China WH (planned) China→Main rows: click opens dashboard PO flow with planned qty as suggestion.
+   */
+  onAddChinaPlannedToPO?: (sku: string, plannedQty: number) => void;
 }
 
 interface InboundRow {
@@ -453,6 +458,7 @@ export function RealInboundStockDialog({
   onOpenChange,
   filteredData,
   warehouseDemandMap,
+  onAddChinaPlannedToPO,
 }: RealInboundStockDialogProps) {
   const today = startOfDay(new Date());
 
@@ -1425,6 +1431,12 @@ export function RealInboundStockDialog({
                       includes China WH planned orders
                     </span>
                   )}
+                  {useChinaWH && onAddChinaPlannedToPO && (
+                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                      <ShoppingCart size={11} className="opacity-70" />
+                      Click a planned China→Main row to add to PO draft
+                    </span>
+                  )}
                   <span className="ml-auto text-xs text-muted-foreground">
                     {allInbounds.length} shipment{allInbounds.length !== 1 ? 's' : ''}
                   </span>
@@ -1461,13 +1473,41 @@ export function RealInboundStockDialog({
                           const color   = ib.isChinaWH
                             ? '#8b5cf6'
                             : skuMeta.find((m) => m.sku === ib.sku)?.color;
+                          const canAddToPO =
+                            !!onAddChinaPlannedToPO &&
+                            ib.isChinaWH &&
+                            !ib.isProductionArrival;
                           return (
                             <tr
                               key={i}
+                              role={canAddToPO ? 'button' : undefined}
+                              tabIndex={canAddToPO ? 0 : undefined}
+                              title={
+                                canAddToPO
+                                  ? 'Add this planned shipment to Purchase Order draft (edit quantity next)'
+                                  : undefined
+                              }
+                              onClick={
+                                canAddToPO
+                                  ? () => onAddChinaPlannedToPO!(ib.sku, ib.quantity)
+                                  : undefined
+                              }
+                              onKeyDown={
+                                canAddToPO
+                                  ? (e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        onAddChinaPlannedToPO!(ib.sku, ib.quantity);
+                                      }
+                                    }
+                                  : undefined
+                              }
                               className={cn(
                                 'border-t border-border/40 hover:bg-muted/20 transition-colors',
                                 isPast && 'opacity-50',
-                                ib.isChinaWH && 'bg-violet-50/40 dark:bg-violet-950/10'
+                                ib.isChinaWH && 'bg-violet-50/40 dark:bg-violet-950/10',
+                                canAddToPO &&
+                                  'cursor-pointer hover:bg-violet-100/60 dark:hover:bg-violet-950/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50'
                               )}
                             >
                               <td className="px-4 py-2 font-mono font-semibold text-primary">

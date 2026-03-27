@@ -116,6 +116,10 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const [poCreating, setPOCreating] = useState(false);
   const [qtyDialogOpen, setQtyDialogOpen] = useState(false);
   const [qtyDialogRow, setQtyDialogRow] = useState<SKURow | null>(null);
+  /** When set, Qty dialog uses this as suggested qty (China WH planned inbound qty from Real Inbound). */
+  const [qtyDialogInboundQty, setQtyDialogInboundQty] = useState<number | null>(null);
+  /** After confirm, open PO draft panel (Real Inbound → add to PO flow). */
+  const [qtyDialogOpenPOBuilder, setQtyDialogOpenPOBuilder] = useState(false);
   const [poNotification, setPONotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [tableMaximized, setTableMaximized] = useState(false);
   const [assembledProductSKUs, setAssembledProductSKUs] = useState<Set<string>>(new Set());
@@ -340,6 +344,15 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     assembledProductSKUs,
     insightFilterSKUs,
   ]);
+
+  /** Same row set as passed to RealInboundStockDialog (export selection overlay). */
+  const realInboundFilteredData = useMemo(
+    () =>
+      exportSelectedSKUs.size > 0
+        ? filteredData.filter((r) => exportSelectedSKUs.has(r.sku))
+        : filteredData,
+    [exportSelectedSKUs, filteredData]
+  );
 
   const filteredCount = filteredData.length;
 
@@ -623,12 +636,38 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
 
   const handleSugQtyClick = useCallback((row: SKURow) => {
     setQtyDialogRow(row);
+    setQtyDialogInboundQty(null);
+    setQtyDialogOpenPOBuilder(false);
     setQtyDialogOpen(true);
+  }, []);
+
+  /** Real Inbound: China WH (planned) row → same PO flow with planned ship qty as suggested. */
+  const handleChinaPlannedAddToPO = useCallback(
+    (sku: string, plannedQty: number) => {
+      const row =
+        realInboundFilteredData.find((r) => r.sku === sku) ??
+        skuData.find((r) => r.sku === sku);
+      if (!row) return;
+      setQtyDialogRow(row);
+      setQtyDialogInboundQty(plannedQty);
+      setQtyDialogOpenPOBuilder(true);
+      setQtyDialogOpen(true);
+    },
+    [realInboundFilteredData, skuData]
+  );
+
+  const handleQtyDialogOpenChange = useCallback((open: boolean) => {
+    setQtyDialogOpen(open);
+    if (!open) {
+      setQtyDialogInboundQty(null);
+      setQtyDialogOpenPOBuilder(false);
+    }
   }, []);
 
   const handleQtyConfirm = useCallback(
     (qty: number) => {
       if (!qtyDialogRow) return;
+      const suggestedFromRow = qtyDialogRow.suggestedQty || qtyDialogRow.softSuggestedQty;
       setPOItems((prev) => {
         const existing = prev.find((i) => i.sku === qtyDialogRow.sku);
         if (existing) {
@@ -640,13 +679,17 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             sku: qtyDialogRow.sku,
             product: qtyDialogRow.product,
             quantity: qty,
-            suggestedQty: qtyDialogRow.suggestedQty || qtyDialogRow.softSuggestedQty,
+            suggestedQty: suggestedFromRow,
             unitPrice: qtyDialogRow.productCostChina ?? 0,
           },
         ];
       });
+      if (qtyDialogOpenPOBuilder) {
+        setPOBuilderMode(true);
+        setQtyDialogOpenPOBuilder(false);
+      }
     },
-    [qtyDialogRow]
+    [qtyDialogRow, qtyDialogOpenPOBuilder]
   );
 
   const handlePORemoveItem = useCallback((sku: string) => {
@@ -1409,17 +1452,22 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
       <RealInboundStockDialog
         open={realInboundOpen}
         onOpenChange={setRealInboundOpen}
-        filteredData={exportSelectedSKUs.size > 0 ? filteredData.filter((r) => exportSelectedSKUs.has(r.sku)) : filteredData}
+        filteredData={realInboundFilteredData}
         warehouseDemandMap={warehouseDemandMap}
+        onAddChinaPlannedToPO={handleChinaPlannedAddToPO}
       />
 
       {/* ─── PO Builder Components ─────────────────────────────────────────── */}
       <QtyConfirmDialog
         open={qtyDialogOpen}
-        onOpenChange={setQtyDialogOpen}
+        onOpenChange={handleQtyDialogOpenChange}
         sku={qtyDialogRow?.sku ?? ''}
         product={qtyDialogRow?.product ?? ''}
-        suggestedQty={(qtyDialogRow?.suggestedQty || qtyDialogRow?.softSuggestedQty) ?? 0}
+        suggestedQty={
+          qtyDialogInboundQty != null
+            ? qtyDialogInboundQty
+            : (qtyDialogRow?.suggestedQty || qtyDialogRow?.softSuggestedQty) ?? 0
+        }
         onConfirm={handleQtyConfirm}
       />
 
