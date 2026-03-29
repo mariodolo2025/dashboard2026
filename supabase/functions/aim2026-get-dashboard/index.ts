@@ -981,6 +981,204 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ success: true, data: recentOrders });
     }
 
+    // ─── Consolidation: all Production PO lines (full pagination) ──
+    if (action === "consolidation_production_lines") {
+      const { data: credsRow } = await supabase
+        .from("unleashed_credentials")
+        .select("api_id, api_key")
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (!credsRow) {
+        return jsonResponse({ success: false, message: "No Unleashed credentials configured." }, 400);
+      }
+      const creds = { api_id: credsRow.api_id, api_key: credsRow.api_key };
+
+      // Query both standard and custom status (Unleashed stores Production as CustomOrderStatus)
+      const queries = [
+        "orderStatus=Production",
+        `customOrderStatus=${encodeURIComponent("PRODUCTION")}`,
+        "orderStatus=Placed",
+      ];
+      let allOrders: any[] = [];
+      const seenGuids = new Set<string>();
+
+      for (const qs of queries) {
+        try {
+          let page = 1;
+          let hasMore = true;
+          while (hasMore && page <= 20) {
+            const fullQs = `${qs}&pageSize=200`;
+            const data = await unleashedGet(`PurchaseOrders/${page}`, fullQs, creds);
+            const items = data.Items ?? [];
+            for (const o of items) {
+              const guid = o.Guid ?? o.OrderNumber;
+              if (!seenGuids.has(guid)) {
+                seenGuids.add(guid);
+                allOrders.push(o);
+              }
+            }
+            const totalPages = data.Pagination?.NumberOfPages ?? 1;
+            hasMore = page < totalPages;
+            page++;
+          }
+          console.log(`Consolidation ${qs}: ${allOrders.length} total unique so far`);
+        } catch (e) {
+          console.warn(`Consolidation PO query=${qs} failed:`, e);
+        }
+      }
+
+      console.log(`Consolidation: ${allOrders.length} unique orders before filtering`);
+
+      // Filter: only Production status (standard or custom) + warehouse China
+      function isProductionOrder(order: any): boolean {
+        const standard = String(order.OrderStatus ?? "").trim().toLowerCase();
+        const custom = String(order.CustomOrderStatus ?? "").trim().toLowerCase();
+        return standard === "production" || custom === "production";
+      }
+
+      function isChinaWarehouse(order: any): boolean {
+        const wh = String(
+          order.Warehouse?.WarehouseName ?? order.Warehouse?.WarehouseCode ?? ""
+        ).trim().toLowerCase();
+        return wh.includes("china") || wh.includes("factory");
+      }
+
+      // For Placed orders, only include if warehouse is China (these are production POs)
+      // For Production status, include regardless of warehouse name
+      const filteredOrders = allOrders.filter((o) => {
+        const standard = String(o.OrderStatus ?? "").trim().toLowerCase();
+        const custom = String(o.CustomOrderStatus ?? "").trim().toLowerCase();
+        if (custom === "production" || standard === "production") return true;
+        if (standard === "placed" && isChinaWarehouse(o)) return true;
+        return false;
+      });
+
+      console.log(`Consolidation: ${filteredOrders.length} orders after Production+China filter`);
+
+      const lines: any[] = [];
+      for (const order of filteredOrders) {
+        const orderNumber = order.OrderNumber ?? "";
+        const orderDate = parseUnleashedDate(order.OrderDate);
+        const orderDeliveryDate = parseUnleashedDate(order.DeliveryDate);
+        const orderStatus = String(
+          order.CustomOrderStatus || order.OrderStatus || ""
+        ).trim();
+
+        for (const line of (order.PurchaseOrderLines ?? [])) {
+          const productCode = (line.Product?.ProductCode ?? "").trim();
+          if (!productCode) continue;
+          const qty = Math.abs(Number(line.OrderQuantity ?? 0));
+          if (qty === 0) continue;
+          const lineDeliveryDate = parseUnleashedDate(
+            line.DeliveryDate ?? line.DueDate ?? line.RequiredDate
+          ) || orderDeliveryDate;
+
+          lines.push({
+            productCode,
+            productDescription: line.Product?.ProductDescription ?? "",
+            orderNumber,
+            orderDate,
+            lineDeliveryDate,
+            orderQuantity: qty,
+            orderStatus,
+          });
+        }
+      }
+
+      console.log(`Consolidation: ${lines.length} total line items`);
+
+      // Enrich with SKU descriptions from DB
+      const skuSet = new Set(lines.map((l: any) => l.productCode));
+      let descMap = new Map<string, string>();
+      if (skuSet.size > 0) {
+        const { data: params } = await supabase
+          .from("aim2026_sku_parameters")
+          .select("sku, product_description")
+          .in("sku", [...skuSet]);
+        for (const p of (params ?? [])) {
+          if (p.product_description) descMap.set(p.sku, p.product_description);
+        }
+      }
+
+      for (const l of lines) {
+        if (!l.productDescription && descMap.has(l.productCode)) {
+          l.productDescription = descMap.get(l.productCode)!;
+        }
+      }
+
+      return jsonResponse({ success: true, data: lines, totalOrders: filteredOrders.length });
+    }
+
+    // ─── Fetch a single PO by order number (for Parked POs not in sync) ──
+    if (action === "fetch_po_by_number") {
+      const orderNumber: string | undefined = body?.orderNumber;
+      if (!orderNumber) {
+        return jsonResponse({ success: false, message: "Missing orderNumber" }, 400);
+      }
+
+      const { data: credsRow } = await supabase
+        .from("unleashed_credentials")
+        .select("api_id, api_key")
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (!credsRow) {
+        return jsonResponse({ success: false, message: "No Unleashed credentials configured." }, 400);
+      }
+      const creds = { api_id: credsRow.api_id, api_key: credsRow.api_key };
+
+      // Try multiple strategies: Unleashed may support orderNumber filter or may not
+      const statusesToTry = ["Parked", "Placed", "Production", "Container", "DHL"];
+      let foundPO: any = null;
+
+      for (const status of statusesToTry) {
+        if (foundPO) break;
+        try {
+          let page = 1;
+          let hasMore = true;
+          while (hasMore && page <= 10) {
+            const qs = `orderStatus=${status}&pageSize=200`;
+            const data = await unleashedGet(`PurchaseOrders/${page}`, qs, creds);
+            const items = data.Items ?? [];
+            for (const po of items) {
+              if (String(po.OrderNumber ?? "").trim() === orderNumber.trim()) {
+                foundPO = po;
+                break;
+              }
+            }
+            if (foundPO) break;
+            const totalPages = data.Pagination?.NumberOfPages ?? 1;
+            hasMore = page < totalPages;
+            page++;
+          }
+        } catch (e) {
+          console.warn(`fetch_po_by_number status=${status} failed:`, e);
+        }
+      }
+
+      if (!foundPO) {
+        return jsonResponse({ success: false, message: `PO "${orderNumber}" not found in any status (Parked, Placed, Production, Container, DHL)` }, 404);
+      }
+
+      const poLines = (foundPO.PurchaseOrderLines ?? []).map((line: any) => ({
+        productCode: (line.Product?.ProductCode ?? "").trim(),
+        productDescription: line.Product?.ProductDescription ?? "",
+        orderQuantity: Math.abs(Number(line.OrderQuantity ?? 0)),
+        lineDeliveryDate: parseUnleashedDate(
+          line.DeliveryDate ?? line.DueDate ?? line.RequiredDate
+        ) || parseUnleashedDate(foundPO.DeliveryDate),
+      })).filter((l: any) => l.productCode && l.orderQuantity > 0);
+
+      return jsonResponse({
+        success: true,
+        orderNumber: foundPO.OrderNumber,
+        orderStatus: String(foundPO.CustomOrderStatus || foundPO.OrderStatus || ""),
+        warehouse: foundPO.Warehouse?.WarehouseName ?? foundPO.Warehouse?.WarehouseCode ?? "",
+        lines: poLines,
+      });
+    }
+
     // ─── Debug: warehouse names & counts ─────────────────────────
     if (action === "debug_data") {
       const [sohSample, syncLog, skuCount, demandCount] = await Promise.all([

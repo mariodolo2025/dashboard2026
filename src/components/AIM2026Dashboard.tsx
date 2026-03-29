@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from 'react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon, Download, BarChart2, ChevronDown, Truck } from 'lucide-react';
+import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon, Download, BarChart2, ChevronDown, Truck, Package } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
@@ -19,6 +19,7 @@ import { AIInsightsDialog } from './aim2026/AIInsightsDialog';
 import { AIM2026ExportCSVDialog } from './aim2026/AIM2026ExportCSVDialog';
 import { FutureProjectedDemandDialog } from './aim2026/FutureProjectedDemandDialog';
 import { RealInboundStockDialog } from './aim2026/RealInboundStockDialog';
+import { ConsolidationReport } from './aim2026/ConsolidationReport';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -102,6 +103,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const [aiInsightsOpen, setAIInsightsOpen] = useState(false);
   const [reportsOpen, setReportsOpen] = useState(false);
   const [realInboundOpen, setRealInboundOpen] = useState(false);
+  const [consolidationOpen, setConsolidationOpen] = useState(false);
 
   // PO Builder state — cart persists in localStorage across panel toggles
   const [poBuilderMode, setPOBuilderMode] = useState(false);
@@ -895,6 +897,10 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                 <Truck size={13} className="mr-2 text-muted-foreground" />
                 Real Inbound Stock Curve
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setConsolidationOpen(true)}>
+                <Package size={13} className="mr-2 text-muted-foreground" />
+                Consolidation (Production POs)
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -1455,6 +1461,12 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
         filteredData={realInboundFilteredData}
         warehouseDemandMap={warehouseDemandMap}
         onAddChinaPlannedToPO={handleChinaPlannedAddToPO}
+      />
+
+      <ConsolidationReport
+        open={consolidationOpen}
+        onOpenChange={setConsolidationOpen}
+        filteredData={realInboundFilteredData}
       />
 
       {/* ─── PO Builder Components ─────────────────────────────────────────── */}
