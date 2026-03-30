@@ -1418,66 +1418,6 @@ export async function fetchWhDemandDetail(
   }
 }
 
-// ─── Consolidation: Production PO lines (pivot report) ───────────────────
-
-export interface ConsolidationLine {
-  productCode: string;
-  productDescription: string;
-  orderNumber: string;
-  orderDate: string;
-  lineDeliveryDate: string;
-  orderQuantity: number;
-  orderStatus: string;
-}
-
-export async function fetchConsolidationData(): Promise<ConsolidationLine[]> {
-  try {
-    const result = await callFunction<{
-      success: boolean;
-      data: ConsolidationLine[];
-    }>('aim2026-get-dashboard', { action: 'consolidation_production_lines' });
-    return result.data ?? [];
-  } catch (e) {
-    console.error('Failed to fetch consolidation data:', e);
-    return [];
-  }
-}
-
-// ─── Fetch single PO by order number (Container Loading Planner) ─────────
-
-export interface FetchedPOLine {
-  productCode: string;
-  productDescription: string;
-  orderQuantity: number;
-  lineDeliveryDate: string;
-}
-
-export interface FetchedPO {
-  orderNumber: string;
-  orderStatus: string;
-  warehouse: string;
-  lines: FetchedPOLine[];
-}
-
-export async function fetchPOByNumber(orderNumber: string): Promise<FetchedPO> {
-  const url = `${SUPABASE_URL}/functions/v1/aim2026-get-dashboard`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ action: 'fetch_po_by_number', orderNumber }),
-  });
-  const data = await response.json().catch(() => ({ success: false, message: 'Invalid response' }));
-  if (!response.ok || !data.success) {
-    throw new Error(data.message || `PO "${orderNumber}" not found`);
-  }
-  return {
-    orderNumber: data.orderNumber,
-    orderStatus: data.orderStatus,
-    warehouse: data.warehouse,
-    lines: data.lines ?? [],
-  };
-}
-
 // ─── CSV Download Helper ──────────────────────────────────────────────────
 
 export function downloadAsCSV(rows: Record<string, any>[], filename: string): void {

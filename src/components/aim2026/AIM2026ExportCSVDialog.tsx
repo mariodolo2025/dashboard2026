@@ -53,6 +53,9 @@ export function AIM2026ExportCSVDialog({
   selectedRowSKUs,
   dateRange,
   setDateRange,
+  splitDemand,
+  warehouseDemandFilter,
+  warehouseDemandMap,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -61,6 +64,9 @@ export function AIM2026ExportCSVDialog({
   selectedRowSKUs: Set<string>;
   dateRange?: { from?: Date; to?: Date };
   setDateRange?: (range: { from?: Date; to?: Date }) => void;
+  splitDemand?: boolean;
+  warehouseDemandFilter?: string | null;
+  warehouseDemandMap?: Map<string, number> | null;
 }) {
   const [scope, setScope] = useState<ExportScope>('filtered');
   const [selectedColumnKeys, setSelectedColumnKeys] = useState<Set<string>>(new Set());
@@ -92,7 +98,25 @@ export function AIM2026ExportCSVDialog({
       push('availableMainWH', 'Available', (v) => formatNum(Number(v ?? 0)));
     }
 
-    push('projectedDemand', 'Demand', (v) => formatNum(Number(v ?? 0)));
+    if (splitDemand) {
+      push('demandB2b', 'B2B', (v) => formatNum(Number(v ?? 0)));
+      push('demandB2c', 'B2C', (v) => formatNum(Number(v ?? 0)));
+    } else {
+      push('projectedDemand', 'Demand', (v) => formatNum(Number(v ?? 0)));
+    }
+
+    // Same as InventoryTable: show when a warehouse is selected (values from map when loaded).
+    if (warehouseDemandFilter) {
+      cols.push({
+        key: 'warehouseDemand',
+        header: warehouseDemandFilter,
+        formatter: (v) => {
+          const qty = Number(v ?? 0);
+          return qty > 0 ? formatNum(qty) : '—';
+        },
+      });
+    }
+
     push('reorderPoint', 'ROP', (v) => formatNum(Number(v ?? 0)));
     // "Sug. Qty" en la tabla muestra qty>0 ? qty : softQty (con '—' si es 0)
     // Respetamos la key real "suggestedQty" para que el ocultar columnas funcione igual que en InventoryTable.
@@ -123,6 +147,8 @@ export function AIM2026ExportCSVDialog({
     filters.showAllocation,
     filters.showInTransit,
     filters.showReorderDetail,
+    splitDemand,
+    warehouseDemandFilter,
   ]);
 
   const visibleColumnKeys = useMemo(() => visibleColumns.map((c) => c.key), [visibleColumns]);
@@ -149,11 +175,10 @@ export function AIM2026ExportCSVDialog({
 
     return base.map((r) => ({
       ...r,
-      // Sobrescribimos suggestedQty con el string exactamente como se ve en la tabla
-      // (qty>0 ? qty : softQty, y '—' cuando es 0).
       suggestedQty: formatSuggestedQty(r),
+      warehouseDemand: warehouseDemandMap?.get(r.sku) ?? 0,
     }));
-  }, [scope, filteredRows, selectedRowSKUs]);
+  }, [scope, filteredRows, selectedRowSKUs, warehouseDemandMap]);
 
   const canDownload = rowsToExport.length > 0 && selectedColumns.length > 0;
 

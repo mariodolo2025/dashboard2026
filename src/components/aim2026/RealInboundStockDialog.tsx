@@ -119,6 +119,8 @@ interface InboundRow {
   isDeferredShip?: boolean;
   /** Planned qty from container-load bridge mode (35d Main cover at anchor) vs 90% cap */
   isContainerBridgeShip?: boolean;
+  /** True when this row is the synthetic China→Main leg of a real Unleashed DHL/Container PO */
+  isRealChinaToMainInbound?: boolean;
 }
 
 interface CurvePoint {
@@ -312,7 +314,8 @@ function CustomTooltip({
     !p.dataKey?.endsWith('_arr') &&
     !p.dataKey?.endsWith('_china') &&
     !p.dataKey?.endsWith('_chinaShip') &&
-    !p.dataKey?.endsWith('_chinaShipSource')
+    !p.dataKey?.endsWith('_chinaShipSource') &&
+    !p.dataKey?.endsWith('_chinaShipPlanned')
   );
 
   // China stock lookup: sku → value
@@ -383,6 +386,8 @@ function CustomTooltip({
             {(() => {
               const shipQty = payload?.find((x) => x.dataKey === `${p.dataKey}_chinaShip`)?.value;
               const shipSource = payload?.find((x) => x.dataKey === `${p.dataKey}_chinaShipSource`)?.value;
+              const plannedFlag = payload?.find((x) => x.dataKey === `${p.dataKey}_chinaShipPlanned`)?.value;
+              const isPlanned90 = plannedFlag === 1;
               if (!shipQty || shipQty <= 0) return null;
               return (
                 <div className="mt-1 ml-3.5 space-y-0.5 text-[10px] text-muted-foreground leading-snug border-t border-border/40 pt-1">
@@ -392,15 +397,15 @@ function CustomTooltip({
                   </div>
                   <div className="flex justify-between gap-3">
                     <span>{chartUsesSoh ? 'SOH before shipment' : 'Available before shipment'}</span>
-                    <span className="font-mono font-medium text-foreground">{Math.round(shipSource).toLocaleString()} u</span>
+                    <span className="font-mono font-medium text-foreground">{Math.round(shipSource ?? 0).toLocaleString()} u</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>Sent to Main (90%)</span>
+                    <span>{isPlanned90 ? 'Sent to Main (90%)' : 'Sent to Main (order qty)'}</span>
                     <span className="font-mono font-medium text-violet-600">–{Math.round(shipQty).toLocaleString()} u</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span>Remaining (10%)</span>
-                    <span className="font-mono font-medium text-amber-500">{Math.round(shipSource - shipQty).toLocaleString()} u</span>
+                    <span>{isPlanned90 ? 'Remaining (10%)' : 'Remaining in China'}</span>
+                    <span className="font-mono font-medium text-amber-500">{Math.round((shipSource ?? 0) - shipQty).toLocaleString()} u</span>
                   </div>
                 </div>
               );
@@ -563,6 +568,9 @@ export function RealInboundStockDialog({
             sourceQty: o.quantity,
           });
         } else {
+          // DHL / Container POs to Main: physical stock leaves China on ship day and arrives Main on eta.
+          const isChinaToMainInbound = INBOUND_STATUSES.has(s);
+          const shipDay = isChinaToMainInbound ? Math.max(0, etaDay - DHL_LEAD_DAYS) : undefined;
           out.push({
             sku: row.sku,
             product: row.product,
@@ -573,6 +581,14 @@ export function RealInboundStockDialog({
             etaDay,
             quantity: o.quantity,
             status: o.status,
+            ...(isChinaToMainInbound
+              ? {
+                  isChinaWH: true,
+                  isProductionArrival: false,
+                  shipDay,
+                  isRealChinaToMainInbound: true,
+                }
+              : {}),
           });
         }
       }
@@ -641,12 +657,24 @@ export function RealInboundStockDialog({
             ? Math.max(0, idealArrivalDay - DHL_LEAD_DAYS)
             : 0;
 
+        const realChinaOutbounds = poInbounds.filter(
+          (ib) =>
+            ib.sku === row.sku &&
+            ib.isChinaWH &&
+            !ib.isProductionArrival &&
+            ib.isRealChinaToMainInbound,
+        );
+
         const getChinaStockAtShipDay = (shipDay: number): number => {
           let chinaStockAtShip = chartUsesSoh ? (row.sohChina ?? 0) : (row.availableChina ?? 0);
           for (const po of prodPOs) {
             if (po.etaDay <= shipDay) chinaStockAtShip += po.quantity;
           }
           chinaStockAtShip -= chinaDailyDemand * shipDay;
+          for (const ib of realChinaOutbounds) {
+            const sd = ib.shipDay ?? Math.max(0, ib.etaDay - DHL_LEAD_DAYS);
+            if (sd <= shipDay) chinaStockAtShip -= ib.quantity;
+          }
           for (const prev of planned) {
             if (prev.shipDay <= shipDay) chinaStockAtShip -= prev.quantity;
           }
@@ -736,6 +764,10 @@ export function RealInboundStockDialog({
 
     const curves: Record<string, number[]> = {};
     const chinaCurves: Record<string, number[]> = {};
+    const shipDayMap: Record<
+      string,
+      Record<number, { quantity: number; sourceQty: number; plannedOnly: boolean }>
+    > = {};
 
     for (const row of chartSKUs) {
       const dailyDemand = row.projectedDemand > 0 ? row.projectedDemand / 30 : 0;
@@ -754,28 +786,63 @@ export function RealInboundStockDialog({
       const chinaDailyDemand = warehouseDemandMap?.get(row.sku)
         ? (warehouseDemandMap.get(row.sku)! / 30)
         : 0;
-      const chinaShipments = allInbounds
+      const chinaShipRows = allInbounds
         .filter((ib) => ib.sku === row.sku && ib.isChinaWH && !ib.isProductionArrival)
-        .map((ib) => ({
-          shipDay: ib.shipDay ?? Math.max(0, ib.etaDay - DHL_LEAD_DAYS),
-          quantity: ib.quantity,
-        }));
+        .sort((a, b) => {
+          const sa = a.shipDay ?? Math.max(0, a.etaDay - DHL_LEAD_DAYS);
+          const sb = b.shipDay ?? Math.max(0, b.etaDay - DHL_LEAD_DAYS);
+          if (sa !== sb) return sa - sb;
+          return String(a.orderNumber ?? '').localeCompare(String(b.orderNumber ?? ''));
+        });
       const productionArrivals = allInbounds
         .filter((ib) => ib.sku === row.sku && ib.isProductionArrival)
         .map((ib) => ({ day: ib.etaDay, quantity: ib.quantity }));
 
       const cCurve: number[] = [];
       let cStock = chinaAvail;
-      for (const s of chinaShipments) {
-        if (s.shipDay <= 0) cStock -= s.quantity;
+
+      const mergeShipDay = (
+        shipDay: number,
+        qty: number,
+        before: number,
+        ib: InboundRow,
+      ) => {
+        if (!shipDayMap[row.sku]) shipDayMap[row.sku] = {};
+        const cur = shipDayMap[row.sku][shipDay];
+        const plannedShip = (ib.supplier ?? '').includes('China WH (planned)');
+        if (!cur) {
+          shipDayMap[row.sku][shipDay] = {
+            quantity: qty,
+            sourceQty: before,
+            plannedOnly: plannedShip,
+          };
+        } else {
+          cur.quantity += qty;
+          if (cur.sourceQty === 0) cur.sourceQty = before;
+          if (!plannedShip) cur.plannedOnly = false;
+        }
+      };
+
+      for (const ib of chinaShipRows) {
+        const sd = ib.shipDay ?? Math.max(0, ib.etaDay - DHL_LEAD_DAYS);
+        if (sd <= 0) {
+          const before = cStock;
+          cStock -= ib.quantity;
+          mergeShipDay(0, ib.quantity, before, ib);
+        }
       }
       for (const p of productionArrivals) {
         if (p.day <= 0) cStock += p.quantity;
       }
       cCurve.push(Math.max(0, Math.round(cStock)));
       for (let d = 1; d <= daysToTarget; d++) {
-        for (const s of chinaShipments) {
-          if (s.shipDay === d) cStock -= s.quantity;
+        for (const ib of chinaShipRows) {
+          const sd = ib.shipDay ?? Math.max(0, ib.etaDay - DHL_LEAD_DAYS);
+          if (sd === d) {
+            const before = cStock;
+            cStock -= ib.quantity;
+            mergeShipDay(d, ib.quantity, before, ib);
+          }
         }
         for (const p of productionArrivals) {
           if (p.day === d) cStock += p.quantity;
@@ -794,19 +861,7 @@ export function RealInboundStockDialog({
       arrMap[ib.sku][ib.etaDay] = (arrMap[ib.sku][ib.etaDay] ?? 0) + ib.quantity;
     }
 
-    // Ship-day lookup for China→Main shipments (not production arrivals)
-    const shipDayMap: Record<string, Record<number, { quantity: number; sourceQty: number }>> = {};
-    for (const ib of allInbounds) {
-      if (ib.isChinaWH && !ib.isProductionArrival) {
-        const shipDay = ib.shipDay ?? Math.max(0, ib.etaDay - DHL_LEAD_DAYS);
-        if (!shipDayMap[ib.sku]) shipDayMap[ib.sku] = {};
-        if (!shipDayMap[ib.sku][shipDay]) {
-          shipDayMap[ib.sku][shipDay] = { quantity: 0, sourceQty: 0 };
-        }
-        shipDayMap[ib.sku][shipDay].quantity += ib.quantity;
-        shipDayMap[ib.sku][shipDay].sourceQty += ib.sourceQty ?? 0;
-      }
-    }
+    // Ship-day lookup built inside China curve loop (mergeShipDay)
 
     // Build the set of days to render — regular steps PLUS important days
     // (arrivals and ship days) so dots and tooltips always have a chart point.
@@ -838,6 +893,7 @@ export function RealInboundStockDialog({
         if (shipInfo) {
           pt[`${row.sku}_chinaShip`] = shipInfo.quantity;
           pt[`${row.sku}_chinaShipSource`] = shipInfo.sourceQty ?? 0;
+          pt[`${row.sku}_chinaShipPlanned`] = shipInfo.plannedOnly ? 1 : 0;
         }
       }
       points.push(pt);
@@ -1321,6 +1377,17 @@ export function RealInboundStockDialog({
                         <Line
                           key={`${m.sku}_chinaShipSource`}
                           dataKey={`${m.sku}_chinaShipSource`}
+                          stroke="transparent"
+                          dot={false}
+                          activeDot={false}
+                          legendType="none"
+                          isAnimationActive={false}
+                        />
+                      ))}
+                      {skuMetaVisible.map((m) => (
+                        <Line
+                          key={`${m.sku}_chinaShipPlanned`}
+                          dataKey={`${m.sku}_chinaShipPlanned`}
                           stroke="transparent"
                           dot={false}
                           activeDot={false}

@@ -471,14 +471,14 @@ export function InventoryTable({
       );
     }
 
-    // Warehouse-specific demand column (shown when a WH filter is active)
-    if (warehouseDemandFilter && warehouseDemandMap) {
+    // Warehouse-specific demand column (shown when a WH filter is active; map may load after)
+    if (warehouseDemandFilter) {
       const whLabel = warehouseDemandFilter.length > 12
         ? warehouseDemandFilter.slice(0, 10) + '…'
         : warehouseDemandFilter;
       cols.push({
         id: 'warehouseDemand',
-        accessorFn: (row) => warehouseDemandMap.get(row.sku) ?? 0,
+        accessorFn: (row) => warehouseDemandMap?.get(row.sku) ?? 0,
         header: ({ column }) => (
           <SortHeader column={column} className="justify-center">
             <span className="text-emerald-600 dark:text-emerald-400" title={`Demand from ${warehouseDemandFilter}`}>
@@ -487,7 +487,7 @@ export function InventoryTable({
           </SortHeader>
         ),
         cell: ({ row }) => {
-          const qty = warehouseDemandMap.get(row.original.sku) ?? 0;
+          const qty = warehouseDemandMap?.get(row.original.sku) ?? 0;
           return (
             <div className="block w-full text-center text-[13px] tabular-nums font-medium text-emerald-600 dark:text-emerald-400">
               {qty > 0 ? (
