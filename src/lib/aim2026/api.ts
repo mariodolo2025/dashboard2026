@@ -1418,6 +1418,49 @@ export async function fetchWhDemandDetail(
   }
 }
 
+// ─── Container Feasibility (Storage bucket `container`) ─────────────────
+
+export interface ContainerFeasibilityManifest {
+  csvPath: string;
+  csvSignedUrl: string;
+  pdfs: { path: string; signedUrl: string }[];
+}
+
+/**
+ * Lists `container` via Edge Function (service role) and returns signed read URLs.
+ * Use this when direct Storage list/download fails (RLS). Deploy: `aim2026-container-bucket`.
+ */
+export async function fetchContainerFeasibilityManifest(): Promise<
+  | { ok: true; manifest: ContainerFeasibilityManifest }
+  | { ok: false; message: string }
+> {
+  try {
+    const result = await callFunction<{
+      success: boolean;
+      message?: string;
+      csvPath?: string;
+      csvSignedUrl?: string;
+      pdfs?: { path: string; signedUrl: string }[];
+    }>('aim2026-container-bucket', {});
+    if (!result.success || !result.csvSignedUrl || !result.csvPath) {
+      return { ok: false, message: result.message ?? 'Manifest unavailable' };
+    }
+    return {
+      ok: true,
+      manifest: {
+        csvPath: result.csvPath,
+        csvSignedUrl: result.csvSignedUrl,
+        pdfs: result.pdfs ?? [],
+      },
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
 // ─── CSV Download Helper ──────────────────────────────────────────────────
 
 export function downloadAsCSV(rows: Record<string, any>[], filename: string): void {
