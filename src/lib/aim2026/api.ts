@@ -715,7 +715,7 @@ export async function recalcKPIsForDateRange(
   rangeFrom?: string,
   rangeTo?: string,
   demandMode?: DemandMode
-): Promise<{ rows: SKURow[]; kpiSummary: KPISummary }> {
+): Promise<{ rows: SKURow[]; kpiSummary: KPISummary; demandIsDaily: boolean }> {
   const body: Record<string, string> = { startDate, endDate };
   if (rangeFrom) body.rangeFrom = rangeFrom;
   if (rangeTo) body.rangeTo = rangeTo;
@@ -739,6 +739,7 @@ export async function recalcKPIsForDateRange(
     success: boolean;
     data: Array<{ sku: string; kpi_data: any }>;
     skusProcessed: number;
+    demandIsDaily?: boolean;
   };
 
   const kpiData = result.data ?? [];
@@ -766,14 +767,14 @@ export async function recalcKPIsForDateRange(
     inventoryValueHistory: [],
   };
 
-  return { rows, kpiSummary };
+  return { rows, kpiSummary, demandIsDaily: result.demandIsDaily ?? false };
 }
 
 // ─── Demand Mode KPI Preview ──────────────────────────────────────────────
 
 export async function recalcKPIsForDemandMode(
   demandMode: DemandMode
-): Promise<{ rows: SKURow[]; kpiSummary: KPISummary }> {
+): Promise<{ rows: SKURow[]; kpiSummary: KPISummary; demandIsDaily: boolean }> {
   const body: Record<string, string | boolean> = {
     demandMode,
     previewOnly: true,
@@ -793,6 +794,7 @@ export async function recalcKPIsForDemandMode(
     success: boolean;
     data: Array<{ sku: string; kpi_data: any }>;
     skusProcessed: number;
+    demandIsDaily?: boolean;
   };
 
   const kpiData = result.data ?? [];
@@ -820,7 +822,7 @@ export async function recalcKPIsForDemandMode(
     inventoryValueHistory: [],
   };
 
-  return { rows, kpiSummary };
+  return { rows, kpiSummary, demandIsDaily: result.demandIsDaily ?? false };
 }
 
 // ─── Valuation History ────────────────────────────────────────────────────

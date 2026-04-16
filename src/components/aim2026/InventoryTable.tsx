@@ -146,6 +146,8 @@ interface InventoryTableProps {
   warehouseDemandMap?: Map<string, number> | null;
   /** Callback when user clicks a WH Demand number (triggers CSV download) */
   onWhDemandClick?: (sku: string) => void;
+  /** When true, demand column shows avg daily demand instead of monthly */
+  demandIsDaily?: boolean;
 }
 
 export function InventoryTable({
@@ -165,6 +167,7 @@ export function InventoryTable({
   warehouseDemandFilter = null,
   warehouseDemandMap = null,
   onWhDemandClick,
+  demandIsDaily = false,
 }: InventoryTableProps) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'projectedDemand', desc: true },
@@ -448,7 +451,7 @@ export function InventoryTable({
           accessorKey: 'projectedDemand',
           header: ({ column }) => (
             <SortHeader column={column} kpiKey="projectedDemand" className="justify-center">
-              Demand
+              {demandIsDaily ? 'Demand/d' : 'Demand'}
             </SortHeader>
           ),
           cell: ({ row }) => (

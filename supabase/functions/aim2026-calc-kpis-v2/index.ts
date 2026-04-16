@@ -335,6 +335,58 @@ async function loadDemandDetailSummary(
   return { breakdownMap, channelSplit };
 }
 
+// Load daily demand for short date ranges (< 30 days)
+async function loadDailyDemandSummary(
+  supabase: any,
+  rangeFrom: string,
+  rangeTo: string,
+  demandMode: DemandMode
+): Promise<Map<string, number>> {
+  const allData: any[] = [];
+  const pageSize = 1000;
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data, error } = await supabase
+      .from("aim2026_demand_detail")
+      .select("sku, status, quantity, type")
+      .gte("order_date", rangeFrom)
+      .lte("order_date", rangeTo)
+      .range(offset, offset + pageSize - 1);
+
+    if (error) throw new Error(`Failed to load daily demand: ${error.message}`);
+    allData.push(...(data ?? []));
+    if ((data?.length ?? 0) < pageSize) hasMore = false;
+    else offset += pageSize;
+  }
+
+  const map = new Map<string, number>();
+  for (const row of allData) {
+    const sku = row.sku;
+    if (!sku) continue;
+    const status = String(row.status ?? "").toLowerCase();
+    const type = String(row.type ?? "").toLowerCase();
+    const qty = Number(row.quantity ?? 0);
+
+    // Include: completed sales + component_usage + placed + backordered
+    // (mirrors base = quantity + componentUsage + placed + backordered in calcDemandStats)
+    const isCompletedSale = type === "sale" && status === "completed";
+    const isComponentUsage = type === "component_usage";
+    const isPlacedOrBackordered = type === "sale" && (status === "placed" || status === "backordered");
+    const isParked = type === "sale" && status === "parked";
+
+    const include =
+      isCompletedSale || isComponentUsage || isPlacedOrBackordered ||
+      (demandMode === "estimatedDemandParked" && isParked);
+
+    if (include) {
+      map.set(sku, (map.get(sku) ?? 0) + qty);
+    }
+  }
+  return map;
+}
+
 // Load BOM components — used to attribute component demand to the correct channel.
 // Returns: componentSku → list of { assemblySku, bomQty }
 async function loadBomComponents(
@@ -371,6 +423,15 @@ async function loadBomComponents(
 }
 
 // ─── KPI Calculations ──────────────────────────────────────────────────────
+
+/** Compute total days between two dates (inclusive) */
+function daysBetweenInclusive(from: string, to: string): number {
+  const [yF, mF, dF] = from.split("-").map(Number);
+  const [yT, mT, dT] = to.split("-").map(Number);
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const diff = Date.UTC(yT, mT - 1, dT) - Date.UTC(yF, mF - 1, dF);
+  return Math.round(diff / msPerDay) + 1;
+}
 
 /** Compute weight for a month based on how many days fall within [rangeFrom, rangeTo] */
 function getMonthWeight(periodDate: string, rangeFrom: string, rangeTo: string): number {
@@ -575,8 +636,13 @@ Deno.serve(async (req: Request) => {
     const isDateRangeQuery = !!dateRangeStart || !!dateRangeEnd;
     const demandMode = normalizeDemandMode(demandModeRaw);
     const useWeightedDemand = !!rangeFrom && !!rangeTo;
+
+    // Determine if we should use daily mode (< 30 days)
+    const totalRangeDays = (rangeFrom && rangeTo) ? daysBetweenInclusive(rangeFrom, rangeTo) : 999;
+    const useDailyMode = totalRangeDays < 30;
+
     if (isDateRangeQuery) {
-      console.log(`[${VERSION}] Date range query: ${dateRangeStart} to ${dateRangeEnd} | weighted=${useWeightedDemand} rangeFrom=${rangeFrom ?? "MISSING"} rangeTo=${rangeTo ?? "MISSING"}`);
+      console.log(`[${VERSION}] Date range query: ${dateRangeStart} to ${dateRangeEnd} | weighted=${useWeightedDemand} rangeFrom=${rangeFrom ?? "MISSING"} rangeTo=${rangeTo ?? "MISSING"} | daily_mode=${useDailyMode} (${totalRangeDays} days)`);
     }
     console.log(`[${VERSION}] Demand mode: ${demandMode}`);
 
@@ -591,6 +657,11 @@ Deno.serve(async (req: Request) => {
     ]);
     const demandDetailMap = demandDetailResult.breakdownMap;
     const channelSplitMap = demandDetailResult.channelSplit;
+
+    // Load daily demand if needed (for short date ranges < 30 days)
+    const dailyDemandMap = useDailyMode && rangeFrom && rangeTo
+      ? await loadDailyDemandSummary(supabase, rangeFrom, rangeTo, demandMode)
+      : new Map<string, number>();
 
     // ── Build assembly B2C fraction map ─────────────────────────
     // For component SKUs, demand comes mostly from componentUsage (assembly production),
@@ -785,7 +856,9 @@ Deno.serve(async (req: Request) => {
           allocatedChina: chinaWH.allocated,
           availableChina: chinaWH.available,
           allocatedTotal,
-          projectedDemand: Math.round(demandStats.avgMonthly),
+          projectedDemand: useDailyMode
+            ? Math.round((dailyDemandMap.get(sku) ?? 0) / totalRangeDays)
+            : Math.round(demandStats.avgMonthly),
           ...(() => {
             const projDemand = Math.round(demandStats.avgMonthly);
             if (projDemand === 0) return { demandB2b: 0, demandB2c: 0 };
@@ -859,8 +932,9 @@ Deno.serve(async (req: Request) => {
         version: VERSION,
         dateRange: { startDate: dateRangeStart, endDate: dateRangeEnd },
         demandMode,
+        demandIsDaily: useDailyMode,
         message: isDateRangeQuery
-          ? `KPIs recalculated for date range`
+          ? `KPIs recalculated for date range${useDailyMode ? ' (daily mode)' : ''}`
           : `KPIs recalculated (preview)`,
         skusProcessed: kpiRows.length,
         data: kpiRows.map((r: any) => ({ sku: r.sku, kpi_data: r.kpi_data })),

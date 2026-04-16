@@ -197,6 +197,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
 
   const [dateRangeLoading, setDateRangeLoading] = useState(false);
   const [dateRangeLabel, setDateRangeLabel] = useState<string | null>(null);
+  const [demandIsDaily, setDemandIsDaily] = useState(false);
 
   useEffect(() => {
     if (!dateRange?.from || !dateRange?.to || loading || needsFirstSync) return;
@@ -213,6 +214,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     const monthsDiff = (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
     if (monthsDiff >= 11) {
       setDateRangeLabel(null);
+      setDemandIsDaily(false);
       fetchDashboardData().then((data) => {
         if (data.rows.length > 0) {
           setSKUData(dedupeRowsBySKU(data.rows));
@@ -243,6 +245,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
           setValuationHistory(data.valuationHistory);
           setAssembledProductSKUs(new Set(data.assembledProductSKUs ?? []));
           setBomComponents(data.bomComponents ?? []);
+          setDemandIsDaily(result.demandIsDaily ?? false);
           // Preserve fixed inventory value — always use total from valuation history, not date-range recalc
           setKPISummary((prev) => {
             const inventorySource = prev ?? data.kpiSummary;
@@ -1222,6 +1225,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             splitDemand={splitDemand}
             warehouseDemandFilter={warehouseDemandFilter}
             warehouseDemandMap={warehouseDemandMap}
+            demandIsDaily={demandIsDaily}
           />
         </>
       )}
@@ -1380,6 +1384,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                   splitDemand={splitDemand}
                   warehouseDemandFilter={warehouseDemandFilter}
                   warehouseDemandMap={warehouseDemandMap}
+                  demandIsDaily={demandIsDaily}
                 />
               </div>
             </div>
