@@ -60,8 +60,13 @@ chmod +x "$HELPER_SCRIPT" 2>/dev/null || true
 git config --local --unset-all credential.helper 2>/dev/null || true
 # The empty "" helper wipes any global/system helpers for this repo only;
 # the second line appends our helper script.
+#
+# We wrap the script invocation in a shell function (via `!f() {...}; f`) so
+# that paths containing spaces (e.g. "AIM 2026") are passed correctly. Without
+# the `!` prefix, git would try to invoke `credential-<path>` as a subcommand,
+# and a raw path with spaces gets mis-tokenized.
 git config --local credential.helper ''
-git config --local --add credential.helper "$HELPER_SCRIPT"
+git config --local --add credential.helper "!f() { bash \"$HELPER_SCRIPT\" \"\$@\"; }; f"
 
 echo "Git credential helper configured for this repo."
 echo "  Username: ${GITHUB_USERNAME:-x-access-token}"
