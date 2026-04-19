@@ -1216,6 +1216,63 @@ function App() {
     return channelAnalysis.reduce((sum, channel) => sum + channel.sales, 0);
   }, [channelAnalysis]);
 
+  // Data coverage warnings: detect when the selected date range extends beyond
+  // the data actually available in each source. Used to surface gaps in the
+  // Total Sales card so the user doesn't misread partial totals as complete.
+  const dataCoverageWarnings = useMemo(() => {
+    if (!dateRange?.from || !dateRange?.to) return [] as { source: string; minDate: Date | null; maxDate: Date | null }[];
+
+    const rangeFrom = dateRange.from;
+    const rangeTo = dateRange.to;
+    const warnings: { source: string; minDate: Date | null; maxDate: Date | null }[] = [];
+
+    const getBounds = (rows: any[] | null | undefined, field: string): [Date | null, Date | null] => {
+      if (!rows || rows.length === 0) return [null, null];
+      let min: Date | null = null;
+      let max: Date | null = null;
+      for (const row of rows) {
+        const d = row?.[field];
+        if (!(d instanceof Date) || isNaN(d.getTime())) continue;
+        if (!min || d < min) min = d;
+        if (!max || d > max) max = d;
+      }
+      return [min, max];
+    };
+
+    const check = (name: string, min: Date | null, max: Date | null) => {
+      if (!min || !max) {
+        warnings.push({ source: name, minDate: null, maxDate: null });
+        return;
+      }
+      if (rangeFrom < min || rangeTo > max) {
+        warnings.push({ source: name, minDate: min, maxDate: max });
+      }
+    };
+
+    const [shopMin, shopMax] = getBounds([...shopifyData, ...oldShopifyData], 'date');
+    check('Shopify', shopMin, shopMax);
+
+    const [unMin, unMax] = getBounds(unleashedData, 'orderDate');
+    check('Unleashed B2B', unMin, unMax);
+
+    const [metaMin, metaMax] = getBounds(metaData, 'date');
+    check('Meta Ads', metaMin, metaMax);
+
+    // Xero: derive min/max from the months array (first day of first month → last day of last month)
+    if (xeroData?.months && xeroData.months.length > 0) {
+      const sorted = [...xeroData.months].sort((a, b) =>
+        a.year !== b.year ? a.year - b.year : a.month - b.month
+      );
+      const first = sorted[0];
+      const last = sorted[sorted.length - 1];
+      const xeroMin = new Date(first.year, first.month - 1, 1);
+      const xeroMax = new Date(last.year, last.month, 0);
+      check('Xero Costs', xeroMin, xeroMax);
+    }
+
+    return warnings;
+  }, [dateRange, shopifyData, oldShopifyData, unleashedData, metaData, xeroData]);
+
   // Weekly ROAS calculation
   const weeklyROAS = useMemo((): WeeklyROAS[] => {
     if (!dateRange?.from || !dateRange?.to) return [];
@@ -2175,12 +2232,34 @@ function App() {
               )}
             </CardHeader>
             <CardContent className="flex flex-col items-center justify-center text-center">
-              <div className="text-2xl font-bold tabular-nums">
+              <div className="text-5xl font-bold tabular-nums">
                 ${totalSales.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
               </div>
               {lastUpdated && (
                 <div className="text-xs text-muted-foreground mt-2">
                   Last updated: {format(lastUpdated, 'MMM d, yyyy h:mm a')}
+                </div>
+              )}
+              {dataCoverageWarnings.length > 0 && (
+                <div className="mt-4 w-full rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-3 text-left">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+                    <div className="text-xs space-y-1">
+                      <div className="font-semibold text-amber-900 dark:text-amber-200">
+                        Data incompleta para el rango seleccionado
+                      </div>
+                      <ul className="space-y-0.5 text-amber-800 dark:text-amber-300">
+                        {dataCoverageWarnings.map((w) => (
+                          <li key={w.source}>
+                            <span className="font-medium">{w.source}:</span>{' '}
+                            {!w.minDate || !w.maxDate
+                              ? 'sin datos en el sistema'
+                              : `datos disponibles ${format(w.minDate, 'MMM d, yyyy')} – ${format(w.maxDate, 'MMM d, yyyy')}`}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
                 </div>
               )}
             </CardContent>
