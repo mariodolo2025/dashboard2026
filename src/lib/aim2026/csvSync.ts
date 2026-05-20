@@ -373,10 +373,20 @@ async function updateProduction(
     return ex !== `${f[7]}|${f[8]}|${f[9]}`;
   });
 
-  // NOTE: We intentionally do NOT upload the merged CSV back to the bucket.
-  // The user's manually-uploaded ProductionEnquiryList.csv is the source of truth
-  // and contains warehouse attributions (e.g. China-W) that the API doesn't fully
-  // reproduce due to pagination limits and warehouse field differences.
+  // Upload the merged CSV back to the bucket so component usage stays current.
+  // Merge = fresh API rows (from cutoff forward, incl. the latest months) on top
+  // of the preserved historical rows (keptLines). Historical rows keep their
+  // original warehouse attribution; only the recent window is API-sourced. Without
+  // this upload the bucket CSV froze at the last manual upload, so component usage
+  // silently stopped updating for newer months (e.g. April/May 2026).
+  const mergedCSV = [
+    `Production Enquiry as of ${au},,,,,,,,,`,
+    colHeaders,
+    ...allNewLines,
+    ...keptLines,
+    '',
+  ].join('\n');
+  await uploadProductionCSV(mergedCSV);
 
   const deltaCSV = [`Production Enquiry DELTA (new or changed) as of ${au},,,,,,,,,`, colHeaders, ...deltaLines, ''].join('\n');
 
