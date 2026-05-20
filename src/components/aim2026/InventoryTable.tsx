@@ -31,6 +31,10 @@ function formatNum(v: number, decimals = 0): string {
   });
 }
 
+// Column ids that render the (highly important) demand value. These get a
+// highlighted background in both header and body so the column is easy to spot.
+const DEMAND_COL_IDS = new Set(['projectedDemand', 'demandB2b', 'demandB2c']);
+
 function getDaysOfCoverColor(days: number): string {
   if (days <= 0) return 'text-red-600 dark:text-red-400 font-semibold';
   if (days < 30) return 'text-red-500 dark:text-red-400';
@@ -271,6 +275,72 @@ export function InventoryTable({
         ),
         size: 130,
       },
+      // ── Demand — placed right after SKU and highlighted (most important metric) ──
+      ...((splitDemand
+        ? [
+            {
+              id: 'demandB2b',
+              accessorFn: (row: SKURow) => row.demandB2b ?? 0,
+              header: ({ column }: any) => (
+                <SortHeader column={column} className="justify-center">
+                  <span className="text-blue-600 dark:text-blue-400">B2B</span>
+                </SortHeader>
+              ),
+              cell: ({ row }: any) => (
+                <button
+                  onClick={() => onDemandClick(row.original.sku)}
+                  className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-semibold text-blue-600 dark:text-blue-400"
+                >
+                  {formatNum(row.original.demandB2b ?? 0)}
+                </button>
+              ),
+              size: 90,
+            },
+            {
+              id: 'demandB2c',
+              accessorFn: (row: SKURow) => row.demandB2c ?? 0,
+              header: ({ column }: any) => (
+                <SortHeader column={column} className="justify-center">
+                  <span className="text-violet-600 dark:text-violet-400">B2C</span>
+                </SortHeader>
+              ),
+              cell: ({ row }: any) => (
+                <button
+                  onClick={() => onDemandClick(row.original.sku)}
+                  className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-violet-600 dark:hover:text-violet-400 transition-colors font-semibold text-violet-600 dark:text-violet-400"
+                >
+                  {formatNum(row.original.demandB2c ?? 0)}
+                </button>
+              ),
+              size: 90,
+            },
+          ]
+        : [
+            {
+              accessorKey: 'projectedDemand',
+              header: ({ column }: any) => (
+                <SortHeader column={column} kpiKey="projectedDemand" className="justify-center">
+                  {demandIsDaily ? 'Demand/d' : 'Demand'}
+                </SortHeader>
+              ),
+              cell: ({ row }: any) => (
+                <button
+                  onClick={() => onDemandClick(row.original.sku)}
+                  className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors group font-semibold"
+                >
+                  <span className="w-4 flex-shrink-0 flex justify-center mr-0.5">
+                    <TrendIndicator
+                      direction={row.original.demandTrend}
+                      size="sm"
+                      className="opacity-60 group-hover:opacity-100"
+                    />
+                  </span>
+                  <span className="text-center">{formatNum(row.original.projectedDemand)}</span>
+                </button>
+              ),
+              size: 110,
+            },
+          ]) as ColumnDef<SKURow>[]),
       // ABC
       {
         accessorKey: 'abcClass',
@@ -404,75 +474,8 @@ export function InventoryTable({
       );
     }
 
-    // Demand & reorder columns (always visible)
-    if (splitDemand) {
-      // B2B demand column
-      cols.push({
-        id: 'demandB2b',
-        accessorFn: (row) => row.demandB2b ?? 0,
-        header: ({ column }) => (
-          <SortHeader column={column} className="justify-center">
-            <span className="text-blue-600 dark:text-blue-400">B2B</span>
-          </SortHeader>
-        ),
-        cell: ({ row }) => (
-          <button
-            onClick={() => onDemandClick(row.original.sku)}
-            className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors font-medium text-blue-600 dark:text-blue-400"
-          >
-            {formatNum(row.original.demandB2b ?? 0)}
-          </button>
-        ),
-        size: 80,
-      });
-      // B2C demand column
-      cols.push({
-        id: 'demandB2c',
-        accessorFn: (row) => row.demandB2c ?? 0,
-        header: ({ column }) => (
-          <SortHeader column={column} className="justify-center">
-            <span className="text-violet-600 dark:text-violet-400">B2C</span>
-          </SortHeader>
-        ),
-        cell: ({ row }) => (
-          <button
-            onClick={() => onDemandClick(row.original.sku)}
-            className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-violet-600 dark:hover:text-violet-400 transition-colors font-medium text-violet-600 dark:text-violet-400"
-          >
-            {formatNum(row.original.demandB2c ?? 0)}
-          </button>
-        ),
-        size: 80,
-      });
-    } else {
-      cols.push(
-        // Projected Demand
-        {
-          accessorKey: 'projectedDemand',
-          header: ({ column }) => (
-            <SortHeader column={column} kpiKey="projectedDemand" className="justify-center">
-              {demandIsDaily ? 'Demand/d' : 'Demand'}
-            </SortHeader>
-          ),
-          cell: ({ row }) => (
-            <button
-              onClick={() => onDemandClick(row.original.sku)}
-              className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors group font-medium"
-            >
-              <span className="w-4 flex-shrink-0 flex justify-center mr-0.5">
-                <TrendIndicator
-                  direction={row.original.demandTrend}
-                  size="sm"
-                  className="opacity-60 group-hover:opacity-100"
-                />
-              </span>
-              <span className="text-center">{formatNum(row.original.projectedDemand)}</span>
-            </button>
-          ),
-          size: 90,
-        },
-      );
-    }
+    // (Demand columns are defined right after SKU above, so they appear at the
+    // front of the table and are easy to find.)
 
     // Warehouse-specific demand column (shown when a WH filter is active; map may load after)
     if (warehouseDemandFilter) {
@@ -853,7 +856,11 @@ export function InventoryTable({
               return (
                 <div
                   key={header.id}
-                  className="px-3 py-2.5 text-left font-medium flex-shrink-0 min-w-0 flex items-center"
+                  className={cn(
+                    'px-3 py-2.5 text-left font-medium flex-shrink-0 min-w-0 flex items-center',
+                    DEMAND_COL_IDS.has(header.column.id) &&
+                      'bg-amber-100/60 dark:bg-amber-900/25 font-bold'
+                  )}
                   style={{ width: size, flex: `${size} 0 0%` }}
                 >
                   {header.isPlaceholder
@@ -901,7 +908,11 @@ export function InventoryTable({
                   return (
                     <div
                       key={cell.id}
-                      className="px-3 flex items-center flex-shrink-0 min-w-0 text-left"
+                      className={cn(
+                        'px-3 flex items-center flex-shrink-0 min-w-0 text-left',
+                        DEMAND_COL_IDS.has(cell.column.id) &&
+                          'bg-amber-50/60 dark:bg-amber-900/10'
+                      )}
                       style={{
                         width: size,
                         flex: `${size} 0 0%`,
