@@ -46,51 +46,62 @@ interface UnleashedCreds {
 async function unleashedGet(
   endpoint: string,
   queryString: string,
-  creds: UnleashedCreds
+  creds: UnleashedCreds,
+  attempt = 1
 ): Promise<any> {
   const url = `${UNLEASHED_BASE}/${endpoint}${queryString ? "?" + queryString : ""}`;
-  const signature = await hmacSign(creds.api_key, queryString);
-
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "api-auth-id": creds.api_id,
-      "api-auth-signature": signature,
-    },
-    signal: AbortSignal.timeout(55000),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Unleashed ${endpoint}: ${res.status} ${res.statusText}`);
+  try {
+    const signature = await hmacSign(creds.api_key, queryString);
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "api-auth-id": creds.api_id,
+        "api-auth-signature": signature,
+      },
+      // Smaller per-request budget: a slow page is retried, not fatal.
+      signal: AbortSignal.timeout(30000),
+    });
+    if (res.status === 429 || res.status >= 500)
+      throw new Error(`Unleashed ${endpoint}: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      throw new Error(`Unleashed ${endpoint}: ${res.status} ${res.statusText}`);
+    }
+    return res.json();
+  } catch (e) {
+    if (attempt < 3) {
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+      return unleashedGet(endpoint, queryString, creds, attempt + 1);
+    }
+    throw e;
   }
-  return res.json();
 }
 
+// Paginate with bounded parallelism: fetch page 1 to learn the page count,
+// then fetch the rest in concurrent batches. Cuts wall-clock vs. sequential
+// page-by-page, which is what trips the per-request timeout under load.
 async function unleashedGetAll(
   endpoint: string,
   extraParams: string,
   creds: UnleashedCreds,
   pageSize = 200,
-  maxPages = 50
+  maxPages = 50,
+  concurrency = 4
 ): Promise<any[]> {
-  let page = 1;
-  let allItems: any[] = [];
-  let hasMore = true;
+  const qs = `${extraParams ? extraParams + "&" : ""}pageSize=${pageSize}`;
+  const first = await unleashedGet(`${endpoint}/1`, qs, creds);
+  let allItems: any[] = first.Items ?? [];
+  const totalPages = Math.min(first.Pagination?.NumberOfPages ?? 1, maxPages);
+  console.log(`${endpoint}: ${totalPages} page(s), ${allItems.length} on p1`);
 
-  while (hasMore && page <= maxPages) {
-    const pageEndpoint = `${endpoint}/${page}`;
-    const qs = `${extraParams ? extraParams + "&" : ""}pageSize=${pageSize}`;
-    const data = await unleashedGet(pageEndpoint, qs, creds);
-    const items = data.Items ?? [];
-    allItems = allItems.concat(items);
-
-    const pagination = data.Pagination ?? {};
-    const totalPages = pagination.NumberOfPages ?? 1;
-    console.log(`${endpoint} page ${page}/${totalPages}: ${items.length} items`);
-    hasMore = page < totalPages;
-    page++;
+  for (let start = 2; start <= totalPages; start += concurrency) {
+    const batch: Promise<any>[] = [];
+    for (let p = start; p < start + concurrency && p <= totalPages; p++) {
+      batch.push(unleashedGet(`${endpoint}/${p}`, qs, creds));
+    }
+    const results = await Promise.all(batch);
+    for (const r of results) allItems = allItems.concat(r.Items ?? []);
   }
 
   return allItems;
@@ -117,17 +128,22 @@ function parseMsDate(dateValue: any): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// Cache Intl formatters at module scope. Building a new Intl.DateTimeFormat
+// (and toLocaleString-with-options below) per CSV row is a major CPU sink
+// that trips the edge runtime's CPU limit (WORKER_RESOURCE_LIMIT) on large
+// datasets. Create once, reuse for every row.
+const DATE_FMT_AU = new Intl.DateTimeFormat("en-AU", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  timeZone: "Australia/Sydney",
+});
+
 // Format a Date in Australian timezone as DD/MM/YYYY
 function formatDateAU(date: Date | null): string {
   if (!date) return "";
-  const formatter = new Intl.DateTimeFormat("en-AU", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    timeZone: "Australia/Sydney",
-  });
   // en-AU gives "DD/MM/YYYY" natively
-  return formatter.format(date);
+  return DATE_FMT_AU.format(date);
 }
 
 // ─── CSV Helpers ───────────────────────────────────────────────────────────
@@ -139,20 +155,23 @@ function escapeCSV(value: string): string {
   return value;
 }
 
+const NUM_FMT_AU = new Intl.NumberFormat("en-AU", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+const CUR_FMT_AU = new Intl.NumberFormat("en-AU", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 function formatNumber(n: number): string {
   if (n === 0) return "0";
-  return n.toLocaleString("en-AU", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  });
+  return NUM_FMT_AU.format(n);
 }
 
 function formatCurrency(n: number): string {
   if (n === 0) return "0.00";
-  return n.toLocaleString("en-AU", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return CUR_FMT_AU.format(n);
 }
 
 // ─── Allowed Custom Statuses ───────────────────────────────────────────────
@@ -249,7 +268,10 @@ Deno.serve(async (req: Request) => {
 
     for (const qs of queries) {
       try {
-        const orders = await unleashedGetAll("PurchaseOrders", qs, creds, 200, 10);
+        // Smaller pages: PO records carry nested lines, so a 200-row page is
+        // a huge payload that can blow the per-request timeout. 50/page keeps
+        // each request fast; parallel pagination keeps total wall-clock low.
+        const orders = await unleashedGetAll("PurchaseOrders", qs, creds, 50, 40);
         let added = 0;
         for (const o of orders) {
           const guid = o.Guid ?? o.OrderNumber;

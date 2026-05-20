@@ -45,34 +45,50 @@ async function hmacSign(apiKey: string, qs: string): Promise<string> {
 
 interface Creds { api_id: string; api_key: string; }
 
-async function unleashedGet(ep: string, qs: string, c: Creds) {
+async function unleashedGet(ep: string, qs: string, c: Creds, attempt = 1): Promise<any> {
   const url = `${UNLEASHED_BASE}/${ep}${qs ? "?" + qs : ""}`;
-  const res = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "api-auth-id": c.api_id,
-      "api-auth-signature": await hmacSign(c.api_key, qs),
-    },
-    signal: AbortSignal.timeout(45_000),
-  });
-  if (!res.ok) throw new Error(`Unleashed ${ep}: ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "api-auth-id": c.api_id,
+        "api-auth-signature": await hmacSign(c.api_key, qs),
+      },
+      // Smaller per-request budget: a slow page is retried, not fatal.
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (res.status === 429 || res.status >= 500)
+      throw new Error(`Unleashed ${ep}: ${res.status}`);
+    if (!res.ok) throw new Error(`Unleashed ${ep}: ${res.status}`);
+    return res.json();
+  } catch (e) {
+    if (attempt < 3) {
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+      return unleashedGet(ep, qs, c, attempt + 1);
+    }
+    throw e;
+  }
 }
 
+// Paginate with bounded parallelism: fetch page 1 to learn the page count,
+// then fetch the rest in concurrent batches. Cuts wall-clock vs. sequential.
 async function unleashedGetAll(
-  ep: string, extra: string, c: Creds, pageSize = 200, maxPages = 50
+  ep: string, extra: string, c: Creds, pageSize = 200, maxPages = 50, concurrency = 4
 ): Promise<any[]> {
-  let page = 1, all: any[] = [], more = true;
-  while (more && page <= maxPages) {
-    const qs = `${extra ? extra + "&" : ""}pageSize=${pageSize}`;
-    const data = await unleashedGet(`${ep}/${page}`, qs, c);
-    const items = data.Items ?? [];
-    all = all.concat(items);
-    const pages = data.Pagination?.NumberOfPages ?? 1;
-    console.log(`${ep} p${page}/${pages}: ${items.length} items`);
-    more = page < pages;
-    page++;
+  const qs = `${extra ? extra + "&" : ""}pageSize=${pageSize}`;
+  const first = await unleashedGet(`${ep}/1`, qs, c);
+  let all: any[] = first.Items ?? [];
+  const totalPages = Math.min(first.Pagination?.NumberOfPages ?? 1, maxPages);
+  console.log(`${ep}: ${totalPages} page(s), ${all.length} on p1`);
+
+  for (let start = 2; start <= totalPages; start += concurrency) {
+    const batch: Promise<any>[] = [];
+    for (let p = start; p < start + concurrency && p <= totalPages; p++) {
+      batch.push(unleashedGet(`${ep}/${p}`, qs, c));
+    }
+    const results = await Promise.all(batch);
+    for (const r of results) all = all.concat(r.Items ?? []);
   }
   return all;
 }
@@ -83,18 +99,24 @@ function esc(v: string): string {
   return v;
 }
 
+// Cache Intl formatters at module scope. Re-creating them per row (via
+// toLocaleString with options) is a major CPU sink that trips the edge
+// runtime's CPU limit (WORKER_RESOURCE_LIMIT) on large datasets.
+const NUM_FMT = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const CUR_FMT = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 function fmtNum(n: number): string {
   if (n === 0) return "0";
-  const s = Math.round(n).toLocaleString("en-US");
+  const s = NUM_FMT.format(Math.round(n));
   return s.includes(",") ? esc(s) : s;
 }
 
 function fmtCur(n: number): string {
   if (n === 0) return "0.00";
-  const s = Number(n).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  const s = CUR_FMT.format(Number(n));
   return s.includes(",") ? esc(s) : s;
 }
 
