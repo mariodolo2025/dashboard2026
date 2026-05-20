@@ -798,29 +798,38 @@ async function syncAssemblies(
   if (endStr) qs += `&endDate=${endStr}`;
   const maxPages = 15;
 
-  // CRITICAL: zero-out MUST happen BEFORE fetching/early-returns.
-  // The first chunk (e.g. Feb 2025) may have no assemblies, but we still need
-  // to zero existing component_usage so subsequent chunks don't double-add.
-  if (isFirstAssemblyChunk) {
-    const zeroStart = overrideStart ?? startStr;
-    console.log(`Assemblies: zeroing component_usage from ${zeroStart} onwards (first chunk)`);
-    const { error: zeroErr } = await supabase
+  console.log(`Assembly sync: ${startStr} → ${endStr ?? "now"} (maxPages=${maxPages})`);
+
+  // Fetch FIRST. If this throws, the orchestrator's try/catch skips this chunk
+  // and we never touch the DB — so a failed month preserves its existing data.
+  const assemblies = await unleashedGetAll("Assemblies", qs, creds, 200, maxPages);
+  console.log(`Assemblies: received ${assemblies.length} completed assemblies`);
+
+  // Non-destructive per-month replace: now that the fetch succeeded, wipe ONLY
+  // this chunk's month range and rewrite it below. Other months are never
+  // touched, so a single failed/incomplete month can't wipe historical data.
+  // (Replaces the old global zero-out gated on isFirstAssemblyChunk, which left
+  // a month permanently zeroed if its chunk failed after the global wipe.)
+  const monthStart = overrideStart ?? startStr;
+  const monthEnd = endStr; // exclusive: first day of next month
+  console.log(`Assemblies: clearing component_usage for ${monthStart} → ${monthEnd ?? "now"} (scoped per-month)`);
+  {
+    let zeroQuery = supabase
       .from("aim2026_demand_history")
       .update({ component_usage: 0 })
-      .gte("period_date", zeroStart);
+      .gte("period_date", monthStart);
+    if (monthEnd) zeroQuery = zeroQuery.lt("period_date", monthEnd);
+    const { error: zeroErr } = await zeroQuery;
     if (zeroErr) console.error(`Assemblies zero-out error: ${JSON.stringify(zeroErr)}`);
 
-    await supabase
+    let delQuery = supabase
       .from("aim2026_demand_detail")
       .delete()
       .eq("type", "component_usage")
-      .gte("period_date", zeroStart);
+      .gte("period_date", monthStart);
+    if (monthEnd) delQuery = delQuery.lt("period_date", monthEnd);
+    await delQuery;
   }
-
-  console.log(`Assembly sync: ${startStr} → ${endStr ?? "now"} (maxPages=${maxPages})`);
-
-  const assemblies = await unleashedGetAll("Assemblies", qs, creds, 200, maxPages);
-  console.log(`Assemblies: received ${assemblies.length} completed assemblies`);
 
   if (assemblies.length === 0) return 0;
 
