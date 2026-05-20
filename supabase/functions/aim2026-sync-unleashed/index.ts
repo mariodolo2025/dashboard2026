@@ -956,98 +956,58 @@ async function syncAssemblies(
 
   console.log(`Assemblies existingMap: ${existingMap.size} rows loaded (${allSkus.length} SKUs × ${allPeriods.length} periods)`);
 
-  // Build update + insert lists (additive: existing component_usage + new)
-  const updates: { id: number; component_usage: number }[] = [];
-  const inserts: any[] = [];
+  // Build full upsert rows. This month's component_usage was already zeroed
+  // above, so the value to write is exactly the freshly aggregated qty (no
+  // additive read needed). We carry quantity_sold/revenue from existing rows
+  // so the upsert — which replaces the whole row — preserves them.
+  const upsertRows: any[] = [];
 
   for (const [key, compQty] of allMap) {
     const [periodDate, sku] = key.split("|");
-    const dbKey = `${periodDate}|${sku}|All`;
-    const existing = existingMap.get(dbKey);
-    const newCU = Math.round(compQty * 100) / 100;
-
-    if (existing) {
-      updates.push({
-        id: existing.id,
-        component_usage: existing.component_usage + newCU,
-      });
-    } else {
-      inserts.push({
-        period_date: periodDate, sku, warehouse: "All",
-        quantity_sold: 0, revenue: 0, component_usage: newCU,
-      });
-    }
+    const existing = existingMap.get(`${periodDate}|${sku}|All`);
+    upsertRows.push({
+      period_date: periodDate, sku, warehouse: "All",
+      quantity_sold: existing?.quantity_sold ?? 0,
+      revenue: existing?.revenue ?? 0,
+      component_usage: Math.round(compQty * 100) / 100,
+    });
   }
 
   for (const [key, compQty] of whMap) {
     const parts = key.split("|");
     const existing = existingMap.get(key);
-    const newCU = Math.round(compQty * 100) / 100;
-
-    if (existing) {
-      updates.push({
-        id: existing.id,
-        component_usage: existing.component_usage + newCU,
-      });
-    } else {
-      inserts.push({
-        period_date: parts[0], sku: parts[1], warehouse: parts[2],
-        quantity_sold: 0, revenue: 0, component_usage: newCU,
-      });
-    }
+    upsertRows.push({
+      period_date: parts[0], sku: parts[1], warehouse: parts[2],
+      quantity_sold: existing?.quantity_sold ?? 0,
+      revenue: existing?.revenue ?? 0,
+      component_usage: Math.round(compQty * 100) / 100,
+    });
   }
 
-  console.log(`Assemblies: ${updates.length} additive updates, ${inserts.length} new inserts`);
+  console.log(`Assemblies: upserting ${upsertRows.length} demand_history rows (batched)`);
 
-  // Batch updates (add to existing component_usage)
-  const batchSize = 200;
-  for (let i = 0; i < updates.length; i += 50) {
-    const chunk = updates.slice(i, i + 50);
-    await Promise.all(
-      chunk.map((u) =>
-        supabase.from("aim2026_demand_history")
-          .update({ component_usage: u.component_usage })
-          .eq("id", u.id)
-      )
-    );
+  // Batched upsert by the (period_date, sku, warehouse) unique constraint:
+  // ONE request per ~500 rows instead of one UPDATE per row. The old per-row
+  // update loop issued thousands of HTTP calls and blew the edge function
+  // CPU/time limit on heavy months (the "not enough resources" failure).
+  const batchSize = 500;
+  for (let i = 0; i < upsertRows.length; i += batchSize) {
+    const batch = upsertRows.slice(i, i + batchSize);
+    const { error } = await supabase
+      .from("aim2026_demand_history")
+      .upsert(batch, { onConflict: "period_date,sku,warehouse" });
+    if (error) console.error(`Assemblies upsert batch ${i} error: ${JSON.stringify(error)}`);
   }
 
-  // Batch inserts for new rows — if insert fails (row exists but wasn't found by
-  // existingMap query), fall back to individual additive updates.
-  for (let i = 0; i < inserts.length; i += batchSize) {
-    const batch = inserts.slice(i, i + batchSize);
-    const { error } = await supabase.from("aim2026_demand_history").insert(batch);
-    if (error) {
-      console.warn(`Assemblies insert batch ${i} failed (${error.code}), falling back to individual updates`);
-      for (const row of batch) {
-        const { data: existing } = await supabase
-          .from("aim2026_demand_history")
-          .select("id, component_usage")
-          .eq("period_date", row.period_date)
-          .eq("sku", row.sku)
-          .eq("warehouse", row.warehouse)
-          .limit(1);
-        if (existing?.[0]) {
-          await supabase.from("aim2026_demand_history")
-            .update({ component_usage: Number(existing[0].component_usage ?? 0) + row.component_usage })
-            .eq("id", existing[0].id);
-        } else {
-          await supabase.from("aim2026_demand_history").insert(row);
-        }
-      }
-    }
-  }
-
-  // Insert detail rows (no delete needed here — first chunk already cleared them)
+  // Insert detail rows (this month's component_usage detail was cleared above)
   for (let i = 0; i < detailRows.length; i += batchSize) {
     const batch = detailRows.slice(i, i + batchSize);
     const { error } = await supabase.from("aim2026_demand_detail").insert(batch);
     if (error) console.error("Error inserting assembly detail batch:", error);
   }
 
-  const totalAgg = updates.length + inserts.length;
-  console.log(`Assemblies [${startStr}→${endStr ?? "now"}]: ${updates.length} updated + ${inserts.length} inserted + ${detailRows.length} detail rows`);
-  return totalAgg;
+  console.log(`Assemblies [${startStr}→${endStr ?? "now"}]: ${upsertRows.length} upserted + ${detailRows.length} detail rows`);
+  return upsertRows.length;
 }
 
 /** Step 6: Supplement assembly component_usage from ProductionEnquiryList.csv.
