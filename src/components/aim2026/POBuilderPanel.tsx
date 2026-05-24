@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2, GripVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -20,6 +21,7 @@ interface POBuilderPanelProps {
   onClear: () => void;
   onCreatePO: (customOrderStatus: string) => Promise<void>;
   creating: boolean;
+  initialStatus?: string;
 }
 
 function fmt(v: number): string {
@@ -33,12 +35,17 @@ export function POBuilderPanel({
   onClear,
   onCreatePO,
   creating,
+  initialStatus,
 }: POBuilderPanelProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [selectedStatus, setSelectedStatus] = useState('Production');
+  const [selectedStatus, setSelectedStatus] = useState(initialStatus ?? 'Production');
   const [minimized, setMinimized] = useState(false);
   const [pos, setPos] = useState(getDefaultPos);
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
+
+  useEffect(() => {
+    if (initialStatus) setSelectedStatus(initialStatus);
+  }, [initialStatus]);
 
   const totalUnits = items.reduce((s, i) => s + i.quantity, 0);
   const totalValue = items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
@@ -69,7 +76,7 @@ export function POBuilderPanel({
 
   if (items.length === 0) return null;
 
-  return (
+  return createPortal(
     <AnimatePresence>
       <motion.div
         initial={{ opacity: 0 }}
@@ -77,7 +84,7 @@ export function POBuilderPanel({
         exit={{ opacity: 0 }}
         transition={{ duration: 0.2 }}
         style={{ left: pos.x, top: pos.y }}
-        className="fixed z-50 w-[340px] bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
+        className="pointer-events-auto fixed z-[60] w-[340px] bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
       >
         {/* Header - draggable */}
         <div
@@ -121,15 +128,10 @@ export function POBuilderPanel({
                 </div>
                 <div className="text-[10px] text-muted-foreground truncate">{item.product}</div>
               </div>
-              <input
-                type="number"
-                min={1}
-                value={item.quantity}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value);
-                  if (v > 0) onUpdateQty(item.sku, v);
-                }}
-                className="w-16 text-right text-xs font-semibold tabular-nums bg-muted/50 border border-border/50 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              <QtyInput
+                sku={item.sku}
+                quantity={item.quantity}
+                onUpdateQty={onUpdateQty}
               />
               <button
                 onClick={() => onRemove(item.sku)}
@@ -233,6 +235,58 @@ export function POBuilderPanel({
           </>
         )}
       </motion.div>
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
+  );
+}
+
+// ─── Quantity input ──────────────────────────────────────────────────────────-
+// Uncontrolled-friendly: keeps a local string while the user types so blank /
+// in-progress values do not get clobbered. Commits the parsed number on blur or
+// Enter, and clamps to >= 1. Without this, `parseInt('')` is NaN and the parent
+// state never updates, leaving the user unable to retype a quantity.
+function QtyInput({
+  sku,
+  quantity,
+  onUpdateQty,
+}: {
+  sku: string;
+  quantity: number;
+  onUpdateQty: (sku: string, qty: number) => void;
+}) {
+  const [draft, setDraft] = useState<string>(String(quantity));
+
+  // Sync external changes (e.g. spinner via arrows, or item replaced).
+  useEffect(() => {
+    setDraft(String(quantity));
+  }, [quantity, sku]);
+
+  const commit = () => {
+    const v = parseInt(draft, 10);
+    if (!Number.isFinite(v) || v < 1) {
+      setDraft(String(quantity)); // revert
+      return;
+    }
+    if (v !== quantity) onUpdateQty(sku, v);
+    setDraft(String(v));
+  };
+
+  return (
+    <input
+      type="number"
+      min={1}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          (e.target as HTMLInputElement).blur();
+        } else if (e.key === 'Escape') {
+          setDraft(String(quantity));
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      className="w-16 text-right text-xs font-semibold tabular-nums bg-muted/50 border border-border/50 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+    />
   );
 }

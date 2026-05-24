@@ -20,6 +20,7 @@ import { AIM2026ExportCSVDialog } from './aim2026/AIM2026ExportCSVDialog';
 import { FutureProjectedDemandDialog } from './aim2026/FutureProjectedDemandDialog';
 import { RealInboundStockDialog } from './aim2026/RealInboundStockDialog';
 import { ContainerFeasibility } from './aim2026/ContainerFeasibility';
+import { CompleteProjectionDialog } from './aim2026/complete-projection/CompleteProjectionDialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -104,6 +105,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const [reportsOpen, setReportsOpen] = useState(false);
   const [realInboundOpen, setRealInboundOpen] = useState(false);
   const [containerFeasibilityOpen, setContainerFeasibilityOpen] = useState(false);
+  const [completeProjectionOpen, setCompleteProjectionOpen] = useState(false);
 
   // PO Builder state — cart persists in localStorage across panel toggles
   const [poBuilderMode, setPOBuilderMode] = useState(false);
@@ -705,8 +707,32 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     setPOItems((prev) => prev.map((i) => (i.sku === sku ? { ...i, quantity: qty } : i)));
   }, []);
 
+  const handleAddProjectionItem = useCallback(
+    (sku: string, qty: number, _poType: 'Container' | 'Production') => {
+      const row = skuData.find((r) => r.sku === sku);
+      if (!row || qty <= 0) return;
+      setPOItems((prev) => {
+        const existing = prev.find((i) => i.sku === sku);
+        if (existing) return prev.map((i) => (i.sku === sku ? { ...i, quantity: qty } : i));
+        return [...prev, {
+          sku: row.sku,
+          product: row.product,
+          quantity: qty,
+          suggestedQty: row.suggestedQty || row.softSuggestedQty,
+          unitPrice: row.productCostChina ?? 0,
+        }];
+      });
+      setPOBuilderMode(true);
+    },
+    [skuData]
+  );
+
   const handlePOClear = useCallback(() => {
+    // Trash icon on POBuilderPanel = cancel the whole PO. Drop items AND exit
+    // PO Builder mode so the user doesn't have to click Exit PO mode in each
+    // sub-modal (Complete Projection picks up the transition via prop).
     setPOItems([]);
+    setPOBuilderMode(false);
   }, []);
 
   // Persist draft cart to localStorage whenever it changes
@@ -903,6 +929,11 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
               <DropdownMenuItem onSelect={() => setContainerFeasibilityOpen(true)}>
                 <Container size={13} className="mr-2 text-muted-foreground" />
                 Container Feasibility
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setCompleteProjectionOpen(true)}>
+                <Zap size={13} className="mr-2 text-[#7c3aed]" />
+                Complete Projection
+                <span className="ml-2 inline-flex items-center rounded-full bg-[#ede9fe] px-1.5 py-0.5 text-[9px] font-bold leading-none text-[#4c1d95]">NEW</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1474,6 +1505,21 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
       <ContainerFeasibility
         open={containerFeasibilityOpen}
         onOpenChange={setContainerFeasibilityOpen}
+      />
+
+      <CompleteProjectionDialog
+        open={completeProjectionOpen}
+        onOpenChange={setCompleteProjectionOpen}
+        filteredData={exportSelectedSKUs.size > 0 ? filteredData.filter((r) => exportSelectedSKUs.has(r.sku)) : filteredData}
+        dateRange={dateRange}
+        setDateRange={setDateRange}
+        demandIsDaily={(() => {
+          const f = dateRange?.from, t = dateRange?.to;
+          if (!f || !t) return false;
+          return ((t.getTime() - f.getTime()) / 86400000) < 30;
+        })()}
+        onAddProjectionItem={handleAddProjectionItem}
+        poBuilderMode={poBuilderMode}
       />
 
       {/* ─── PO Builder Components ─────────────────────────────────────────── */}

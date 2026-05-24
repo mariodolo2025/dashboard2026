@@ -23,7 +23,7 @@ import SalesEvolutionContent from '@/components/SalesEvolutionContent';
 import InventoryReorderDashboard from '@/components/InventoryReorderDashboard';
 import MarioDashboard from '@/components/MarioDashboard';
 import CostsCanvas from '@/components/CostsCanvas';
-import AIM2026Dashboard from '@/components/AIM2026Dashboard';
+import { AIM2026Overlay } from '@/components/AIM2026Overlay';
 import EcommerceTab from '@/components/EcommerceTab';
 import { fetchDashboardData, recalcKPIsForDateRange } from '@/lib/aim2026/api';
 import type { SKURow } from '@/lib/aim2026/types';
@@ -3307,17 +3307,19 @@ function App() {
           </DialogContent>
         </Dialog>
 
-        {/* AIM 2026 modal */}
-        <Dialog open={activeModal === 'aim-2026'} onOpenChange={(o) => !o && setActiveModal(null)}>
-          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>AIM 2026</DialogTitle>
-            </DialogHeader>
-            <div className="mt-4">
-            <AIM2026Dashboard dateRange={dateRange} setDateRange={setDateRange} />
-            </div>
-          </DialogContent>
-        </Dialog>
+        {/* AIM 2026 modal — overlay propio (no Radix Dialog).
+            El dashboard abre sub-modales (Complete Projection, POBuilder)
+            portaleados a document.body. Radix Dialog modal=true aplicaría
+            body{pointer-events:none} + FocusScope + RemoveScroll que romperían
+            esos sub-modales; modal=false alternativa dejaba click-outside-
+            closes el dialog y artifacts al cerrar. Overlay propio = full
+            screen, cierra solo con X / Escape, sin side-effects globales. */}
+        <AIM2026Overlay
+          open={activeModal === 'aim-2026'}
+          onClose={() => setActiveModal(null)}
+          dateRange={dateRange}
+          setDateRange={setDateRange}
+        />
 
         {/* E-commerce modal (Shopify + Meta) */}
         <Dialog open={activeModal === 'ecommerce'} onOpenChange={(o) => !o && setActiveModal(null)}>
