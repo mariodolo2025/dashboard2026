@@ -10,8 +10,10 @@ import { cn } from '@/lib/utils';
 import type { SKURow } from '@/lib/aim2026/types';
 import {
   buildProjectionRows, buildChartSeries, daysBetween, addDays, SCENARIO_LABEL,
-  type Scenario, type ProjectionRow,
+  buildPipelineEvents,
+  type Scenario, type ProjectionRow, type PipelineEvent,
 } from './projection';
+import { fetchRecentOrders, fetchDemandWarehouseSplit } from '@/lib/aim2026/api';
 import { ProjectionTable, type SortCol, type SortState } from './ProjectionTable';
 import { SkuProjectionPanel } from './SkuProjectionPanel';
 
@@ -51,7 +53,6 @@ export function CompleteProjectionDialog({
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [selectedSku, setSelectedSku] = useState<string | null>(null);
   const [expandedSoh, setExpandedSoh] = useState(false);
-  const [expandedPipeline, setExpandedPipeline] = useState(false);
   const [expandedConsumed, setExpandedConsumed] = useState(false);
   const [demandUnit, setDemandUnit] = useState<DemandUnit>('monthly');
   const [coverageDays, setCoverageDays] = useState(90);
@@ -60,6 +61,17 @@ export function CompleteProjectionDialog({
   const [addedSkus, setAddedSkus] = useState<Map<string, number>>(new Map());
   const [poHelpOpen, setPoHelpOpen] = useState(false);
   const [sort, setSort] = useState<SortState>({ col: 'effDailyDemand', dir: 'desc' });
+  // Real PO ETAs per SKU. When loaded, projection uses them instead of the
+  // linear-by-leadTime approximation. Fetched once on open for SKUs that have
+  // onProduction > 0 (only those need real ETA tracking — DHL/Container are
+  // already counted in sohGlobal).
+  const [eventsBySku, setEventsBySku] = useState<Map<string, PipelineEvent[]>>(new Map());
+  const [eventsLoading, setEventsLoading] = useState(false);
+  // China-W outbound demand per SKU (daily units). Toggle-controlled —
+  // subtracted from availableChinaOnDate only when subtractChinaDemand is true.
+  const [chinaDailyBySku, setChinaDailyBySku] = useState<Map<string, number>>(new Map());
+  const [chinaDemandLoading, setChinaDemandLoading] = useState(false);
+  const [subtractChinaDemand, setSubtractChinaDemand] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -70,13 +82,15 @@ export function CompleteProjectionDialog({
     setSelectedGroups(new Set());
     setSelectedSku(null);
     setExpandedSoh(false);
-    setExpandedPipeline(false);
     setExpandedConsumed(false);
     setDemandUnit('monthly');
     setPoMode(null);
     setPoMenuOpen(false);
     setAddedSkus(new Map());
     setSort({ col: 'effDailyDemand', dir: 'desc' });
+    setEventsBySku(new Map());
+    setChinaDailyBySku(new Map());
+    setSubtractChinaDemand(false);
     if (setDateRange) setDateRange({ from: new Date(2026, 0, 1), to: startOfToday() });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -91,6 +105,60 @@ export function CompleteProjectionDialog({
     }
     prevPoBuilderMode.current = poBuilderMode;
   }, [poBuilderMode, poMode]);
+
+  // Fetch real PO ETAs for SKUs with onProduction > 0. One HTTP call per SKU
+  // (Promise.all). For ~50–100 production SKUs this completes in a few seconds;
+  // the projection falls back to the linear approximation while loading.
+  useEffect(() => {
+    if (!open) return;
+    const skus = filteredData.filter((r) => r.onProduction > 0).map((r) => r.sku);
+    if (skus.length === 0) { setEventsBySku(new Map()); return; }
+    let cancelled = false;
+    setEventsLoading(true);
+    Promise.all(
+      skus.map((sku) =>
+        fetchRecentOrders(sku).then((orders) => {
+          const row = filteredData.find((r) => r.sku === sku)!;
+          return [sku, buildPipelineEvents(orders, row, today)] as const;
+        }).catch(() => [sku, [] as PipelineEvent[]] as const),
+      ),
+    ).then((pairs) => {
+      if (cancelled) return;
+      setEventsBySku(new Map(pairs));
+      setEventsLoading(false);
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, filteredData]);
+
+  // China-W outbound demand per SKU, for the same date range used as the demand
+  // window. We only need this when the user enables the toggle; we fetch it
+  // lazily on first toggle-on so the open flow stays fast.
+  useEffect(() => {
+    if (!open || !subtractChinaDemand) return;
+    if (chinaDailyBySku.size > 0) return; // already loaded
+    const from = dateRange?.from;
+    const to = dateRange?.to;
+    if (!from || !to) return;
+    const fromStr = format(from, 'yyyy-MM-dd');
+    const toStr = format(to, 'yyyy-MM-dd');
+    const days = Math.max(daysBetween(from, to), 1);
+    let cancelled = false;
+    setChinaDemandLoading(true);
+    fetchDemandWarehouseSplit(fromStr, toStr).then((res) => {
+      if (cancelled) return;
+      const map = new Map<string, number>();
+      for (const item of res.data) {
+        if (item.warehouse !== 'China-W') continue;
+        const daily = item.qty / days;
+        if (daily > 0) map.set(item.sku, daily);
+      }
+      setChinaDailyBySku(map);
+      setChinaDemandLoading(false);
+    }).catch(() => { if (!cancelled) setChinaDemandLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, subtractChinaDemand, dateRange?.from, dateRange?.to]);
 
   useEffect(() => {
     if (!open) return;
@@ -120,8 +188,11 @@ export function CompleteProjectionDialog({
   }, [filteredData]);
 
   const allRows = useMemo(
-    () => buildProjectionRows(filteredData, projectionDate, today, scenario, demandIsDaily, coverageDays),
-    [filteredData, projectionDate, today, scenario, demandIsDaily, coverageDays],
+    () => buildProjectionRows(
+      filteredData, projectionDate, today, scenario, demandIsDaily, coverageDays,
+      eventsBySku, subtractChinaDemand ? chinaDailyBySku : undefined,
+    ),
+    [filteredData, projectionDate, today, scenario, demandIsDaily, coverageDays, eventsBySku, subtractChinaDemand, chinaDailyBySku],
   );
 
   const visibleRows = useMemo(() => {
@@ -156,19 +227,20 @@ export function CompleteProjectionDialog({
     if (!selectedSku) return null;
     const raw = skuMap.get(selectedSku);
     if (!raw) return null;
-    return buildChartSeries(raw, today, scenario, demandIsDaily);
-  }, [selectedSku, skuMap, today, scenario, demandIsDaily]);
+    return buildChartSeries(raw, today, scenario, demandIsDaily, 180, eventsBySku.get(selectedSku));
+  }, [selectedSku, skuMap, today, scenario, demandIsDaily, eventsBySku]);
 
   const onSort = (col: SortCol) =>
     setSort((p) => (p.col === col ? { col, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' }));
 
   const onRowClick = (sku: string) => setSelectedSku((p) => (p === sku ? null : sku));
 
-  const onAddToCart = (sku: string) => {
+  const onAddToCart = (sku: string, customQty?: number) => {
     if (!poMode || !onAddProjectionItem) return;
     const row = allRows.find((r) => r.sku === sku);
     if (!row) return;
-    const qty = poMode === 'container' ? Math.round(row.coverageDemand) : Math.round(row.neededQty);
+    const suggested = poMode === 'container' ? Math.round(row.coverageDemand) : Math.round(row.neededQty);
+    const qty = customQty != null && customQty > 0 ? Math.round(customQty) : suggested;
     if (qty <= 0) return;
     onAddProjectionItem(sku, qty, poMode === 'container' ? 'Container' : 'Production');
     setAddedSkus((prev) => { const next = new Map(prev); next.set(sku, qty); return next; });
@@ -205,7 +277,9 @@ export function CompleteProjectionDialog({
               <h2 className="text-lg font-bold text-[#0f1115]">Complete Projection</h2>
               <span className="inline-flex items-center rounded-full bg-[#ede9fe] px-2 py-0.5 text-[10px] font-bold leading-none text-[#4c1d95]">NEW</span>
             </div>
-            <p className="text-sm text-[#828a98]">On-hand forecast per SKU · demand · global SOH · pipeline arrivals</p>
+            <p className="text-sm text-[#828a98]">On-hand forecast per SKU · demand · global SOH · pipeline arrivals{eventsLoading && (
+              <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-[#ede9fe] px-2 py-0.5 text-[10px] font-semibold text-[#4c1d95]">loading real ETAs…</span>
+            )}</p>
           </div>
         </div>
         <button type="button" onClick={() => onOpenChange(false)} className="rounded-md p-1.5 text-[#828a98] hover:bg-[#faf9f7] hover:text-[#2a2f38]" aria-label="Close"><X size={20} /></button>
@@ -285,6 +359,20 @@ export function CompleteProjectionDialog({
             {' '}· showing SKUs {poMode === 'container' ? 'covered for' : 'short of'} {coverageDays}d coverage · click the violet cell on each row to add
           </div>
           <div className="flex items-center gap-2">
+            {poMode === 'container' && (
+              <label
+                title="When on, Available China on date subtracts China-W outbound demand (B2B + B2C shipped from China) for the demand window. Off = raw availability, no demand draw-down."
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff] cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={subtractChinaDemand}
+                  onChange={(e) => setSubtractChinaDemand(e.target.checked)}
+                  className="h-3 w-3 accent-[#7c3aed]"
+                />
+                Subtract China-W demand{chinaDemandLoading && ' (loading…)'}
+              </label>
+            )}
             <button type="button" onClick={() => setPoHelpOpen(true)} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">How does this work?</button>
             <button type="button" onClick={() => { setPoMode(null); setAddedSkus(new Map()); }} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">Exit PO mode</button>
           </div>
@@ -302,16 +390,16 @@ export function CompleteProjectionDialog({
             search={search} onSearch={setSearch} groups={groups} selectedGroups={selectedGroups}
             onGroupsChange={setSelectedGroups} selectedSku={selectedSku} onRowClick={onRowClick}
             expandedSoh={expandedSoh} setExpandedSoh={setExpandedSoh}
-            expandedPipeline={expandedPipeline} setExpandedPipeline={setExpandedPipeline}
             expandedConsumed={expandedConsumed} setExpandedConsumed={setExpandedConsumed}
             demandUnit={demandUnit} onToggleDemandUnit={() => setDemandUnit((u) => (u === 'daily' ? 'monthly' : 'daily'))}
-            poMode={poMode} addedSkus={addedSkus} onAddToCart={onAddToCart} sort={sort} onSort={onSort}
+            poMode={poMode} coverageDays={coverageDays} addedSkus={addedSkus} onAddToCart={onAddToCart} sort={sort} onSort={onSort}
           />
         </div>
         {selectedRow && series && (
           <div className="w-[40%] min-w-[460px] shrink-0 border-l border-[#e8e8e3]">
             <SkuProjectionPanel row={selectedRow} series={series} today={today} projectionDate={projectionDate}
-              onSetProjectionDate={setProjectionDate} onClose={() => setSelectedSku(null)} />
+              onSetProjectionDate={setProjectionDate} onClose={() => setSelectedSku(null)}
+              events={eventsBySku.get(selectedRow.sku)} poMode={poMode} />
           </div>
         )}
       </div>

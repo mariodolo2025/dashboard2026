@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { ProjectionRow, ChartSeries } from './projection';
+import type { ProjectionRow, ChartSeries, PipelineEvent } from './projection';
 import { addDays } from './projection';
 import { StatusPill } from './ProjectionTable';
 import { SkuProjectionChart } from './SkuProjectionChart';
@@ -22,6 +22,12 @@ interface SkuProjectionPanelProps {
   projectionDate: Date;
   onSetProjectionDate: (d: Date) => void;
   onClose: () => void;
+  /** Real PO ETAs for this SKU. When present, "Pipeline fully arrived"
+   *  uses the latest event date instead of today+leadTime. */
+  events?: PipelineEvent[];
+  /** When 'container', the panel surfaces Available China on date alongside
+   *  the global on-hand block (China is what actually loads into a container). */
+  poMode?: 'container' | 'production' | null;
 }
 
 interface DemandStats {
@@ -107,6 +113,8 @@ export function SkuProjectionPanel({
   projectionDate,
   onSetProjectionDate,
   onClose,
+  events,
+  poMode,
 }: SkuProjectionPanelProps) {
   const [stats, setStats] = useState<DemandStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
@@ -129,7 +137,13 @@ export function SkuProjectionPanel({
   const whMax = Math.max(row.sohMain, row.sohChina, row.dhl, row.container, row.onProd, 1);
 
   const stockoutDate = series.stockoutDay != null ? addDays(today, series.stockoutDay) : null;
-  const pipelineArrival = addDays(today, row.leadTime);
+  // Use latest real ETA when available; fallback to today+leadTime.
+  const lastEventDay = events && events.length > 0 ? Math.max(...events.map((e) => e.day)) : null;
+  const pipelineArrivalDay = lastEventDay != null ? lastEventDay : row.leadTime;
+  const pipelineArrival = addDays(today, pipelineArrivalDay);
+  const pipelineArrivalLabel = lastEventDay != null
+    ? (events!.length === 1 ? 'real ETA' : `last of ${events!.length} POs`)
+    : `lead time ${row.leadTime}d`;
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-white">
@@ -165,19 +179,44 @@ export function SkuProjectionPanel({
         </div>
 
         <div className="rounded-lg border border-[#e8e8e3] bg-[#faf9f7] px-3 py-2.5">
-          <div className="flex items-baseline justify-between">
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-[#828a98]">
-                On-hand on {format(projectionDate, 'd MMM yyyy')}
+          {poMode === 'container' ? (
+            <div className="flex items-baseline justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-[#4c1d95]">
+                  Available China on {format(projectionDate, 'd MMM yyyy')}
+                </div>
+                <div className={cn('mt-0.5 text-3xl font-bold leading-none', mono, row.availableChinaOnDate <= 0 ? 'text-[#dc2626]' : 'text-[#0f1115]')}>
+                  {num(row.availableChinaOnDate)}
+                </div>
+                <div className="mt-1 text-[11px] text-[#5b6270]">
+                  China today {num(row.availableChinaToday)} + production arriving {num(row.pipelineReceived)}
+                </div>
               </div>
-              <div className={cn('mt-0.5 text-3xl font-bold leading-none', mono, row.projectedOnHand <= 0 ? 'text-[#dc2626]' : 'text-[#0f1115]')}>
-                {num(row.projectedOnHand)}
+              <div className="text-right leading-tight">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-[#828a98]">Global on hand</div>
+                <div className={cn('mt-0.5 text-xl font-bold', mono, row.projectedOnHand <= 0 ? 'text-[#dc2626]' : 'text-[#2a2f38]')}>
+                  {num(row.projectedOnHand)}
+                </div>
+                <div className={cn('text-[11px] font-medium', deltaVsToday >= 0 ? 'text-[#059669]' : 'text-[#dc2626]')}>
+                  {deltaVsToday >= 0 ? '+' : '−'}{num(Math.abs(deltaVsToday))} vs today
+                </div>
               </div>
             </div>
-            <div className={cn('text-sm font-medium', deltaVsToday >= 0 ? 'text-[#059669]' : 'text-[#dc2626]')}>
-              {deltaVsToday >= 0 ? '+' : '−'}{num(Math.abs(deltaVsToday))} vs today
+          ) : (
+            <div className="flex items-baseline justify-between">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-[#828a98]">
+                  On-hand on {format(projectionDate, 'd MMM yyyy')}
+                </div>
+                <div className={cn('mt-0.5 text-3xl font-bold leading-none', mono, row.projectedOnHand <= 0 ? 'text-[#dc2626]' : 'text-[#0f1115]')}>
+                  {num(row.projectedOnHand)}
+                </div>
+              </div>
+              <div className={cn('text-sm font-medium', deltaVsToday >= 0 ? 'text-[#059669]' : 'text-[#dc2626]')}>
+                {deltaVsToday >= 0 ? '+' : '−'}{num(Math.abs(deltaVsToday))} vs today
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -221,7 +260,7 @@ export function SkuProjectionPanel({
           <div className="rounded-lg border border-[#e8e8e3] px-3 py-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[#828a98]">Pipeline fully arrived</div>
             <div className={cn('text-sm font-semibold text-[#2a2f38]', mono)}>{format(pipelineArrival, 'd MMM yyyy')}</div>
-            <div className="text-xs text-[#828a98]">lead time {row.leadTime}d</div>
+            <div className="text-xs text-[#828a98]">{pipelineArrivalLabel}</div>
           </div>
         </div>
       </div>

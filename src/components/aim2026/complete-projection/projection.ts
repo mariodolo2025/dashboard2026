@@ -3,6 +3,56 @@
 // =============================================================================
 
 import type { SKURow } from '@/lib/aim2026/types';
+import type { RecentOrder } from '@/lib/aim2026/api';
+
+// ─── Pipeline events (real ETAs from purchase orders) ────────────────────────-
+
+/** A single inbound shipment that lands on `day` (offset from today). */
+export interface PipelineEvent {
+  day: number;
+  qty: number;
+}
+
+/**
+ * Derive pipeline events from a SKU's recent orders. DHL + Container statuses
+ * are excluded — they're already counted inside `sohGlobal` (per BUG #1
+ * decision: in-transit stock is treated as available today). Only production
+ * POs (status=Placed in the China warehouse, or qty matching onProduction)
+ * count as future arrivals.
+ */
+export function buildPipelineEvents(
+  orders: RecentOrder[],
+  row: SKURow,
+  today: Date,
+): PipelineEvent[] {
+  const events: PipelineEvent[] = [];
+  for (const o of orders) {
+    if (o.orderType !== 'purchase' || !o.deliveryDate) continue;
+    const status = (o.status ?? '').toLowerCase();
+    // Skip DHL/Container — already in sohGlobal.
+    if (status === 'dhl' || status === 'container') continue;
+    // Production orders: status=Placed, China warehouse OR matching onProduction qty.
+    if (status !== 'placed') continue;
+    const isChina = (o.warehouse ?? '').toLowerCase().trim().startsWith('china');
+    const matchesOnProd = row.onProduction > 0 && Math.abs(o.quantity - row.onProduction) < 1;
+    if (!isChina && !matchesOnProd) continue;
+    const eta = new Date(o.deliveryDate);
+    if (isNaN(eta.getTime())) continue;
+    const day = Math.round((eta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    events.push({ day, qty: o.quantity });
+  }
+  return events;
+}
+
+/** Sum of qty for events whose ETA day <= t (already arrived by day t). */
+export function pipelineReceivedAt(events: PipelineEvent[], t: number): number {
+  let sum = 0;
+  for (const e of events) {
+    if (e.day <= t) sum += e.qty;
+  }
+  return sum;
+}
+
 
 export type Scenario = 'optimistic' | 'expected' | 'pessimistic';
 
@@ -41,6 +91,12 @@ export interface ProjectionRow {
   /** Units reserved against pending sales orders (cross-warehouse). Pulled
    *  from SKURow.allocatedTotal — already computed upstream. */
   allocated: number;
+  /** Units physically available in China warehouse today (sohChina − allocatedChina). */
+  availableChinaToday: number;
+  /** Available China at projection date = availableChinaToday + production POs arriving
+   *  in China by day t. Does NOT subtract China outbound demand (no breakdown yet from
+   *  the dashboard endpoint). Use this for "what can I load into a container on day X". */
+  availableChinaOnDate: number;
   projectedOnHand: number;
   daysOfCover: number;
   status: ProjectionStatus;
@@ -100,6 +156,11 @@ export function buildProjectionRow(
   scenario: Scenario,
   demandIsDaily: boolean,
   coverageDays = 90,
+  events?: PipelineEvent[],
+  /** Daily outbound demand from the China warehouse for this SKU (units/day).
+   *  When provided, it is subtracted from availableChinaOnDate so the cifra
+   *  reflects what is actually free to load into a container. */
+  chinaDailyDemand?: number,
 ): ProjectionRow {
   const dailyDemand = baseDailyDemand(row, demandIsDaily);
   const effDailyDemand = dailyDemand * SCENARIO_MULT[scenario];
@@ -111,17 +172,31 @@ export function buildProjectionRow(
   const onProd = Number(row.onProduction ?? 0);
 
   const sohGlobal = sohMain + sohChina + dhl + container;
-  const pipeline = dhl + container + onProd;
+  // pipeline = onProd only. DHL + Container already counted inside sohGlobal
+  // (they are "available today" stock, not future arrivals). Counting them here
+  // too caused double-counting when pipelineReceived was added back into
+  // projectedOnHand. Only onProduction is the genuine "arriving via lead time".
+  const pipeline = onProd;
   const leadTime = Number(row.leadTimeDays ?? 0);
   const safety = Number(row.safetyStock ?? 0);
   const target = Number(row.targetStockLevel ?? 0);
 
   const t = daysBetween(today, projectionDate);
 
-  const arrivedFrac = leadTime > 0 ? Math.min(t / leadTime, 1) : 1;
-  const pipelineReceived = pipeline * arrivedFrac;
+  // Real ETAs (preferred): sum POs with day(ETA) ≤ t. Fallback to linear lead
+  // time approximation only when no events were loaded.
+  const pipelineReceived = events
+    ? pipelineReceivedAt(events, t)
+    : pipeline * (leadTime > 0 ? Math.min(t / leadTime, 1) : 1);
   const demandConsumed = effDailyDemand * t;
   const allocated = Number(row.allocatedTotal ?? 0);
+  // Available China today = sohChina − allocatedChina (from backend). For future date
+  // we add production POs arriving by day t (all PipelineEvents target China). We do
+  // NOT subtract China outbound demand here — that requires a backend field
+  // (demand_china) we don't have yet; tracked separately.
+  const availableChinaToday = Number(row.availableChina ?? Math.max(0, sohChina - Number(row.allocatedChina ?? 0)));
+  const chinaDemandConsumed = chinaDailyDemand != null && chinaDailyDemand > 0 ? chinaDailyDemand * t : 0;
+  const availableChinaOnDate = availableChinaToday + pipelineReceived - chinaDemandConsumed;
   const projectedOnHand = sohGlobal + pipelineReceived - demandConsumed;
 
   const daysOfCover =
@@ -149,6 +224,8 @@ export function buildProjectionRow(
     pipelineReceived,
     demandConsumed,
     allocated,
+    availableChinaToday,
+    availableChinaOnDate,
     projectedOnHand,
     daysOfCover,
     status: classifyStatus(projectedOnHand, safety, target),
@@ -164,9 +241,17 @@ export function buildProjectionRows(
   scenario: Scenario,
   demandIsDaily: boolean,
   coverageDays = 90,
+  eventsBySku?: Map<string, PipelineEvent[]>,
+  /** Optional daily China outbound demand per SKU. Pass when the user wants
+   *  Available China on date to subtract China-W demand. */
+  chinaDailyBySku?: Map<string, number>,
 ): ProjectionRow[] {
   return rows.map((r) =>
-    buildProjectionRow(r, projectionDate, today, scenario, demandIsDaily, coverageDays),
+    buildProjectionRow(
+      r, projectionDate, today, scenario, demandIsDaily, coverageDays,
+      eventsBySku?.get(r.sku),
+      chinaDailyBySku?.get(r.sku),
+    ),
   );
 }
 
@@ -176,6 +261,7 @@ export function buildChartSeries(
   scenario: Scenario,
   demandIsDaily: boolean,
   horizonDays = 180,
+  events?: PipelineEvent[],
 ): ChartSeries {
   const effDaily = baseDailyDemand(row, demandIsDaily) * SCENARIO_MULT[scenario];
 
@@ -186,7 +272,11 @@ export function buildChartSeries(
   const onProd = Number(row.onProduction ?? 0);
 
   const sohGlobal = sohMain + sohChina + dhl + container;
-  const pipeline = dhl + container + onProd;
+  // pipeline = onProd only. DHL + Container already counted inside sohGlobal
+  // (they are "available today" stock, not future arrivals). Counting them here
+  // too caused double-counting when pipelineReceived was added back into
+  // projectedOnHand. Only onProduction is the genuine "arriving via lead time".
+  const pipeline = onProd;
   const leadTime = Number(row.leadTimeDays ?? 0);
   const safety = Number(row.safetyStock ?? 0);
 
@@ -194,8 +284,10 @@ export function buildChartSeries(
   let stockoutDay: number | null = null;
 
   for (let day = 0; day <= horizonDays; day++) {
-    const arrivedFrac = leadTime > 0 ? Math.min(day / leadTime, 1) : 1;
-    const withPipeline = sohGlobal + pipeline * arrivedFrac - effDaily * day;
+    const pipelineReceived = events
+      ? pipelineReceivedAt(events, day)
+      : pipeline * (leadTime > 0 ? Math.min(day / leadTime, 1) : 1);
+    const withPipeline = sohGlobal + pipelineReceived - effDaily * day;
     const demandOnly = sohGlobal - effDaily * day;
     if (stockoutDay === null && withPipeline <= 0) stockoutDay = day;
     points.push({ day, date: addDays(today, day), withPipeline, demandOnly });
