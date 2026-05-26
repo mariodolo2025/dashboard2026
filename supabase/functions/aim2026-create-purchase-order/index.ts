@@ -166,6 +166,7 @@ Deno.serve(async (req: Request) => {
       supplierCode,
       warehouseCode,
       customOrderStatus,
+      deliveryDate: bodyDeliveryDate,   // ISO opcional. Si no, default = +45d.
     } = body;
 
     // Validate input
@@ -265,15 +266,16 @@ Deno.serve(async (req: Request) => {
 
     const excludedCount = items.length - purchasableItems.length;
 
-    // Build PO lines (only purchasable items)
+    // Build PO lines (only purchasable items). Per-line DeliveryDate cuando el
+    // caller provee item.deliveryDate (Production con leadTime por SKU).
     const poLines = purchasableItems.map(
       (
-        item: { productCode: string; orderQuantity: number; unitPrice: number },
+        item: { productCode: string; orderQuantity: number; unitPrice: number; deliveryDate?: string },
         i: number
       ) => {
         const lineTotal =
           Math.round(item.orderQuantity * item.unitPrice * 100) / 100;
-        return {
+        const line: Record<string, any> = {
           LineNumber: i + 1,
           Product: { ProductCode: item.productCode },
           OrderQuantity: item.orderQuantity,
@@ -282,6 +284,11 @@ Deno.serve(async (req: Request) => {
           LineTax: 0,
           DiscountRate: 0,
         };
+        if (item.deliveryDate) {
+          // Unleashed acepta DeliveryDate por línea (PurchaseOrderLine schema).
+          line.DeliveryDate = item.deliveryDate;
+        }
+        return line;
       }
     );
 
@@ -294,8 +301,11 @@ Deno.serve(async (req: Request) => {
     // Build the PO payload
     const poGuid = crypto.randomUUID();
     const now = new Date();
-    // Default delivery date = order date + 45 days (standard lead time)
-    const deliveryDate = new Date(now.getTime() + 45 * 24 * 60 * 60 * 1000);
+    // Header DeliveryDate: caller-provided cuando viene; sino default = +45d.
+    // Container PO → projectionDate + 30d. Production PO → max(today + LT).
+    const deliveryDate = bodyDeliveryDate
+      ? new Date(bodyDeliveryDate)
+      : new Date(now.getTime() + 45 * 24 * 60 * 60 * 1000);
 
     const purchaseOrder: Record<string, any> = {
       Guid: poGuid,

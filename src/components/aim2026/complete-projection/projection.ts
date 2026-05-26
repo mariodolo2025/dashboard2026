@@ -54,6 +54,11 @@ export function pipelineReceivedAt(events: PipelineEvent[], t: number): number {
 }
 
 
+/** Days for sea-freight transit from China to Main warehouse. Default for
+ *  Container loading mode: the user picks a "container loading date", and the
+ *  container arrives at Main this many days later. */
+export const CONTAINER_TRANSIT_DAYS = 30;
+
 export type Scenario = 'optimistic' | 'expected' | 'pessimistic';
 
 export const SCENARIO_MULT: Record<Scenario, number> = {
@@ -102,6 +107,19 @@ export interface ProjectionRow {
   status: ProjectionStatus;
   neededQty: number;
   coverageDemand: number;
+  // ─── Container loading & production planning ─────────────────────────────
+  /** Days from today until the container arrives at Main (= t + CONTAINER_TRANSIT_DAYS). */
+  containerArrivalDay: number;
+  /** Days from today until production order arrives at Main (= leadTime). */
+  productionArrivalDay: number;
+  /** Main stock projected at container arrival = mainSoh − dailyDemand × containerArrivalDay. */
+  mainAtContainerArrival: number;
+  /** Main stock projected at production arrival = mainSoh − dailyDemand × productionArrivalDay. */
+  mainAtProductionArrival: number;
+  /** Units to load into container = max(0, coverageDemand − mainAtContainerArrival). */
+  containerLoadQty: number;
+  /** Units to produce = max(0, coverageDemand − mainAtProductionArrival). */
+  productionQty: number;
 }
 
 export interface SeriesPoint {
@@ -224,6 +242,18 @@ export function buildProjectionRow(
   const coverageDemand = effDailyDemand * coverageDays;
   const neededQty = coverageDemand - projectedOnHand;
 
+  // Container Load and Production qty take into account the Main stock that
+  // will be left when the order actually arrives. The user-picked projection
+  // date IS the container loading date in container mode — the container then
+  // takes CONTAINER_TRANSIT_DAYS to reach Main. For production, the lead time
+  // is per-SKU (fabrication + shipping).
+  const containerArrivalDay = t + CONTAINER_TRANSIT_DAYS;
+  const productionArrivalDay = leadTime;
+  const mainAtContainerArrival = Math.max(0, sohMain - effDailyDemand * containerArrivalDay);
+  const mainAtProductionArrival = Math.max(0, sohMain - effDailyDemand * productionArrivalDay);
+  const containerLoadQty = Math.max(0, Math.round(coverageDemand - mainAtContainerArrival));
+  const productionQty = Math.max(0, Math.round(coverageDemand - mainAtProductionArrival));
+
   return {
     sku: row.sku,
     group: row.productGroup ?? '',
@@ -250,6 +280,12 @@ export function buildProjectionRow(
     status: classifyStatus(projectedOnHand, safety, target),
     neededQty,
     coverageDemand,
+    containerArrivalDay,
+    productionArrivalDay,
+    mainAtContainerArrival: Math.round(mainAtContainerArrival),
+    mainAtProductionArrival: Math.round(mainAtProductionArrival),
+    containerLoadQty,
+    productionQty,
   };
 }
 
@@ -295,10 +331,6 @@ export function buildChartSeries(
   const onProd = Number(row.onProduction ?? 0);
 
   const sohGlobal = sohMain + sohChina + dhl + container;
-  // pipeline = onProd only. DHL + Container already counted inside sohGlobal
-  // (they are "available today" stock, not future arrivals). Counting them here
-  // too caused double-counting when pipelineReceived was added back into
-  // projectedOnHand. Only onProduction is the genuine "arriving via lead time".
   const pipeline = onProd;
   const leadTime = Number(row.leadTimeDays ?? 0);
   const safety = Number(row.safetyStock ?? 0);

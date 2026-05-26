@@ -5,9 +5,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { format } from 'date-fns';
-import { Sparkles, X } from 'lucide-react';
+import { HelpCircle, Sparkles, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { SKURow } from '@/lib/aim2026/types';
+import type { SKURow, POBuilderItem } from '@/lib/aim2026/types';
 import {
   buildProjectionRows, buildChartSeries, daysBetween, addDays, SCENARIO_LABEL,
   buildPipelineEvents,
@@ -16,6 +16,7 @@ import {
 import { fetchRecentOrders, fetchDemandWarehouseSplit } from '@/lib/aim2026/api';
 import { ProjectionTable, type SortCol, type SortState } from './ProjectionTable';
 import { SkuProjectionPanel } from './SkuProjectionPanel';
+import { CompleteProjectionHelpPopup } from './HelpPopup';
 
 interface DateRange { from?: Date; to?: Date; }
 
@@ -26,10 +27,14 @@ interface CompleteProjectionDialogProps {
   dateRange?: DateRange;
   setDateRange?: (range: DateRange) => void;
   demandIsDaily: boolean;
-  onAddProjectionItem?: (sku: string, qty: number, poType: 'Container' | 'Production') => void;
+  onAddProjectionItem?: (sku: string, qty: number, poType: 'Container' | 'Production', projectionDate?: string) => void;
   /** True when the dashboard's PO Builder mode is active. Auto-exits our
    *  internal poMode on true→false transition (e.g. user cleared cart). */
   poBuilderMode?: boolean;
+  /** Cart actual del dashboard. Fuente de verdad única para la columna
+   *  Container Load — cambios externos (remove/edit qty desde POBuilderPanel)
+   *  se reflejan instantáneamente porque derivamos addedSkus de acá. */
+  poItems?: POBuilderItem[];
 }
 
 export type DemandUnit = 'daily' | 'monthly';
@@ -44,7 +49,7 @@ function startOfToday(): Date { const d = new Date(); d.setHours(0, 0, 0, 0); re
 
 export function CompleteProjectionDialog({
   open, onOpenChange, filteredData, dateRange, setDateRange, demandIsDaily,
-  onAddProjectionItem, poBuilderMode = false,
+  onAddProjectionItem, poBuilderMode = false, poItems,
 }: CompleteProjectionDialogProps) {
   const today = useMemo(() => startOfToday(), []);
   const [projectionDate, setProjectionDate] = useState<Date>(() => addDays(startOfToday(), 60));
@@ -58,8 +63,7 @@ export function CompleteProjectionDialog({
   const [coverageDays, setCoverageDays] = useState(90);
   const [poMode, setPoMode] = useState<PoMode>(null);
   const [poMenuOpen, setPoMenuOpen] = useState(false);
-  const [addedSkus, setAddedSkus] = useState<Map<string, number>>(new Map());
-  const [poHelpOpen, setPoHelpOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [sort, setSort] = useState<SortState>({ col: 'effDailyDemand', dir: 'desc' });
   // Real PO ETAs per SKU. When loaded, projection uses them instead of the
   // linear-by-leadTime approximation. Fetched once on open for SKUs that have
@@ -88,7 +92,6 @@ export function CompleteProjectionDialog({
     setDemandUnit('monthly');
     setPoMode(null);
     setPoMenuOpen(false);
-    setAddedSkus(new Map());
     setSort({ col: 'effDailyDemand', dir: 'desc' });
     setEventsBySku(new Map());
     setChinaDailyBySku(new Map());
@@ -103,7 +106,7 @@ export function CompleteProjectionDialog({
   useEffect(() => {
     if (prevPoBuilderMode.current && !poBuilderMode && poMode) {
       setPoMode(null);
-      setAddedSkus(new Map());
+      // addedSkus se deriva de poItems — el clear del cart externo ya lo vacía.
     }
     prevPoBuilderMode.current = poBuilderMode;
   }, [poBuilderMode, poMode]);
@@ -202,8 +205,10 @@ export function CompleteProjectionDialog({
     let rows = allRows;
     if (q) rows = rows.filter((r) => r.sku.toLowerCase().includes(q));
     if (selectedGroups.size > 0) rows = rows.filter((r) => selectedGroups.has(r.group));
-    if (poMode === 'container') rows = rows.filter((r) => r.neededQty <= 0);
-    else if (poMode === 'production') rows = rows.filter((r) => r.neededQty > 0);
+    // Container mode: SKUs where Main alone would cover the gap (containerLoadQty
+    // is the deficit at arrival). Production mode: SKUs that need production.
+    if (poMode === 'container') rows = rows.filter((r) => r.containerLoadQty > 0);
+    else if (poMode === 'production') rows = rows.filter((r) => r.productionQty > 0);
 
     const dir = sort.dir === 'asc' ? 1 : -1;
     const sorted = [...rows].sort((a, b) => {
@@ -237,23 +242,41 @@ export function CompleteProjectionDialog({
 
   const onRowClick = (sku: string) => setSelectedSku((p) => (p === sku ? null : sku));
 
-  const onAddToCart = (sku: string, customQty?: number) => {
+  /** addedSkus derivado del cart externo. Map<sku, {container, production}>.
+   *  Si removés/editás desde POBuilderPanel, la columna refleja el cambio
+   *  inmediatamente porque poItems es la fuente de verdad. */
+  const addedSkus = useMemo(() => {
+    const m = new Map<string, { container: number; production: number }>();
+    for (const it of poItems ?? []) {
+      const cur = m.get(it.sku) ?? { container: 0, production: 0 };
+      if (it.poType === 'Container') cur.container += it.quantity;
+      else cur.production += it.quantity;
+      m.set(it.sku, cur);
+    }
+    return m;
+  }, [poItems]);
+
+  /** Add a SKU to the container or production cart. `forceType` lets us route
+   *  the split prompt to production while staying in container poMode. */
+  const onAddToCart = (sku: string, customQty?: number, forceType?: 'Container' | 'Production') => {
     if (!poMode || !onAddProjectionItem) return;
     const row = allRows.find((r) => r.sku === sku);
     if (!row) return;
-    const suggested = poMode === 'container' ? Math.round(row.coverageDemand) : Math.round(row.neededQty);
+    const type: 'Container' | 'Production' = forceType ?? (poMode === 'container' ? 'Container' : 'Production');
+    const suggested = type === 'Container' ? row.containerLoadQty : row.productionQty;
     const qty = customQty != null && customQty > 0 ? Math.round(customQty) : suggested;
     if (qty <= 0) return;
-    onAddProjectionItem(sku, qty, poMode === 'container' ? 'Container' : 'Production');
-    setAddedSkus((prev) => { const next = new Map(prev); next.set(sku, qty); return next; });
+    // El dashboard hace no-op si ya existe (sku, type) — coherente con la decisión
+    // de "modificar manualmente desde el panel". projectionDate solo aplica a
+    // Container — el handler la usa para calcular DeliveryDate = projectionDate + 30d.
+    const isoProjection = type === 'Container' ? format(projectionDate, 'yyyy-MM-dd') : undefined;
+    onAddProjectionItem(sku, qty, type, isoProjection);
   };
 
   const enterPoMode = (mode: Exclude<PoMode, null>) => {
     setPoMode(mode);
     setPoMenuOpen(false);
     setSelectedSku(null);
-    setAddedSkus(new Map());
-    setPoHelpOpen(true);
   };
 
   const tDays = daysBetween(today, projectionDate);
@@ -284,12 +307,25 @@ export function CompleteProjectionDialog({
             )}</p>
           </div>
         </div>
-        <button type="button" onClick={() => onOpenChange(false)} className="rounded-md p-1.5 text-[#828a98] hover:bg-[#faf9f7] hover:text-[#2a2f38]" aria-label="Close"><X size={20} /></button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setHelpOpen(true)}
+            title="How this works: formulas, modes and column meanings"
+            className="inline-flex items-center gap-1 rounded-md border border-[#e8e8e3] bg-white px-2 py-1.5 text-xs font-medium text-[#5b6270] hover:bg-[#faf9f7] hover:text-[#2a2f38]"
+            aria-label="Help"
+          >
+            <HelpCircle size={14} /> Help
+          </button>
+          <button type="button" onClick={() => onOpenChange(false)} className="rounded-md p-1.5 text-[#828a98] hover:bg-[#faf9f7] hover:text-[#2a2f38]" aria-label="Close"><X size={20} /></button>
+        </div>
       </div>
 
       <div className="flex shrink-0 flex-wrap items-end gap-6 border-b border-[#e8e8e3] bg-[#fbfbf9] px-5 py-3">
         <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#5b6270]">Projection date</label>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#5b6270]">
+            {poMode === 'container' ? 'Container loading date' : poMode === 'production' ? 'Production target date' : 'Projection date'}
+          </label>
           <div className="flex items-center gap-2">
             <input type="date" value={format(projectionDate, 'yyyy-MM-dd')} min={format(today, 'yyyy-MM-dd')} max={format(maxDate, 'yyyy-MM-dd')}
               onChange={(e) => { if (e.target.value) setProjectionDate(new Date(e.target.value + 'T00:00:00')); }}
@@ -378,15 +414,12 @@ export function CompleteProjectionDialog({
             {' '}· showing SKUs {poMode === 'container' ? 'covered for' : 'short of'} {coverageDays}d coverage · click the violet cell on each row to add
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setPoHelpOpen(true)} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">How does this work?</button>
-            <button type="button" onClick={() => { setPoMode(null); setAddedSkus(new Map()); }} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">Exit PO mode</button>
+            <button type="button" onClick={() => setPoMode(null)} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">Exit PO mode</button>
           </div>
         </div>
       )}
 
-      {poHelpOpen && poMode && (
-        <PoModeHelpPopup mode={poMode} coverageDays={coverageDays} onClose={() => setPoHelpOpen(false)} />
-      )}
+      <CompleteProjectionHelpPopup open={helpOpen} onClose={() => setHelpOpen(false)} />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4">
@@ -438,81 +471,3 @@ export function CompleteProjectionDialog({
   );
 }
 
-function PoModeHelpPopup({ mode, coverageDays, onClose }: { mode: 'container' | 'production'; coverageDays: number; onClose: () => void }) {
-  return createPortal(
-    <div role="dialog" aria-modal="true" className="pointer-events-auto fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-3 flex items-start justify-between">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-[#7c3aed]">{mode === 'container' ? 'Load container' : 'Create purchase order'}</div>
-            <h3 className="text-lg font-bold text-[#0f1115]">How this works</h3>
-          </div>
-          <button type="button" onClick={onClose} className="rounded-md p-1 text-[#828a98] hover:bg-[#faf9f7] hover:text-[#2a2f38]" aria-label="Close"><X size={18} /></button>
-        </div>
-
-        {mode === 'container' ? (
-          <div className="space-y-3 text-sm text-[#2a2f38]">
-            <p className="text-sm text-[#5b6270]">Filter showing only SKUs already covered for <span className="font-semibold">{coverageDays}d</span> by current stock + pipeline. Use the violet cell to choose what fills the container.</p>
-            <div className="rounded-lg border border-[#e8e8e3] bg-[#fbfbf9] p-3">
-              <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[#0f1115]">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#ede9fe] text-xs text-[#4c1d95]">1</span>
-                Each row's cell shows units that fill {coverageDays}d
-              </div>
-              <div className="flex items-center justify-between rounded border border-dashed border-[#c4b5fd] bg-white px-2 py-1.5 font-mono text-sm">
-                <span className="text-[#828a98]">EP-BR-18g</span><span className="font-bold text-[#7c3aed]">+1,545</span>
-              </div>
-              <p className="mt-1.5 text-xs text-[#828a98]">= full coverage demand for the period. Click to load it.</p>
-            </div>
-            <div className="rounded-lg border border-[#e8e8e3] bg-[#fbfbf9] p-3">
-              <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[#0f1115]">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#ede9fe] text-xs text-[#4c1d95]">2</span>
-                After you click, the cell flips
-              </div>
-              <div className="flex items-center justify-between rounded border border-dashed border-[#a7f3d0] bg-white px-2 py-1.5 font-mono text-sm">
-                <span className="text-[#828a98]">EP-BR-18g</span>
-                <span className="text-right leading-tight">
-                  <span className="block font-bold text-[#059669]">+110</span>
-                  <span className="block text-[10px] font-medium normal-case text-[#7c3aed]">loaded: 1,545</span>
-                </span>
-              </div>
-              <p className="mt-1.5 text-xs text-[#828a98]">Green number = stock left in China after the load (surplus).</p>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3 text-sm text-[#2a2f38]">
-            <p className="text-sm text-[#5b6270]">Filter showing only SKUs that won't reach <span className="font-semibold">{coverageDays}d</span> of coverage. The violet cell shows what you need to produce.</p>
-            <div className="rounded-lg border border-[#e8e8e3] bg-[#fbfbf9] p-3">
-              <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[#0f1115]">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#ede9fe] text-xs text-[#4c1d95]">1</span>
-                Each row's cell shows the shortfall
-              </div>
-              <div className="flex items-center justify-between rounded border border-dashed border-[#c4b5fd] bg-white px-2 py-1.5 font-mono text-sm">
-                <span className="text-[#828a98]">PSD-HD-Plate54</span><span className="font-bold text-[#7c3aed]">+2,500</span>
-              </div>
-              <p className="mt-1.5 text-xs text-[#828a98]">= units to produce to reach {coverageDays}d coverage. Click to add.</p>
-            </div>
-            <div className="rounded-lg border border-[#e8e8e3] bg-[#fbfbf9] p-3">
-              <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[#0f1115]">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#ede9fe] text-xs text-[#4c1d95]">2</span>
-                After you click
-              </div>
-              <div className="flex items-center justify-between rounded border border-dashed border-[#a7f3d0] bg-white px-2 py-1.5 font-mono text-sm">
-                <span className="text-[#828a98]">PSD-HD-Plate54</span>
-                <span className="text-right leading-tight">
-                  <span className="block font-bold text-[#059669]">✓</span>
-                  <span className="block text-[10px] font-medium normal-case text-[#7c3aed]">ordered: 2,500</span>
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="mt-4 flex items-center justify-between">
-          <p className="text-xs text-[#828a98]">Tip: click anywhere else on a row to open its detail panel without committing.</p>
-          <button type="button" onClick={onClose} className="rounded-md bg-[#0f1115] px-4 py-1.5 text-sm font-semibold text-white hover:bg-[#2a2f38]">OK</button>
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}

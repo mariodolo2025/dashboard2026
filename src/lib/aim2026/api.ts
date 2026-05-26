@@ -1031,10 +1031,13 @@ export async function fetchAIInsights(
 // ─── Create Purchase Order in Unleashed ───────────────────────────────────
 
 export async function createPurchaseOrder(request: {
-  items: Array<{ productCode: string; orderQuantity: number; unitPrice: number }>;
+  items: Array<{ productCode: string; orderQuantity: number; unitPrice: number; deliveryDate?: string }>;
   supplierCode: string;
   warehouseCode: string;
   customOrderStatus: string;
+  /** ISO date string para el header DeliveryDate. Container: projectionDate + 30d.
+   *  Production: max(today + leadTime). Default backend = +45d si no se manda. */
+  deliveryDate?: string;
 }): Promise<{ success: boolean; orderNumber?: string; orderGuid?: string; message: string; excludedProductCodes?: string[] }> {
   const url = `${SUPABASE_URL}/functions/v1/aim2026-create-purchase-order`;
   const response = await fetch(url, {

@@ -52,8 +52,8 @@ interface ProjectionTableProps {
   onToggleDemandUnit: () => void;
   poMode: 'container' | 'production' | null;
   coverageDays: number;
-  addedSkus: Map<string, number>;
-  onAddToCart: (sku: string, customQty?: number) => void;
+  addedSkus: Map<string, { container: number; production: number }>;
+  onAddToCart: (sku: string, customQty?: number, forceType?: 'Container' | 'Production') => void;
   sort: SortState;
   onSort: (col: SortCol) => void;
 }
@@ -103,6 +103,35 @@ export function ProjectionTable({
   };
 
   const violetCell = 'bg-[#ede9fe]/50';
+
+  /** Desglose numérico del cálculo de Container Load o Production qty.
+   *  Muestra: coverageDemand = D × C, mainAtArrival = max(0, mainSoh − D × A),
+   *  load = coverageDemand − mainAtArrival. Unidades según demandUnit. */
+  const buildBreakdown = (r: ProjectionRow, mode: 'container' | 'production'): string => {
+    const arrivalDay = mode === 'container' ? r.containerArrivalDay : r.productionArrivalDay;
+    const mainAtArrival = mode === 'container' ? r.mainAtContainerArrival : r.mainAtProductionArrival;
+    const toCommit = mode === 'container' ? r.containerLoadQty : r.productionQty;
+    if (demandUnit === 'monthly') {
+      const M = r.effDailyDemand * 30;
+      const coverMonths = coverageDays / 30;
+      const arrivalMonths = arrivalDay / 30;
+      const coverage = Math.round(M * coverMonths);
+      return (
+        `Calc: load = coverage demand − Main stock at arrival\n` +
+        `  coverage demand = ${num(M)}/mo × ${dec(coverMonths)} mo = ${num(coverage)}\n` +
+        `  Main at arrival = max(0, ${num(r.sohMain)} − ${num(M)}/mo × ${dec(arrivalMonths)} mo) = ${num(mainAtArrival)}\n` +
+        `  load = ${num(coverage)} − ${num(mainAtArrival)} = ${num(toCommit)}`
+      );
+    }
+    const D = r.effDailyDemand;
+    const coverage = Math.round(D * coverageDays);
+    return (
+      `Calc: load = coverage demand − Main stock at arrival\n` +
+      `  coverage demand = ${dec(D)}/d × ${coverageDays}d = ${num(coverage)}\n` +
+      `  Main at arrival = max(0, ${num(r.sohMain)} − ${dec(D)}/d × ${arrivalDay}d) = ${num(mainAtArrival)}\n` +
+      `  load = ${num(coverage)} − ${num(mainAtArrival)} = ${num(toCommit)}`
+    );
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[#e8e8e3] bg-white">
@@ -206,8 +235,8 @@ export function ProjectionTable({
                 <th
                   title={
                     poMode === 'container'
-                      ? `Container Load — units to load to guarantee the selected ${coverageDays}d stock coverage target after the container arrives. Computed as full demand over the coverage window (effective daily demand × ${coverageDays}d). Click any row's cell to add it to the PO draft.`
-                      : `To Produce — units to manufacture to reach the selected ${coverageDays}d stock coverage target. Computed as the shortfall against (effective daily demand × ${coverageDays}d) minus projected on hand. Click any row's cell to add it to the PO draft.`
+                      ? `Container Load — units to load on the loading day so that after the container arrives at Main (loading date + 30d sea-freight transit) you still cover the selected ${coverageDays}d stock coverage target. Formula: max(0, effectiveDailyDemand × ${coverageDays}d − mainAtArrival), where mainAtArrival = max(0, SOH Main − dailyDemand × (t + 30d)). Click any row's cell to add it to the PO draft; if China can't cover the full load, only what's available goes to the container and a + N to production CTA appears.`
+                      : `To Produce — units to manufacture so that after the PO arrives at Main (today + leadTime per SKU) you still cover the selected ${coverageDays}d stock coverage target. Formula: max(0, effectiveDailyDemand × ${coverageDays}d − mainAtArrival), where mainAtArrival = max(0, SOH Main − dailyDemand × leadTime). Click any row's cell to add it to the PO draft.`
                   }
                   className={cn('px-2.5 py-2.5 text-right text-sm font-semibold uppercase tracking-wide text-[#4c1d95]', violetCell)}
                 >
@@ -281,8 +310,12 @@ export function ProjectionTable({
                     )}
                     {poMode && (() => {
                       const added = addedSkus.get(r.sku);
-                      const toCommit = poMode === 'container' ? Math.round(r.coverageDemand) : Math.round(r.neededQty);
-                      const postSurplus = poMode === 'container' ? Math.round(Math.abs(r.neededQty)) : 0;
+                      const addedContainer = added?.container ?? 0;
+                      const addedProduction = added?.production ?? 0;
+                      const isAdded = addedContainer > 0 || addedProduction > 0;
+                      const toCommit = poMode === 'container' ? r.containerLoadQty : r.productionQty;
+                      // post-add surplus shown in green = China stock left AFTER the load.
+                      const postSurplus = poMode === 'container' ? Math.max(0, Math.round(r.availableChinaOnDate - addedContainer)) : 0;
                       const hasSuggestion = toCommit > 0;
                       const isEditing = editingSku === r.sku;
                       // Coverage state — only meaningful for container mode with a suggestion.
@@ -298,14 +331,17 @@ export function ProjectionTable({
                       const stateHover = coverState === 'covered' ? 'hover:bg-[#ddd6fe]' : coverState === 'partial' ? 'hover:bg-amber-100' : 'hover:bg-red-100';
                       const stateText = coverState === 'covered' ? 'text-[#7c3aed]' : coverState === 'partial' ? 'text-amber-700' : 'text-red-700';
                       const gapLabel = coverState !== 'covered' ? `cover ${num(chinaCover)} · short ${num(gap)}` : null;
-                      const tip = added != null
-                        ? `Added ${num(added)} to the PO. ${poMode === 'container' ? `Remaining China stock after load: ${num(postSurplus)} u.` : 'Shortfall covered.'}`
+                      const breakdown = hasSuggestion ? buildBreakdown(r, poMode) : '';
+                      const tip = isAdded
+                        ? (poMode === 'container'
+                            ? `Container: ${num(addedContainer)} u${addedProduction > 0 ? ` · Production: ${num(addedProduction)} u` : ''}. Remaining China after load: ${num(postSurplus)} u.${breakdown ? '\n\n' + breakdown : ''}`
+                            : `Production: ${num(addedProduction)} u.${breakdown ? '\n\n' + breakdown : ''}`)
                         : hasSuggestion
                           ? (poMode === 'container'
                               ? (coverState === 'covered'
-                                  ? `Click to load ${num(toCommit)} u. China can cover it. Hold Alt/Option to enter a custom qty.`
-                                  : `Click to load ${num(toCommit)} u. China only covers ${num(chinaCover)} u (gap ${num(gap)}). Click adds the full qty — resolve the shortfall separately. Hold Alt/Option to enter a custom qty.`)
-                              : `Click to produce ${num(toCommit)} u. Hold Alt/Option to enter a custom qty.`)
+                                  ? `Click to load ${num(toCommit)} u — China covers it. Hold Alt/Option for custom qty.\n\n${breakdown}`
+                                  : `Click to load. China covers ${num(chinaCover)} u into the container; gap of ${num(gap)} u can go to Production. Hold Alt/Option for custom qty.\n\n${breakdown}`)
+                              : `Click to produce ${num(toCommit)} u. Hold Alt/Option for custom qty.\n\n${breakdown}`)
                           : (poMode === 'container'
                               ? 'No suggested qty — click to enter a custom load qty.'
                               : 'No suggested qty — click to enter a custom production qty.');
@@ -313,24 +349,51 @@ export function ProjectionTable({
                         setEditingSku(r.sku);
                         setEditingValue(defaultQty > 0 ? String(defaultQty) : '');
                       };
+                      const handleCellClick = (e: React.MouseEvent) => {
+                        if (isEditing) { e.stopPropagation(); return; }
+                        e.stopPropagation();
+                        if (addedContainer > 0) return; // container portion already added
+                        if (!hasSuggestion) { startEditing(0); return; }
+                        if (e.altKey) { startEditing(toCommit); return; }
+                        if (poMode === 'container' && gap > 0) {
+                          // Split: send what China can cover to the container cart.
+                          // The inline "Add N to Production" CTA below will handle the rest.
+                          const chinaPortion = Math.max(0, Math.min(toCommit, Math.round(r.availableChinaOnDate)));
+                          if (chinaPortion > 0) onAddToCart(r.sku, chinaPortion, 'Container');
+                          return;
+                        }
+                        onAddToCart(r.sku);
+                      };
                       return (
                         <td
                           title={isEditing ? '' : tip}
-                          onClick={(e) => {
-                            if (isEditing) { e.stopPropagation(); return; }
-                            e.stopPropagation();
-                            if (added != null) return;
-                            if (!hasSuggestion) { startEditing(0); return; }
-                            if (e.altKey) { startEditing(toCommit); return; }
-                            onAddToCart(r.sku);
-                          }}
-                          className={cn('px-2.5 py-2 text-right text-base font-bold', mono, stateBg, added == null && !isEditing && cn('cursor-pointer', stateHover))}
+                          onClick={handleCellClick}
+                          className={cn('px-2.5 py-2 text-right text-base font-bold', mono, stateBg, !isAdded && !isEditing && cn('cursor-pointer', stateHover))}
                         >
-                          {added != null ? (
-                            <span className="inline-flex flex-col items-end gap-0.5 leading-tight">
-                              <span className={cn('text-[#059669]', mono)}>{poMode === 'container' ? `+${num(postSurplus)}` : '✓'}</span>
-                              <span className="text-[10px] font-medium normal-case text-[#7c3aed]">{poMode === 'container' ? `loaded: ${num(added)}` : `ordered: ${num(added)}`}</span>
-                            </span>
+                          {isAdded ? (
+                            poMode === 'container' ? (
+                              <span className="inline-flex flex-col items-end gap-0.5 leading-tight">
+                                <span className={cn('text-[#059669]', mono)}>+{num(postSurplus)}</span>
+                                <span className="text-[10px] font-medium normal-case text-[#7c3aed]">loaded: {num(addedContainer)}</span>
+                                {addedProduction > 0 && (
+                                  <span className="text-[10px] font-medium normal-case text-[#c2410c]">+ produce: {num(addedProduction)}</span>
+                                )}
+                                {addedProduction === 0 && gap > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); onAddToCart(r.sku, gap, 'Production'); }}
+                                    className="mt-0.5 rounded border border-[#fdba74] bg-[#fff7ed] px-1.5 py-0.5 text-[10px] font-semibold normal-case text-[#c2410c] hover:bg-[#fed7aa]"
+                                  >
+                                    + {num(gap)} to production
+                                  </button>
+                                )}
+                              </span>
+                            ) : (
+                              <span className="inline-flex flex-col items-end gap-0.5 leading-tight">
+                                <span className={cn('text-[#059669]', mono)}>✓</span>
+                                <span className="text-[10px] font-medium normal-case text-[#c2410c]">produce: {num(addedProduction)}</span>
+                              </span>
+                            )
                           ) : isEditing ? (
                             <span className="inline-flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                               <input

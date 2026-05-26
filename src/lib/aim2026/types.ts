@@ -315,12 +315,22 @@ export interface AIInsightsResponse {
 
 // ─── Purchase Order Builder ─────────────────────────────────────────────────
 
+export type POType = 'Container' | 'Production';
+
 export interface POBuilderItem {
   sku: string;
   product: string;
   quantity: number;
   suggestedQty: number;
   unitPrice: number;       // productCostChina
+  /** Cart bucket. Same SKU can coexist as two items, one per poType. Key of
+   *  identity for add/update/remove handlers is (sku, poType). */
+  poType: POType;
+  /** ISO date (yyyy-mm-dd). Container only: la projectionDate del modal al
+   *  agregarse. Se usa al hacer Create PO para calcular DeliveryDate =
+   *  projectionDate + 30d (transit). Si hay varios items con fechas distintas,
+   *  se usa max() — un container = una fecha. */
+  projectionDate?: string;
 }
 
 export interface CreatePORequest {

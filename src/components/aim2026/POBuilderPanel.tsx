@@ -1,27 +1,22 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2, GripVertical } from 'lucide-react';
+import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2, GripVertical, Container as ContainerIcon, Factory } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import type { POBuilderItem } from '@/lib/aim2026/types';
-
-const CUSTOM_ORDER_STATUSES = [
-  { value: 'Production', label: 'Production' },
-  { value: 'Container', label: 'Container' },
-  { value: 'DHL-Inbounds', label: 'DHL Inbounds' },
-] as const;
+import type { POBuilderItem, POType } from '@/lib/aim2026/types';
 
 const getDefaultPos = () => ({ x: 16, y: Math.max(80, (typeof window !== 'undefined' ? window.innerHeight : 600) - 420) });
 const PANEL_WIDTH = 340;
 
 interface POBuilderPanelProps {
   items: POBuilderItem[];
-  onRemove: (sku: string) => void;
-  onUpdateQty: (sku: string, qty: number) => void;
+  onRemove: (sku: string, poType: POType) => void;
+  onUpdateQty: (sku: string, poType: POType, qty: number) => void;
   onClear: () => void;
-  onCreatePO: (customOrderStatus: string) => Promise<void>;
+  /** Auto-split por poType: si hay items en ambos buckets crea 2 POs (Container
+   *  → MAIN, Production → China-W); si hay uno solo crea 1 PO. */
+  onCreatePO: () => Promise<void>;
   creating: boolean;
-  initialStatus?: string;
 }
 
 function fmt(v: number): string {
@@ -35,20 +30,31 @@ export function POBuilderPanel({
   onClear,
   onCreatePO,
   creating,
-  initialStatus,
 }: POBuilderPanelProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [selectedStatus, setSelectedStatus] = useState(initialStatus ?? 'Production');
   const [minimized, setMinimized] = useState(false);
   const [pos, setPos] = useState(getDefaultPos);
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
 
-  useEffect(() => {
-    if (initialStatus) setSelectedStatus(initialStatus);
-  }, [initialStatus]);
-
   const totalUnits = items.reduce((s, i) => s + i.quantity, 0);
   const totalValue = items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
+
+  // Split en dos buckets para el render. Mismo SKU puede estar en ambos.
+  const containerItems = items.filter((i) => i.poType === 'Container');
+  const productionItems = items.filter((i) => i.poType === 'Production');
+  const containerUnits = containerItems.reduce((s, i) => s + i.quantity, 0);
+  const productionUnits = productionItems.reduce((s, i) => s + i.quantity, 0);
+
+  // Container DeliveryDate = max(projectionDate) + 30d transit. Mismo cálculo
+  // que hace el handler en el dashboard — duplicado para mostrar preview.
+  const containerDeliveryLabel = (() => {
+    const dates = containerItems.map((i) => i.projectionDate).filter((d): d is string => !!d);
+    if (dates.length === 0) return null;
+    const maxIso = dates.reduce((a, b) => (a > b ? a : b));
+    const d = new Date(maxIso + 'T00:00:00');
+    d.setDate(d.getDate() + 30);
+    return d.toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' });
+  })();
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button')) return;
@@ -115,33 +121,30 @@ export function POBuilderPanel({
 
         {!minimized && (
           <>
-        {/* Items list */}
-        <div className="overflow-y-auto divide-y divide-border/40 max-h-[300px]">
-          {items.map((item) => (
-            <div
-              key={item.sku}
-              className="px-3 py-2 flex items-center gap-2 hover:bg-muted/30 transition-colors group"
-            >
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-mono font-medium text-blue-600 dark:text-blue-400 truncate">
-                  {item.sku}
-                </div>
-                <div className="text-[10px] text-muted-foreground truncate">{item.product}</div>
-              </div>
-              <QtyInput
-                sku={item.sku}
-                quantity={item.quantity}
-                onUpdateQty={onUpdateQty}
-              />
-              <button
-                onClick={() => onRemove(item.sku)}
-                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-500 transition-all p-0.5"
-                title="Remove"
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
+        {/* Items list — agrupado por poType. Mismo SKU puede aparecer en ambas secciones. */}
+        <div className="overflow-y-auto max-h-[320px]">
+          {containerItems.length > 0 && (
+            <CartSection
+              title="Container Load"
+              icon={<ContainerIcon size={11} />}
+              accentClass="text-violet-600 dark:text-violet-400 bg-violet-50/60 dark:bg-violet-950/30"
+              items={containerItems}
+              subtotal={containerUnits}
+              onRemove={onRemove}
+              onUpdateQty={onUpdateQty}
+            />
+          )}
+          {productionItems.length > 0 && (
+            <CartSection
+              title="Production"
+              icon={<Factory size={11} />}
+              accentClass="text-orange-700 dark:text-orange-400 bg-orange-50/60 dark:bg-orange-950/30"
+              items={productionItems}
+              subtotal={productionUnits}
+              onRemove={onRemove}
+              onUpdateQty={onUpdateQty}
+            />
+          )}
         </div>
 
         {/* Footer */}
@@ -172,28 +175,38 @@ export function POBuilderPanel({
                 <div className="flex items-start gap-1.5">
                   <AlertTriangle size={12} className="text-amber-500 mt-0.5 flex-shrink-0" />
                   <div className="text-[10px] text-amber-700 dark:text-amber-300 leading-relaxed w-full">
-                    <p className="font-semibold mb-1">Confirm PO Creation</p>
-                    <p>
-                      Supplier: <strong>WINKIN 2025 (AUD)</strong><br />
-                      Warehouse: <strong>{selectedStatus === 'Production' ? 'China-W' : 'Main Warehouse'}</strong><br />
-                      {items.length} items, {fmt(totalUnits)} units
+                    <p className="font-semibold mb-1">
+                      Confirm PO Creation{(containerItems.length > 0 && productionItems.length > 0) ? ' · 2 POs' : ''}
                     </p>
-                    <div className="mt-2">
-                      <label className="block text-[10px] font-medium mb-1 text-amber-800 dark:text-amber-200">
-                        Order Status
-                      </label>
-                      <select
-                        value={selectedStatus}
-                        onChange={(e) => setSelectedStatus(e.target.value)}
-                        className="w-full h-7 text-[11px] font-semibold bg-white dark:bg-zinc-900 border border-amber-300 dark:border-amber-700 rounded px-2 text-amber-900 dark:text-amber-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      >
-                        {CUSTOM_ORDER_STATUSES.map((s) => (
-                          <option key={s.value} value={s.value}>
-                            Placed → {s.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <p className="mb-1.5">Supplier: <strong>WINKIN 2025 (AUD)</strong></p>
+                    {containerItems.length > 0 && (
+                      <div className="mt-1 rounded bg-violet-50/80 dark:bg-violet-950/40 px-2 py-1 border border-violet-200/60 dark:border-violet-800/40">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1 text-violet-700 dark:text-violet-300 font-semibold">
+                            <ContainerIcon size={10} /> Container → MAIN
+                          </span>
+                          <span className="tabular-nums">{containerItems.length} items · {fmt(containerUnits)} u</span>
+                        </div>
+                        {containerDeliveryLabel && (
+                          <div className="mt-0.5 text-[9px] text-violet-700/80 dark:text-violet-300/80">
+                            DeliveryDate: <strong>{containerDeliveryLabel}</strong> (max projection + 30d transit)
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {productionItems.length > 0 && (
+                      <div className="mt-1 rounded bg-orange-50/80 dark:bg-orange-950/40 px-2 py-1 border border-orange-200/60 dark:border-orange-800/40">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1 text-orange-700 dark:text-orange-300 font-semibold">
+                            <Factory size={10} /> Production → China-W
+                          </span>
+                          <span className="tabular-nums">{productionItems.length} items · {fmt(productionUnits)} u</span>
+                        </div>
+                        <div className="mt-0.5 text-[9px] text-orange-700/80 dark:text-orange-300/80">
+                          DeliveryDate per line: <strong>today + leadTime</strong> per SKU
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -211,7 +224,7 @@ export function POBuilderPanel({
                   size="sm"
                   className="flex-1 h-8 text-xs gap-1"
                   onClick={async () => {
-                    await onCreatePO(selectedStatus);
+                    await onCreatePO();
                     setConfirmOpen(false);
                   }}
                   disabled={creating}
@@ -240,6 +253,62 @@ export function POBuilderPanel({
   );
 }
 
+// ─── Cart section (Container or Production bucket) ──────────────────────────-
+function CartSection({
+  title, icon, accentClass, items, subtotal, onRemove, onUpdateQty,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  accentClass: string;
+  items: POBuilderItem[];
+  subtotal: number;
+  onRemove: (sku: string, poType: POType) => void;
+  onUpdateQty: (sku: string, poType: POType, qty: number) => void;
+}) {
+  return (
+    <div className="border-b border-border/60 last:border-b-0">
+      <div className={`flex items-center justify-between px-3 py-1.5 ${accentClass}`}>
+        <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide">
+          {icon}
+          <span>{title}</span>
+          <span className="rounded-full bg-white/70 dark:bg-black/30 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+            {items.length}
+          </span>
+        </div>
+        <span className="text-[11px] font-semibold tabular-nums">{fmt(subtotal)} u</span>
+      </div>
+      <div className="divide-y divide-border/40">
+        {items.map((item) => (
+          <div
+            key={`${item.sku}::${item.poType}`}
+            className="px-3 py-2 flex items-center gap-2 hover:bg-muted/30 transition-colors group"
+          >
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-mono font-medium text-blue-600 dark:text-blue-400 truncate">
+                {item.sku}
+              </div>
+              <div className="text-[10px] text-muted-foreground truncate">{item.product}</div>
+            </div>
+            <QtyInput
+              sku={item.sku}
+              poType={item.poType}
+              quantity={item.quantity}
+              onUpdateQty={onUpdateQty}
+            />
+            <button
+              onClick={() => onRemove(item.sku, item.poType)}
+              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-500 transition-all p-0.5"
+              title="Remove"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Quantity input ──────────────────────────────────────────────────────────-
 // Uncontrolled-friendly: keeps a local string while the user types so blank /
 // in-progress values do not get clobbered. Commits the parsed number on blur or
@@ -247,19 +316,21 @@ export function POBuilderPanel({
 // state never updates, leaving the user unable to retype a quantity.
 function QtyInput({
   sku,
+  poType,
   quantity,
   onUpdateQty,
 }: {
   sku: string;
+  poType: POType;
   quantity: number;
-  onUpdateQty: (sku: string, qty: number) => void;
+  onUpdateQty: (sku: string, poType: POType, qty: number) => void;
 }) {
   const [draft, setDraft] = useState<string>(String(quantity));
 
   // Sync external changes (e.g. spinner via arrows, or item replaced).
   useEffect(() => {
     setDraft(String(quantity));
-  }, [quantity, sku]);
+  }, [quantity, sku, poType]);
 
   const commit = () => {
     const v = parseInt(draft, 10);
@@ -267,7 +338,7 @@ function QtyInput({
       setDraft(String(quantity)); // revert
       return;
     }
-    if (v !== quantity) onUpdateQty(sku, v);
+    if (v !== quantity) onUpdateQty(sku, poType, v);
     setDraft(String(v));
   };
 

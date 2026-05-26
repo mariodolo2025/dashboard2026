@@ -112,7 +112,17 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const [poItems, setPOItems] = useState<POBuilderItem[]>(() => {
     try {
       const saved = localStorage.getItem('aim2026-po-draft');
-      return saved ? (JSON.parse(saved) as POBuilderItem[]) : [];
+      if (!saved) return [];
+      const parsed = JSON.parse(saved) as Array<Partial<POBuilderItem>>;
+      // Migración tolerante: items viejos no tienen poType → default 'Production'.
+      return parsed.map((i) => ({
+        sku: i.sku ?? '',
+        product: i.product ?? '',
+        quantity: i.quantity ?? 0,
+        suggestedQty: i.suggestedQty ?? 0,
+        unitPrice: i.unitPrice ?? 0,
+        poType: (i.poType === 'Container' ? 'Container' : 'Production') as POBuilderItem['poType'],
+      })).filter((i) => i.sku);
     } catch {
       return [];
     }
@@ -675,10 +685,13 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     (qty: number) => {
       if (!qtyDialogRow) return;
       const suggestedFromRow = qtyDialogRow.suggestedQty || qtyDialogRow.softSuggestedQty;
+      // Real Inbound / Suggested Qty dialog: legacy flow, no Container vs Production
+      // distinction here. Default to 'Production' — auto-split en handleCreatePO
+      // lo enviará al warehouse China-W con status 'Production'.
       setPOItems((prev) => {
-        const existing = prev.find((i) => i.sku === qtyDialogRow.sku);
+        const existing = prev.find((i) => i.sku === qtyDialogRow.sku && i.poType === 'Production');
         if (existing) {
-          return prev.map((i) => (i.sku === qtyDialogRow.sku ? { ...i, quantity: qty } : i));
+          return prev.map((i) => (i.sku === qtyDialogRow.sku && i.poType === 'Production' ? { ...i, quantity: qty } : i));
         }
         return [
           ...prev,
@@ -688,6 +701,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             quantity: qty,
             suggestedQty: suggestedFromRow,
             unitPrice: qtyDialogRow.productCostChina ?? 0,
+            poType: 'Production',
           },
         ];
       });
@@ -699,27 +713,29 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     [qtyDialogRow, qtyDialogOpenPOBuilder]
   );
 
-  const handlePORemoveItem = useCallback((sku: string) => {
-    setPOItems((prev) => prev.filter((i) => i.sku !== sku));
+  const handlePORemoveItem = useCallback((sku: string, poType: POBuilderItem['poType']) => {
+    setPOItems((prev) => prev.filter((i) => !(i.sku === sku && i.poType === poType)));
   }, []);
 
-  const handlePOUpdateQty = useCallback((sku: string, qty: number) => {
-    setPOItems((prev) => prev.map((i) => (i.sku === sku ? { ...i, quantity: qty } : i)));
+  const handlePOUpdateQty = useCallback((sku: string, poType: POBuilderItem['poType'], qty: number) => {
+    setPOItems((prev) => prev.map((i) => (i.sku === sku && i.poType === poType ? { ...i, quantity: qty } : i)));
   }, []);
 
   const handleAddProjectionItem = useCallback(
-    (sku: string, qty: number, _poType: 'Container' | 'Production') => {
+    (sku: string, qty: number, poType: 'Container' | 'Production', projectionDate?: string) => {
       const row = skuData.find((r) => r.sku === sku);
       if (!row || qty <= 0) return;
       setPOItems((prev) => {
-        const existing = prev.find((i) => i.sku === sku);
-        if (existing) return prev.map((i) => (i.sku === sku ? { ...i, quantity: qty } : i));
+        // No-op si ya existe (sku, poType) — la qty se modifica manualmente desde el panel.
+        if (prev.some((i) => i.sku === sku && i.poType === poType)) return prev;
         return [...prev, {
           sku: row.sku,
           product: row.product,
           quantity: qty,
           suggestedQty: row.suggestedQty || row.softSuggestedQty,
           unitPrice: row.productCostChina ?? 0,
+          poType,
+          projectionDate: poType === 'Container' ? projectionDate : undefined,
         }];
       });
       setPOBuilderMode(true);
@@ -756,33 +772,102 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [tableMaximized]);
 
-  const handleCreatePO = useCallback(async (customOrderStatus: string) => {
+  const handleCreatePO = useCallback(async () => {
     if (poItems.length === 0) return;
     setPOCreating(true);
     try {
-      // DHL Inbounds y Container → Main Warehouse (producto en tránsito hacia Australia)
-      // Production → China-W (producto en fábrica)
-      const warehouseCode = (customOrderStatus === 'DHL-Inbounds' || customOrderStatus === 'Container') ? 'MAIN' : 'China';
+      // Auto-split: items por poType → N POs en paralelo. Cada bucket lleva
+      // su warehouseCode/customOrderStatus.
+      //   Container → 'MAIN'   + customOrderStatus 'Container'  (stock en tránsito por mar)
+      //   Production → 'China' + customOrderStatus 'Production' (fabricándose en China-W)
+      const containerItems = poItems.filter((i) => i.poType === 'Container');
+      const productionItems = poItems.filter((i) => i.poType === 'Production');
 
-      const result = await createPurchaseOrder({
-        items: poItems.map((i) => ({
-          productCode: i.sku,
-          orderQuantity: i.quantity,
-          unitPrice: i.unitPrice,
-        })),
-        supplierCode: 'Winkin',
-        warehouseCode,
-        customOrderStatus,
+      // ── Fechas ─────────────────────────────────────────────────────────────
+      // Container: DeliveryDate = max(item.projectionDate) + 30d (sea-freight transit).
+      //   Si algún item Container no tiene projectionDate (legacy/Real Inbound), se
+      //   omite — el backend usará su default (+45d).
+      // Production: per-line DeliveryDate = today + leadTimeDays del SKU. Header
+      //   DeliveryDate = max(per-line). Fallback +45d si el SKU no tiene leadTime.
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const toISO = (d: Date) => d.toISOString().slice(0, 10);
+
+      let containerDeliveryISO: string | undefined;
+      const containerDates = containerItems
+        .map((i) => i.projectionDate)
+        .filter((d): d is string => !!d);
+      if (containerDates.length > 0) {
+        const maxProjection = containerDates.reduce((a, b) => (a > b ? a : b));
+        const eta = new Date(maxProjection + 'T00:00:00');
+        eta.setTime(eta.getTime() + 30 * DAY_MS);
+        containerDeliveryISO = toISO(eta);
+      }
+
+      const productionLineDates = new Map<string, string>(); // sku → ISO
+      for (const it of productionItems) {
+        const row = skuData.find((r) => r.sku === it.sku);
+        const lt = row?.leadTimeDays ?? 45;
+        const eta = new Date(today.getTime() + lt * DAY_MS);
+        productionLineDates.set(it.sku, toISO(eta));
+      }
+      const productionHeaderISO = productionLineDates.size > 0
+        ? [...productionLineDates.values()].reduce((a, b) => (a > b ? a : b))
+        : undefined;
+
+      const buckets: Array<{
+        status: string;
+        warehouseCode: string;
+        items: typeof poItems;
+        headerDeliveryDate?: string;
+        perLine: boolean;
+      }> = [];
+      if (containerItems.length > 0) buckets.push({
+        status: 'Container', warehouseCode: 'MAIN', items: containerItems,
+        headerDeliveryDate: containerDeliveryISO, perLine: false,
+      });
+      if (productionItems.length > 0) buckets.push({
+        status: 'Production', warehouseCode: 'China', items: productionItems,
+        headerDeliveryDate: productionHeaderISO, perLine: true,
       });
 
-      if (result.success) {
-        setPONotification({ type: 'success', message: result.message });
+      const results = await Promise.all(
+        buckets.map((b) =>
+          createPurchaseOrder({
+            items: b.items.map((i) => ({
+              productCode: i.sku,
+              orderQuantity: i.quantity,
+              unitPrice: i.unitPrice,
+              deliveryDate: b.perLine ? productionLineDates.get(i.sku) : undefined,
+            })),
+            supplierCode: 'Winkin',
+            warehouseCode: b.warehouseCode,
+            customOrderStatus: b.status,
+            deliveryDate: b.headerDeliveryDate,
+          }).then((r) => ({ ...r, status: b.status, itemCount: b.items.length }))
+            .catch((err) => ({ success: false as const, message: err instanceof Error ? err.message : 'Failed', status: b.status, itemCount: b.items.length })),
+        ),
+      );
+
+      const failed = results.filter((r) => !r.success);
+      if (failed.length === 0) {
+        const msg = results.length === 1
+          ? results[0].message
+          : `Created ${results.length} POs · ${results.map((r) => `${r.itemCount} ${r.status}`).join(' · ')}`;
+        setPONotification({ type: 'success', message: msg });
         setPOItems([]);
         setPOBuilderMode(false);
-        setTimeout(() => setPONotification(null), 6000);
-      } else {
-        setPONotification({ type: 'error', message: result.message });
         setTimeout(() => setPONotification(null), 8000);
+      } else {
+        const okCount = results.length - failed.length;
+        const detail = failed.map((f) => `${f.status}: ${f.message}`).join(' · ');
+        setPONotification({
+          type: 'error',
+          message: okCount > 0
+            ? `${okCount}/${results.length} POs created. Failures → ${detail}`
+            : `PO creation failed → ${detail}`,
+        });
+        setTimeout(() => setPONotification(null), 10000);
       }
     } catch (err) {
       setPONotification({
@@ -793,7 +878,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     } finally {
       setPOCreating(false);
     }
-  }, [poItems]);
+  }, [poItems, skuData]);
 
   // Toggle the PO panel — items are NEVER discarded on close; they persist in
   // localStorage until the user explicitly clears them or sends the PO.
@@ -1520,6 +1605,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
         })()}
         onAddProjectionItem={handleAddProjectionItem}
         poBuilderMode={poBuilderMode}
+        poItems={poItems}
       />
 
       {/* ─── PO Builder Components ─────────────────────────────────────────── */}
