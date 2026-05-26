@@ -64,6 +64,11 @@ export function CompleteProjectionDialog({
   const [poMode, setPoMode] = useState<PoMode>(null);
   const [poMenuOpen, setPoMenuOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // Toggle: por defecto la tabla en PO mode filtra los SKUs que necesitan
+  // acción (containerLoadQty > 0 o productionQty > 0). Cuando está ON,
+  // muestra TODOS los SKUs para permitir cargar manualmente alguno que la
+  // fórmula no marcó pero el user igual quiere agregar.
+  const [showAllSkus, setShowAllSkus] = useState(false);
   const [sort, setSort] = useState<SortState>({ col: 'effDailyDemand', dir: 'desc' });
   // Real PO ETAs per SKU. When loaded, projection uses them instead of the
   // linear-by-leadTime approximation. Fetched once on open for SKUs that have
@@ -92,6 +97,7 @@ export function CompleteProjectionDialog({
     setDemandUnit('monthly');
     setPoMode(null);
     setPoMenuOpen(false);
+    setShowAllSkus(false);
     setSort({ col: 'effDailyDemand', dir: 'desc' });
     setEventsBySku(new Map());
     setChinaDailyBySku(new Map());
@@ -207,8 +213,10 @@ export function CompleteProjectionDialog({
     if (selectedGroups.size > 0) rows = rows.filter((r) => selectedGroups.has(r.group));
     // Container mode: SKUs where Main alone would cover the gap (containerLoadQty
     // is the deficit at arrival). Production mode: SKUs that need production.
-    if (poMode === 'container') rows = rows.filter((r) => r.containerLoadQty > 0);
-    else if (poMode === 'production') rows = rows.filter((r) => r.productionQty > 0);
+    if (!showAllSkus) {
+      if (poMode === 'container') rows = rows.filter((r) => r.containerLoadQty > 0);
+      else if (poMode === 'production') rows = rows.filter((r) => r.productionQty > 0);
+    }
 
     const dir = sort.dir === 'asc' ? 1 : -1;
     const sorted = [...rows].sort((a, b) => {
@@ -223,7 +231,7 @@ export function CompleteProjectionDialog({
       return cmp * dir;
     });
     return sorted;
-  }, [allRows, search, selectedGroups, sort, poMode]);
+  }, [allRows, search, selectedGroups, sort, poMode, showAllSkus]);
 
   const selectedRow = useMemo(
     () => (selectedSku ? allRows.find((r) => r.sku === selectedSku) ?? null : null),
@@ -262,10 +270,17 @@ export function CompleteProjectionDialog({
     if (!poMode || !onAddProjectionItem) return;
     const row = allRows.find((r) => r.sku === sku);
     if (!row) return;
+    const skuRow = skuMap.get(sku);
+    const packSize = Math.max(1, skuRow?.packSize ?? 1);
     const type: 'Container' | 'Production' = forceType ?? (poMode === 'container' ? 'Container' : 'Production');
     const suggested = type === 'Container' ? row.containerLoadQty : row.productionQty;
-    const qty = customQty != null && customQty > 0 ? Math.round(customQty) : suggested;
-    if (qty <= 0) return;
+    const rawQty = customQty != null && customQty > 0 ? Math.round(customQty) : suggested;
+    if (rawQty <= 0) return;
+    // Redondeo al múltiplo más cercano del pack size (Mario, 2026-05-27).
+    // Si pack=1 → no cambia nada. Mínimo 1 pack si la qty original era > 0.
+    const qty = packSize > 1
+      ? Math.max(packSize, Math.round(rawQty / packSize) * packSize)
+      : rawQty;
     // El dashboard hace no-op si ya existe (sku, type) — coherente con la decisión
     // de "modificar manualmente desde el panel". projectionDate solo aplica a
     // Container — el handler la usa para calcular DeliveryDate = projectionDate + 30d.
@@ -442,6 +457,7 @@ export function CompleteProjectionDialog({
             expandedConsumed={expandedConsumed} setExpandedConsumed={setExpandedConsumed}
             demandUnit={demandUnit} onToggleDemandUnit={() => setDemandUnit((u) => (u === 'daily' ? 'monthly' : 'daily'))}
             poMode={poMode} coverageDays={coverageDays} addedSkus={addedSkus} onAddToCart={onAddToCart} sort={sort} onSort={onSort}
+            showAllSkus={showAllSkus} onToggleShowAllSkus={() => setShowAllSkus((v) => !v)}
           />
         </div>
         {selectedRow && series && (

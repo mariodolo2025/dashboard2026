@@ -167,10 +167,24 @@ export function CompleteProjectionHelpPopup({ open, onClose }: HelpPopupProps) {
             <p className="text-[11px] text-[#5b6270]">High demand = more units consumed = less stock projected and bigger load/produce qty.</p>
           </Section>
 
+          <Section title="Pack size rounding">
+            <p className="text-xs text-[#5b6270]">
+              When a SKU has <b>pack size &gt; 1</b>, the qty sent to the cart is rounded to the nearest multiple of the pack size — so you order full boxes, not loose units.
+            </p>
+            <Formula
+              label="Rounding"
+              formula="qtyOnCart = max(packSize, round(suggested / packSize) × packSize)"
+              example="suggested = 1,537 u, packSize = 200 → cart gets 1,600 u (8 boxes). suggested = 1,520 → 1,400 u (7 boxes)."
+            />
+            <p className="text-[11px] text-[#5b6270]">
+              Pack size is loaded from <code className="font-mono">ProductList.csv</code> in a column named <b>Pack Size</b> (or any of: <em>packsize</em>, <em>carton qty</em>, <em>units per box</em>, <em>case pack</em>, <em>innerpack</em>). Same file as the lead times — load it from Settings → "Load Lead Times from CSV". Missing column or value = 1 (no rounding).
+            </p>
+          </Section>
+
           <Section title="Shortcuts">
             <ul className="list-disc space-y-1 pl-5 text-[12px] text-[#2a2f38]">
               <li><b>Click row</b> — open the SKU detail panel.</li>
-              <li><b>Click Container Load / To Produce cell</b> — add to cart with suggested qty.</li>
+              <li><b>Click Container Load / To Produce cell</b> — add to cart with suggested qty (rounded to pack).</li>
               <li><b>Ctrl/Cmd + click on Container Load cell</b> — add to Production cart (independent of Container). Uses productionQty if &gt; 0, otherwise coverageDemand (monthly × coverage months) as fallback.</li>
               <li><b>Alt + click on cell</b> — open inline input for custom Container qty.</li>
               <li><b>Click on a cell showing "+ add / custom qty"</b> — open inline input (no suggestion).</li>

@@ -776,10 +776,14 @@ async function loadCostsFromCSV(
   return updated;
 }
 
-// ─── Load Lead Times from ProductList.csv → aim2026_sku_parameters ────────
+// ─── Load Lead Times + Pack Size from ProductList.csv ─────────────────────
 // ProductList.csv format:
 //   Row 1: comment (file creation date) — skip
-//   Row 2+: Column A = SKU, Column B = Lead Time (Days)
+//   Row 2+: Column A = SKU, Column B = Lead Time (Days), optional "Pack Size"
+//
+// Pack Size = units per master carton. Used by Complete Projection's PO
+// Builder to round suggested qty to nearest multiple. Optional — falls back
+// to existing value or 1 (no rounding) if missing.
 
 async function loadLeadTimesFromCSV(
   supabase: any,
@@ -804,16 +808,33 @@ async function loadLeadTimesFromCSV(
     }
   }
 
-  // Find the column index for Lead Time
+  // Find the column indexes
   const headerRow = rawData[headerIdx].map((v) => String(v || "").toLowerCase().trim());
   let ltColIdx = -1;
+  let psColIdx = -1;
   let skuColIdx = 0; // default to column A
 
   for (let c = 0; c < headerRow.length; c++) {
-    if (headerRow[c].includes("lead time") || headerRow[c].includes("leadtime")) {
+    const h = headerRow[c];
+    if (h.includes("lead time") || h.includes("leadtime")) {
       ltColIdx = c;
     }
-    if (headerRow[c].includes("product code") || headerRow[c].includes("sku") || headerRow[c].includes("productcode")) {
+    // Pack Size: matches "pack size", "packsize", "carton qty", "units per box",
+    // "units per carton", "case pack", "innerpack".
+    if (
+      h.includes("pack size") ||
+      h.includes("packsize") ||
+      h.includes("carton qty") ||
+      h.includes("carton quantity") ||
+      h.includes("units per box") ||
+      h.includes("units per carton") ||
+      h.includes("case pack") ||
+      h.includes("innerpack") ||
+      h.includes("inner pack")
+    ) {
+      psColIdx = c;
+    }
+    if (h.includes("product code") || h.includes("sku") || h.includes("productcode")) {
       skuColIdx = c;
     }
   }
@@ -825,9 +846,11 @@ async function loadLeadTimesFromCSV(
   }
 
   const dataRows = rawData.slice(headerIdx + 1);
-  console.log(`ProductList CSV: ${dataRows.length} data rows, SKU col=${skuColIdx}, LeadTime col=${ltColIdx}`);
+  console.log(
+    `ProductList CSV: ${dataRows.length} data rows, SKU col=${skuColIdx}, LeadTime col=${ltColIdx}, PackSize col=${psColIdx >= 0 ? psColIdx : "(not present)"}`
+  );
 
-  const updates: { sku: string; lead_time_days: number }[] = [];
+  const updates: { sku: string; lead_time_days?: number; pack_size?: number }[] = [];
 
   for (const row of dataRows) {
     const sku = String(row[skuColIdx] ?? "").trim();
@@ -835,24 +858,43 @@ async function loadLeadTimesFromCSV(
 
     const ltRaw = toNumber(row[ltColIdx]);
     const leadTimeDays = Math.round(ltRaw);
-    if (leadTimeDays <= 0 || leadTimeDays > 365) continue; // skip invalid values
+    const ltValid = leadTimeDays > 0 && leadTimeDays <= 365;
 
-    updates.push({ sku, lead_time_days: leadTimeDays });
+    let packSize: number | null = null;
+    if (psColIdx >= 0) {
+      const psRaw = toNumber(row[psColIdx]);
+      const ps = Math.round(psRaw);
+      if (ps > 0 && ps <= 100000) packSize = ps;
+    }
+
+    // Skip si NO hay nada útil que upsertear (ni LT válido ni pack válido).
+    if (!ltValid && packSize == null) continue;
+
+    const update: { sku: string; lead_time_days?: number; pack_size?: number } = { sku };
+    if (ltValid) update.lead_time_days = leadTimeDays;
+    if (packSize != null) update.pack_size = packSize;
+
+    updates.push(update);
   }
 
-  console.log(`ProductList: ${updates.length} SKUs with valid lead times`);
+  const withPack = updates.filter((u) => u.pack_size != null).length;
+  console.log(`ProductList: ${updates.length} SKUs with valid lead times (${withPack} also with pack size)`);
 
   if (updates.length === 0) return 0;
 
-  // Upsert lead times in batches
+  // Upsert in batches
   let updated = 0;
   const batch = 300;
   for (let i = 0; i < updates.length; i += batch) {
-    const b = updates.slice(i, i + batch).map((u) => ({
-      sku: u.sku,
-      lead_time_days: u.lead_time_days,
-      updated_at: new Date().toISOString(),
-    }));
+    const b = updates.slice(i, i + batch).map((u) => {
+      const row: any = {
+        sku: u.sku,
+        updated_at: new Date().toISOString(),
+      };
+      if (u.lead_time_days != null) row.lead_time_days = u.lead_time_days;
+      if (u.pack_size != null) row.pack_size = u.pack_size;
+      return row;
+    });
 
     const { error } = await supabase
       .from("aim2026_sku_parameters")

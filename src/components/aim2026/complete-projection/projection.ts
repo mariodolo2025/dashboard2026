@@ -125,6 +125,9 @@ export interface ProjectionRow {
   containerLoadQty: number;
   /** Units to produce = max(0, coverageDemand − mainAtProductionArrival). */
   productionQty: number;
+  /** Units per master carton. Suggested qty se redondea al múltiplo más cercano
+   *  en onAddToCart. Default 1 = sin redondeo. */
+  packSize: number;
 }
 
 export interface SeriesPoint {
@@ -300,6 +303,7 @@ export function buildProjectionRow(
     mainAtProductionArrival: Math.round(mainAtProductionArrival),
     containerLoadQty,
     productionQty,
+    packSize: Math.max(1, Number(row.packSize) || 1),
   };
 }
 

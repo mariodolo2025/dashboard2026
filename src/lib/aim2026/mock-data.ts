@@ -96,6 +96,7 @@ export function generateMockSKURows(): SKURow[] {
       stockoutRisk: p.status === 'CRITICAL' ? 'critical' : p.status === 'LOW STOCK' ? 'high' : p.status === 'WARNING' ? 'medium' : 'low',
       leadTimeDays,
       serviceLevelZ: 1.65,
+      packSize: 1,
     };
   });
 }

@@ -600,6 +600,7 @@ export async function fetchDashboardData(): Promise<DashboardData> {
       stockoutRisk: d.stockoutRisk ?? 'low',
       leadTimeDays: d.leadTimeDays ?? 45,
       serviceLevelZ: d.serviceLevelZ ?? 1.65,
+      packSize: Math.max(1, Number(d.packSize) || 1),
     };
   });
 
@@ -706,6 +707,7 @@ function kpiDataToRow(sku: string, d: any): SKURow {
     stockoutRisk: d.stockoutRisk ?? 'low',
     leadTimeDays: d.leadTimeDays ?? 45,
     serviceLevelZ: d.serviceLevelZ ?? 1.65,
+    packSize: Math.max(1, Number(d.packSize) || 1),
   };
 }
 

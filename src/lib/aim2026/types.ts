@@ -79,6 +79,10 @@ export interface SKURow {
   // Meta
   leadTimeDays: number;
   serviceLevelZ: number;
+  /** Units per master carton. Used by Complete Projection's PO Builder to
+   *  round suggested qty to the nearest multiple. Loaded from ProductList.csv
+   *  'Pack Size' column. Default 1 = no rounding. */
+  packSize: number;
 }
 
 // ─── SKU Detail (popup) ─────────────────────────────────────────────────────

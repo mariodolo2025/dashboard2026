@@ -65,6 +65,7 @@ interface SKUParams {
   leadTimeDays: number;
   serviceLevelZ: number;
   abcClass: string | null;
+  packSize: number;
 }
 
 // ─── Config Loader ─────────────────────────────────────────────────────────
@@ -129,6 +130,7 @@ async function loadSKUParameters(supabase: any): Promise<Map<string, SKUParams>>
       leadTimeDays: row.lead_time_days ?? 45,
       serviceLevelZ: Number(row.service_level_z) || 1.65,
       abcClass: row.abc_class,
+      packSize: Math.max(1, Number(row.pack_size) || 1),
     });
   }
   return map;
@@ -713,6 +715,7 @@ Deno.serve(async (req: Request) => {
         leadTimeDays: config.defaultLeadTimeDays,
         serviceLevelZ: config.defaultServiceLevelZ,
         abcClass: null,
+        packSize: 1,
       };
 
       const soh = sohMap.get(sku) ?? {};
@@ -911,6 +914,7 @@ Deno.serve(async (req: Request) => {
           stockoutRisk,
           leadTimeDays,
           serviceLevelZ: z,
+          packSize: params.packSize ?? 1,
         },
       });
 

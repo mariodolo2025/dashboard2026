@@ -56,13 +56,18 @@ interface ProjectionTableProps {
   onAddToCart: (sku: string, customQty?: number, forceType?: 'Container' | 'Production') => void;
   sort: SortState;
   onSort: (col: SortCol) => void;
+  /** True = mostrar TODOS los SKUs aunque no necesiten Container/Production
+   *  según la fórmula (containerLoadQty=0 o productionQty=0). Permite cargar
+   *  manualmente alguno que el user igual quiere agregar. Visible solo en poMode. */
+  showAllSkus: boolean;
+  onToggleShowAllSkus: () => void;
 }
 
 export function ProjectionTable({
   rows, totalCount, projectionDate, search, onSearch, groups, selectedGroups, onGroupsChange,
   selectedSku, onRowClick, expandedSoh, setExpandedSoh,
   expandedConsumed, setExpandedConsumed, demandUnit, onToggleDemandUnit, poMode, coverageDays, addedSkus,
-  onAddToCart, sort, onSort,
+  onAddToCart, sort, onSort, showAllSkus, onToggleShowAllSkus,
 }: ProjectionTableProps) {
   const colCount = 8 + (expandedSoh ? 3 : 0) + (poMode ? 1 : 0);
   // Inline custom-qty editor: when the user clicks "+ add" on a SKU with no
@@ -149,6 +154,27 @@ export function ProjectionTable({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {poMode && (
+            <label
+              title={poMode === 'container'
+                ? 'Off (default): only SKUs that need Container Load (containerLoadQty > 0). On: all SKUs — useful to manually add one the formula didn’t flag.'
+                : 'Off (default): only SKUs that need Production (productionQty > 0). On: all SKUs.'}
+              className={cn(
+                'inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium transition-colors',
+                showAllSkus
+                  ? 'border-[#7c3aed] bg-[#ede9fe] text-[#4c1d95]'
+                  : 'border-[#e8e8e3] text-[#5b6270] hover:bg-[#faf9f7]',
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={showAllSkus}
+                onChange={onToggleShowAllSkus}
+                className="h-3 w-3 accent-[#7c3aed]"
+              />
+              Show all SKUs
+            </label>
+          )}
           <span className="inline-flex items-center gap-1 rounded-full border border-[#e8e8e3] px-2 py-1 text-xs font-medium text-[#5b6270]"><ListFilter size={12} /> Status</span>
           <span className="inline-flex items-center gap-1 rounded-full border border-[#e8e8e3] px-2 py-1 text-xs font-medium text-[#5b6270]"><Download size={12} /> Export</span>
         </div>
@@ -339,22 +365,26 @@ export function ProjectionTable({
                       const breakdown = hasSuggestion ? buildBreakdown(r, poMode) : '';
                       // Production suggestion para Ctrl/Cmd+click (manual). Solo aplica en container mode.
                       const prodSuggestion = poMode === 'container' ? r.productionQty : 0;
+                      // Pack size info — redondeo aplicado en onAddToCart.
+                      const pack = Math.max(1, r.packSize ?? 1);
+                      const roundToPack = (q: number) => pack > 1 ? Math.max(pack, Math.round(q / pack) * pack) : q;
+                      const packInfo = pack > 1 ? `\n\nPack size: ${num(pack)} u/box. Suggested rounds to nearest multiple → adds ${num(roundToPack(toCommit))} u (${Math.round(roundToPack(toCommit) / pack)} boxes).` : '';
                       const modifierHint = poMode === 'container'
                         ? '\n\nClick = Container · Ctrl/Cmd+Click = Production · Alt+Click = custom qty'
                         : '\n\nAlt+Click = custom qty';
                       const tip = isAdded
                         ? (poMode === 'container'
-                            ? `Container: ${num(addedContainer)} u${addedProduction > 0 ? ` · Production: ${num(addedProduction)} u` : ''}. Remaining China after load: ${num(postSurplus)} u.${breakdown ? '\n\n' + breakdown : ''}${addedProduction === 0 ? modifierHint : ''}`
-                            : `Production: ${num(addedProduction)} u.${breakdown ? '\n\n' + breakdown : ''}`)
+                            ? `Container: ${num(addedContainer)} u${addedProduction > 0 ? ` · Production: ${num(addedProduction)} u` : ''}. Remaining China after load: ${num(postSurplus)} u.${breakdown ? '\n\n' + breakdown : ''}${packInfo}${addedProduction === 0 ? modifierHint : ''}`
+                            : `Production: ${num(addedProduction)} u.${breakdown ? '\n\n' + breakdown : ''}${packInfo}`)
                         : hasSuggestion
                           ? (poMode === 'container'
                               ? (coverState === 'covered'
-                                  ? `Click to load ${num(toCommit)} u — China covers it.\n\n${breakdown}${modifierHint}`
-                                  : `Click to load. China covers ${num(chinaCover)} u into the container; gap of ${num(gap)} u can go to Production.\n\n${breakdown}${modifierHint}`)
-                              : `Click to produce ${num(toCommit)} u.\n\n${breakdown}${modifierHint}`)
+                                  ? `Click to load ${num(toCommit)} u — China covers it.\n\n${breakdown}${packInfo}${modifierHint}`
+                                  : `Click to load. China covers ${num(chinaCover)} u into the container; gap of ${num(gap)} u can go to Production.\n\n${breakdown}${packInfo}${modifierHint}`)
+                              : `Click to produce ${num(toCommit)} u.\n\n${breakdown}${packInfo}${modifierHint}`)
                           : (poMode === 'container'
-                              ? `No suggested qty — click to enter a custom load qty.${modifierHint}`
-                              : `No suggested qty — click to enter a custom production qty.${modifierHint}`);
+                              ? `No suggested qty — click to enter a custom load qty.${packInfo}${modifierHint}`
+                              : `No suggested qty — click to enter a custom production qty.${packInfo}${modifierHint}`);
                       const startEditing = (defaultQty: number, type: 'Container' | 'Production' = 'Container') => {
                         setEditingSku(r.sku);
                         setEditingValue(defaultQty > 0 ? String(defaultQty) : '');
