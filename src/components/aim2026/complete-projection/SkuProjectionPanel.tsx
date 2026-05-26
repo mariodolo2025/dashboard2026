@@ -190,6 +190,9 @@ export function SkuProjectionPanel({
                 </div>
                 <div className="mt-1 text-[11px] text-[#5b6270]">
                   China today {num(row.availableChinaToday)} + production arriving {num(row.pipelineReceived)}
+                  {row.mainDeficitAtArrival > 0 && (
+                    <> − Main deficit (DHL) {num(row.mainDeficitAtArrival)}</>
+                  )}
                 </div>
               </div>
               <div className="text-right leading-tight">

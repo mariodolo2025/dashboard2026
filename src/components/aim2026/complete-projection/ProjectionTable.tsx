@@ -222,7 +222,7 @@ export function ProjectionTable({
               {poMode === 'container' ? (
                 <th
                   onClick={() => onSort('availableChinaOnDate')}
-                  title="Units physically available in China on the projection date — what you can actually load into a container that day. Formula: (SOH China − Allocated China) + production POs arriving in China by that date. Does NOT subtract China outbound demand yet."
+                  title="Units physically available in China on the projection date — what you can actually load into a container that day. Formula: availableChinaToday + production POs arriving in China by that date − mainDeficitAtArrival. mainDeficitAtArrival = max(0, dailyDemand × (t + 30d transit) − SOH Main) — units Main needs from China by DHL before the container lands, so they can't be loaded. availableChinaToday = SOH China (raw) or SOH China − Allocated China when 'Apply China commitments' is on."
                   className={cn('cursor-pointer select-none px-2.5 py-2 text-right text-sm font-semibold uppercase tracking-wide hover:text-[#2a2f38]', violetCell, 'text-[#4c1d95]')}
                 >
                   <span className="inline-flex flex-col items-end leading-tight">
@@ -300,7 +300,7 @@ export function ProjectionTable({
                     </td>
                     {poMode === 'container' ? (
                       <td
-                        title={`Global on hand on date: ${num(r.projectedOnHand)}. Available China today: ${num(r.availableChinaToday)} + production arriving by date: ${num(r.pipelineReceived)} = ${num(r.availableChinaOnDate)}.`}
+                        title={`Available China today: ${num(r.availableChinaToday)} + production arriving: ${num(r.pipelineReceived)}${r.mainDeficitAtArrival > 0 ? ` − Main deficit (DHL urgent): ${num(r.mainDeficitAtArrival)}` : ''} = ${num(r.availableChinaOnDate)}.\nGlobal on hand on date: ${num(r.projectedOnHand)}.`}
                         className={cn('px-2.5 py-2 text-right text-base font-bold', mono, violetCell, r.availableChinaOnDate <= 0 ? 'text-[#dc2626]' : 'text-[#0f1115]')}
                       >
                         <span className="inline-flex flex-col items-end leading-tight">

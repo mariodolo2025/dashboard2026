@@ -98,9 +98,14 @@ export interface ProjectionRow {
   allocated: number;
   /** Units physically available in China warehouse today (sohChina − allocatedChina). */
   availableChinaToday: number;
-  /** Available China at projection date = availableChinaToday + production POs arriving
-   *  in China by day t. Does NOT subtract China outbound demand (no breakdown yet from
-   *  the dashboard endpoint). Use this for "what can I load into a container on day X". */
+  /** Units que Main va a tener que recibir desde China antes que el container
+   *  (DHL urgente) para no quebrar durante el tránsito = max(0, dailyDemand ×
+   *  containerArrivalDay − sohMain). Se restan de availableChinaOnDate porque
+   *  esas unidades ya están comprometidas implícitamente para Main. */
+  mainDeficitAtArrival: number;
+  /** Available China at projection date = availableChinaToday + production POs
+   *  arriving in China by day t − chinaDemandConsumed − mainDeficitAtArrival.
+   *  Use this for "what can I load into a container on day X". */
   availableChinaOnDate: number;
   projectedOnHand: number;
   daysOfCover: number;
@@ -230,7 +235,24 @@ export function buildProjectionRow(
   const chinaDemandConsumed = applyChinaCommitments && chinaDailyDemand != null && chinaDailyDemand > 0
     ? chinaDailyDemand * t
     : 0;
-  const availableChinaOnDate = availableChinaToday + pipelineReceived - chinaDemandConsumed;
+  // Container Load and Production qty take into account the Main stock that
+  // will be left when the order actually arrives. The user-picked projection
+  // date IS the container loading date in container mode — the container then
+  // takes CONTAINER_TRANSIT_DAYS to reach Main. For production, the lead time
+  // is per-SKU (fabrication + shipping).
+  const containerArrivalDay = t + CONTAINER_TRANSIT_DAYS;
+  const productionArrivalDay = leadTime;
+  const mainAtContainerArrival = Math.max(0, sohMain - effDailyDemand * containerArrivalDay);
+  const mainAtProductionArrival = Math.max(0, sohMain - effDailyDemand * productionArrivalDay);
+
+  // Main deficit at container arrival: las unidades que Main va a tener que
+  // recibir desde China antes que el container (DHL u otro envío urgente) para
+  // no quebrar durante el tránsito. Salen de China sí o sí → no están
+  // disponibles para cargar al container. Se aplica SIEMPRE (Mario, 2026-05-26),
+  // no condicionado al toggle "Apply China commitments".
+  const mainDeficitAtArrival = Math.max(0, effDailyDemand * containerArrivalDay - sohMain);
+  const availableChinaOnDate = availableChinaToday + pipelineReceived - chinaDemandConsumed - mainDeficitAtArrival;
+
   const globalCommitmentsDeduction = applyChinaCommitments
     ? allocChina + chinaDemandConsumed
     : 0;
@@ -242,15 +264,6 @@ export function buildProjectionRow(
   const coverageDemand = effDailyDemand * coverageDays;
   const neededQty = coverageDemand - projectedOnHand;
 
-  // Container Load and Production qty take into account the Main stock that
-  // will be left when the order actually arrives. The user-picked projection
-  // date IS the container loading date in container mode — the container then
-  // takes CONTAINER_TRANSIT_DAYS to reach Main. For production, the lead time
-  // is per-SKU (fabrication + shipping).
-  const containerArrivalDay = t + CONTAINER_TRANSIT_DAYS;
-  const productionArrivalDay = leadTime;
-  const mainAtContainerArrival = Math.max(0, sohMain - effDailyDemand * containerArrivalDay);
-  const mainAtProductionArrival = Math.max(0, sohMain - effDailyDemand * productionArrivalDay);
   const containerLoadQty = Math.max(0, Math.round(coverageDemand - mainAtContainerArrival));
   const productionQty = Math.max(0, Math.round(coverageDemand - mainAtProductionArrival));
 
@@ -274,6 +287,7 @@ export function buildProjectionRow(
     demandConsumed,
     allocated,
     availableChinaToday,
+    mainDeficitAtArrival: Math.round(mainDeficitAtArrival),
     availableChinaOnDate,
     projectedOnHand,
     daysOfCover,

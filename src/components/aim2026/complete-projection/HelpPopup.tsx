@@ -106,19 +106,24 @@ export function CompleteProjectionHelpPopup({ open, onClose }: HelpPopupProps) {
 
           <Section title="Available China on date (Container mode only)">
             <p className="text-xs text-[#5b6270]">
-              What can physically be loaded into the container on the loading day. Defaults to <b>raw stock China + production POs landing in China by that date</b> — no commitments deducted.
+              What can physically be loaded into the container on the loading day. Starts from raw China stock + production POs landing in China by that date, then always subtracts the <b>Main deficit at arrival</b> — units Main needs urgently from China (DHL) before the container lands.
             </p>
             <Formula
               label="Default (toggle OFF)"
-              formula="sohChina + Σ production POs arriving by date"
+              formula="sohChina + Σ POs by date − mainDeficitAtArrival"
             />
             <Formula
               label="Apply China commitments (toggle ON)"
-              formula="(sohChina − allocatedChina) + Σ POs − chinaDailyDemand × t"
-              example="Subtracts both allocated and projected outbound China-W demand. Default is OFF because Dolo prioritises B2C and most allocations aren't firm."
+              formula="(sohChina − allocatedChina) + Σ POs − chinaDailyDemand × t − mainDeficitAtArrival"
+              example="Adds two more deductions: allocated and projected outbound China-W demand. Default is OFF because Dolo prioritises B2C and most allocations aren't firm."
+            />
+            <Formula
+              label="mainDeficitAtArrival (always applied)"
+              formula={`max(0, effDailyDemand × (t + ${CONTAINER_TRANSIT_DAYS}d) − sohMain)`}
+              example="If Main runs out before the container lands, those units must ship from China by DHL — they can't be loaded into the container. Applied even when 'Apply China commitments' is OFF."
             />
             <p className="text-[11px] text-[#5b6270]">
-              When ON, the same deduction also reduces the global <em>On hand on date</em> — those China commitments do reduce what's truly available cross-warehouse.
+              When ON, the allocated + chinaDailyDemand deductions also reduce the global <em>On hand on date</em>. mainDeficitAtArrival doesn't reduce global — it's a routing constraint inside the China-to-Main flow, not extra demand.
             </p>
           </Section>
 
@@ -166,7 +171,8 @@ export function CompleteProjectionHelpPopup({ open, onClose }: HelpPopupProps) {
             <ul className="list-disc space-y-1 pl-5 text-[12px] text-[#2a2f38]">
               <li><b>Click row</b> — open the SKU detail panel.</li>
               <li><b>Click Container Load / To Produce cell</b> — add to cart with suggested qty.</li>
-              <li><b>Alt-click on cell</b> — open inline input for custom qty.</li>
+              <li><b>Ctrl/Cmd + click on Container Load cell</b> — add to Production cart (independent of Container). Uses productionQty if &gt; 0, otherwise coverageDemand (monthly × coverage months) as fallback.</li>
+              <li><b>Alt + click on cell</b> — open inline input for custom Container qty.</li>
               <li><b>Click on a cell showing "+ add / custom qty"</b> — open inline input (no suggestion).</li>
             </ul>
           </Section>
