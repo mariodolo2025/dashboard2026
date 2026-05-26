@@ -154,27 +154,6 @@ export function ProjectionTable({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {poMode && (
-            <label
-              title={poMode === 'container'
-                ? 'Off (default): only SKUs that need Container Load (containerLoadQty > 0). On: all SKUs — useful to manually add one the formula didn’t flag.'
-                : 'Off (default): only SKUs that need Production (productionQty > 0). On: all SKUs.'}
-              className={cn(
-                'inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium transition-colors',
-                showAllSkus
-                  ? 'border-[#7c3aed] bg-[#ede9fe] text-[#4c1d95]'
-                  : 'border-[#e8e8e3] text-[#5b6270] hover:bg-[#faf9f7]',
-              )}
-            >
-              <input
-                type="checkbox"
-                checked={showAllSkus}
-                onChange={onToggleShowAllSkus}
-                className="h-3 w-3 accent-[#7c3aed]"
-              />
-              Show all SKUs
-            </label>
-          )}
           <span className="inline-flex items-center gap-1 rounded-full border border-[#e8e8e3] px-2 py-1 text-xs font-medium text-[#5b6270]"><ListFilter size={12} /> Status</span>
           <span className="inline-flex items-center gap-1 rounded-full border border-[#e8e8e3] px-2 py-1 text-xs font-medium text-[#5b6270]"><Download size={12} /> Export</span>
         </div>

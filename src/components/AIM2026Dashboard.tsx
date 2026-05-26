@@ -1606,6 +1606,11 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
         onAddProjectionItem={handleAddProjectionItem}
         poBuilderMode={poBuilderMode}
         poItems={poItems}
+        onPORemove={handlePORemoveItem}
+        onPOUpdateQty={handlePOUpdateQty}
+        onPOClear={handlePOClear}
+        onCreatePO={handleCreatePO}
+        poCreating={poCreating}
       />
 
       {/* ─── PO Builder Components ─────────────────────────────────────────── */}
@@ -1622,7 +1627,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
         onConfirm={handleQtyConfirm}
       />
 
-      {poBuilderMode && (
+      {poBuilderMode && !completeProjectionOpen && (
         <POBuilderPanel
           items={poItems}
           onRemove={handlePORemoveItem}

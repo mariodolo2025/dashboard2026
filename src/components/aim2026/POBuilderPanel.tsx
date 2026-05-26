@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2, GripVertical, Container as ContainerIcon, Factory } from 'lucide-react';
+import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2, GripVertical, Container as ContainerIcon, Factory, PanelRightOpen, Pin, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { POBuilderItem, POType } from '@/lib/aim2026/types';
 
@@ -17,6 +17,19 @@ interface POBuilderPanelProps {
    *  → MAIN, Production → China-W); si hay uno solo crea 1 PO. */
   onCreatePO: () => Promise<void>;
   creating: boolean;
+  /** Si true, render inline (no portal, no fixed) — el padre lo ubica como
+   *  columna anclada a la derecha del modal. Si false (default), flotante
+   *  draggable global como toda la vida. */
+  docked?: boolean;
+  /** Si true Y docked, render como rail vertical de ~48px (solo badge + icon).
+   *  Click en el rail dispara onExpandFromRail (típicamente cierra el SkuPanel). */
+  collapsed?: boolean;
+  /** Callback para alternar entre docked y flotante. Si está presente, el
+   *  panel muestra el botón de toggle. */
+  onToggleDocked?: () => void;
+  /** Click sobre el rail colapsado. El padre debería cerrar lo que está
+   *  ocupando el espacio (ej. SkuProjectionPanel) para dejar lugar al cart. */
+  onExpandFromRail?: () => void;
 }
 
 function fmt(v: number): string {
@@ -30,6 +43,10 @@ export function POBuilderPanel({
   onClear,
   onCreatePO,
   creating,
+  docked = false,
+  collapsed = false,
+  onToggleDocked,
+  onExpandFromRail,
 }: POBuilderPanelProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [minimized, setMinimized] = useState(false);
@@ -57,11 +74,13 @@ export function POBuilderPanel({
   })();
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (docked) return;
     if ((e.target as HTMLElement).closest('button')) return;
     dragRef.current = { startX: e.clientX, startY: e.clientY, startPosX: pos.x, startPosY: pos.y };
-  }, [pos]);
+  }, [pos, docked]);
 
   useEffect(() => {
+    if (docked) return;
     const onMove = (e: MouseEvent) => {
       if (!dragRef.current) return;
       const dx = e.clientX - dragRef.current.startX;
@@ -78,34 +97,64 @@ export function POBuilderPanel({
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, []);
+  }, [docked]);
 
   if (items.length === 0) return null;
 
-  return createPortal(
-    <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.2 }}
-        style={{ left: pos.x, top: pos.y }}
-        className="pointer-events-auto fixed z-[60] w-[340px] bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
+  // ─── Rail colapsado (docked + collapsed) ─────────────────────────────────
+  // Slim vertical bar a la derecha de todo. Solo badge + ícono + texto rotado.
+  // Click expande (cierra el SkuPanel via onExpandFromRail).
+  if (docked && collapsed) {
+    return (
+      <div
+        onClick={onExpandFromRail}
+        className="flex h-full w-[46px] cursor-pointer select-none flex-col items-center gap-3 border-l border-border bg-card py-3 hover:bg-muted/40"
+        title="Expand PO Draft (collapses the SKU detail panel)"
       >
-        {/* Header - draggable */}
+        <div className="relative">
+          <ShoppingCart size={18} className="text-blue-600" />
+          <span className="absolute -right-2 -top-2 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-blue-600 px-1 text-[9px] font-bold leading-none text-white">
+            {items.length}
+          </span>
+        </div>
         <div
-          onMouseDown={handleMouseDown}
-          className="bg-blue-600 text-white px-4 py-3 flex items-center justify-between cursor-grab active:cursor-grabbing select-none"
+          className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground"
+          style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
         >
-          <div className="flex items-center gap-2">
-            <GripVertical size={14} className="text-white/60" />
-            <ShoppingCart size={16} />
-            <span className="text-sm font-semibold">PO Draft</span>
-            <span className="bg-white/20 text-[11px] px-1.5 py-0.5 rounded-full font-medium">
-              {items.length} items
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
+          PO Draft · {fmt(totalUnits)} u
+        </div>
+        <ChevronLeft size={14} className="mt-auto text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // ─── Contenido común (header + secciones + footer) ───────────────────────
+  const cardBody = (
+    <>
+      {/* Header */}
+      <div
+        onMouseDown={handleMouseDown}
+        className={`bg-blue-600 text-white px-4 py-3 flex items-center justify-between select-none ${docked ? '' : 'cursor-grab active:cursor-grabbing'}`}
+      >
+        <div className="flex items-center gap-2">
+          {!docked && <GripVertical size={14} className="text-white/60" />}
+          <ShoppingCart size={16} />
+          <span className="text-sm font-semibold">PO Draft</span>
+          <span className="bg-white/20 text-[11px] px-1.5 py-0.5 rounded-full font-medium">
+            {items.length} items
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          {onToggleDocked && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleDocked(); }}
+              className="text-white/70 hover:text-white transition-colors p-0.5"
+              title={docked ? 'Detach (float)' : 'Dock to right'}
+            >
+              {docked ? <PanelRightOpen size={14} /> : <Pin size={14} />}
+            </button>
+          )}
+          {!docked && (
             <button
               onClick={(e) => { e.stopPropagation(); setMinimized(!minimized); }}
               className="text-white/70 hover:text-white transition-colors p-0.5"
@@ -113,16 +162,17 @@ export function POBuilderPanel({
             >
               {minimized ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
             </button>
-            <button onClick={(e) => { e.stopPropagation(); onClear(); }} className="text-white/70 hover:text-white transition-colors p-0.5" title="Clear all">
-              <Trash2 size={14} />
-            </button>
-          </div>
+          )}
+          <button onClick={(e) => { e.stopPropagation(); onClear(); }} className="text-white/70 hover:text-white transition-colors p-0.5" title="Clear all">
+            <Trash2 size={14} />
+          </button>
         </div>
+      </div>
 
-        {!minimized && (
-          <>
+      {!minimized && (
+        <>
         {/* Items list — agrupado por poType. Mismo SKU puede aparecer en ambas secciones. */}
-        <div className="overflow-y-auto max-h-[320px]">
+        <div className={`overflow-y-auto ${docked ? 'flex-1' : 'max-h-[320px]'}`}>
           {containerItems.length > 0 && (
             <CartSection
               title="Container Load"
@@ -245,8 +295,32 @@ export function POBuilderPanel({
             </div>
           )}
         </div>
-          </>
-        )}
+        </>
+      )}
+    </>
+  );
+
+  // ─── Docked: render inline (sin portal, sin fixed) ───────────────────────
+  if (docked) {
+    return (
+      <div className="flex h-full w-[340px] flex-col overflow-hidden border-l border-border bg-card">
+        {cardBody}
+      </div>
+    );
+  }
+
+  // ─── Flotante (default): portal + fixed draggable ────────────────────────
+  return createPortal(
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.2 }}
+        style={{ left: pos.x, top: pos.y }}
+        className="pointer-events-auto fixed z-[60] w-[340px] bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
+      >
+        {cardBody}
       </motion.div>
     </AnimatePresence>,
     document.body,
@@ -361,3 +435,6 @@ function QtyInput({
     />
   );
 }
+
+// Silence unused import warning for ChevronRight (reserved for future expand-from-rail icon).
+void ChevronRight;

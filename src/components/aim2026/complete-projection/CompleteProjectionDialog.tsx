@@ -2,12 +2,12 @@
 // AIM 2026 — Complete Projection: container modal
 // =============================================================================
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { format } from 'date-fns';
-import { HelpCircle, Sparkles, X } from 'lucide-react';
+import { HelpCircle, Sparkles, X, Container as ContainerIcon, Factory } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { SKURow, POBuilderItem } from '@/lib/aim2026/types';
+import type { SKURow, POBuilderItem, POType } from '@/lib/aim2026/types';
 import {
   buildProjectionRows, buildChartSeries, daysBetween, addDays, SCENARIO_LABEL,
   buildPipelineEvents,
@@ -17,6 +17,7 @@ import { fetchRecentOrders, fetchDemandWarehouseSplit } from '@/lib/aim2026/api'
 import { ProjectionTable, type SortCol, type SortState } from './ProjectionTable';
 import { SkuProjectionPanel } from './SkuProjectionPanel';
 import { CompleteProjectionHelpPopup } from './HelpPopup';
+import { POBuilderPanel } from '../POBuilderPanel';
 
 interface DateRange { from?: Date; to?: Date; }
 
@@ -35,6 +36,13 @@ interface CompleteProjectionDialogProps {
    *  Container Load — cambios externos (remove/edit qty desde POBuilderPanel)
    *  se reflejan instantáneamente porque derivamos addedSkus de acá. */
   poItems?: POBuilderItem[];
+  /** Handlers del cart — el modal renderiza el POBuilderPanel adentro cuando
+   *  está abierto (docked o flotante). El Dashboard lo oculta mientras tanto. */
+  onPORemove?: (sku: string, poType: POType) => void;
+  onPOUpdateQty?: (sku: string, poType: POType, qty: number) => void;
+  onPOClear?: () => void;
+  onCreatePO?: () => Promise<void>;
+  poCreating?: boolean;
 }
 
 export type DemandUnit = 'daily' | 'monthly';
@@ -44,12 +52,14 @@ const COVERAGE_PRESETS = [60, 90, 120];
 const STATUS_RANK: Record<ProjectionRow['status'], number> = { stockout: 0, atrisk: 1, healthy: 2, surplus: 3 };
 const PRESETS = [30, 60, 90, 120];
 const SCENARIOS: Scenario[] = ['optimistic', 'expected', 'pessimistic'];
+const CART_DOCKED_KEY = 'aim2026-po-cart-docked';
 
 function startOfToday(): Date { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
 
 export function CompleteProjectionDialog({
   open, onOpenChange, filteredData, dateRange, setDateRange, demandIsDaily,
   onAddProjectionItem, poBuilderMode = false, poItems,
+  onPORemove, onPOUpdateQty, onPOClear, onCreatePO, poCreating = false,
 }: CompleteProjectionDialogProps) {
   const today = useMemo(() => startOfToday(), []);
   const [projectionDate, setProjectionDate] = useState<Date>(() => addDays(startOfToday(), 60));
@@ -62,24 +72,23 @@ export function CompleteProjectionDialog({
   const [demandUnit, setDemandUnit] = useState<DemandUnit>('monthly');
   const [coverageDays, setCoverageDays] = useState(90);
   const [poMode, setPoMode] = useState<PoMode>(null);
-  const [poMenuOpen, setPoMenuOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  // Toggle: por defecto la tabla en PO mode filtra los SKUs que necesitan
-  // acción (containerLoadQty > 0 o productionQty > 0). Cuando está ON,
-  // muestra TODOS los SKUs para permitir cargar manualmente alguno que la
-  // fórmula no marcó pero el user igual quiere agregar.
   const [showAllSkus, setShowAllSkus] = useState(false);
+  // Cart docked vs flotante. Default = docked (anclado a la derecha del modal).
+  // Persiste en localStorage para respetar la elección del user entre sesiones.
+  const [cartDocked, setCartDocked] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(CART_DOCKED_KEY);
+      return saved === null ? true : saved === 'true';
+    } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(CART_DOCKED_KEY, String(cartDocked)); } catch { /* */ }
+  }, [cartDocked]);
+
   const [sort, setSort] = useState<SortState>({ col: 'effDailyDemand', dir: 'desc' });
-  // Real PO ETAs per SKU. When loaded, projection uses them instead of the
-  // linear-by-leadTime approximation. Fetched once on open for SKUs that have
-  // onProduction > 0 (only those need real ETA tracking — DHL/Container are
-  // already counted in sohGlobal).
   const [eventsBySku, setEventsBySku] = useState<Map<string, PipelineEvent[]>>(new Map());
   const [eventsLoading, setEventsLoading] = useState(false);
-  // China-W outbound demand per SKU (daily units). When "Apply China commitments"
-  // toggle is on, we subtract both allocatedChina and this projected demand from
-  // availableChinaOnDate. Default off — Dolo prioritises B2C and allocations
-  // aren't firm commitments.
   const [chinaDailyBySku, setChinaDailyBySku] = useState<Map<string, number>>(new Map());
   const [chinaDemandLoading, setChinaDemandLoading] = useState(false);
   const [applyChinaCommitments, setApplyChinaCommitments] = useState(false);
@@ -96,7 +105,6 @@ export function CompleteProjectionDialog({
     setExpandedConsumed(false);
     setDemandUnit('monthly');
     setPoMode(null);
-    setPoMenuOpen(false);
     setShowAllSkus(false);
     setSort({ col: 'effDailyDemand', dir: 'desc' });
     setEventsBySku(new Map());
@@ -142,12 +150,9 @@ export function CompleteProjectionDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, filteredData]);
 
-  // China-W outbound demand per SKU, for the same date range used as the demand
-  // window. We only need this when the user enables the toggle; we fetch it
-  // lazily on first toggle-on so the open flow stays fast.
   useEffect(() => {
     if (!open || !applyChinaCommitments) return;
-    if (chinaDailyBySku.size > 0) return; // already loaded
+    if (chinaDailyBySku.size > 0) return;
     const from = dateRange?.from;
     const to = dateRange?.to;
     if (!from || !to) return;
@@ -178,9 +183,6 @@ export function CompleteProjectionDialog({
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onOpenChange]);
 
-  // Force-clear body pointer-events. Never restore captured value: Radix may
-  // have set 'none' just before mount (Reports dropdown closing into our open)
-  // and that captured state is stale by unmount → would leave page unclickable.
   useEffect(() => {
     if (!open) return;
     document.body.style.pointerEvents = 'auto';
@@ -211,8 +213,6 @@ export function CompleteProjectionDialog({
     let rows = allRows;
     if (q) rows = rows.filter((r) => r.sku.toLowerCase().includes(q));
     if (selectedGroups.size > 0) rows = rows.filter((r) => selectedGroups.has(r.group));
-    // Container mode: SKUs where Main alone would cover the gap (containerLoadQty
-    // is the deficit at arrival). Production mode: SKUs that need production.
     if (!showAllSkus) {
       if (poMode === 'container') rows = rows.filter((r) => r.containerLoadQty > 0);
       else if (poMode === 'production') rows = rows.filter((r) => r.productionQty > 0);
@@ -250,9 +250,7 @@ export function CompleteProjectionDialog({
 
   const onRowClick = (sku: string) => setSelectedSku((p) => (p === sku ? null : sku));
 
-  /** addedSkus derivado del cart externo. Map<sku, {container, production}>.
-   *  Si removés/editás desde POBuilderPanel, la columna refleja el cambio
-   *  inmediatamente porque poItems es la fuente de verdad. */
+  /** addedSkus derivado del cart externo. */
   const addedSkus = useMemo(() => {
     const m = new Map<string, { container: number; production: number }>();
     for (const it of poItems ?? []) {
@@ -264,8 +262,6 @@ export function CompleteProjectionDialog({
     return m;
   }, [poItems]);
 
-  /** Add a SKU to the container or production cart. `forceType` lets us route
-   *  the split prompt to production while staying in container poMode. */
   const onAddToCart = (sku: string, customQty?: number, forceType?: 'Container' | 'Production') => {
     if (!poMode || !onAddProjectionItem) return;
     const row = allRows.find((r) => r.sku === sku);
@@ -276,29 +272,26 @@ export function CompleteProjectionDialog({
     const suggested = type === 'Container' ? row.containerLoadQty : row.productionQty;
     const rawQty = customQty != null && customQty > 0 ? Math.round(customQty) : suggested;
     if (rawQty <= 0) return;
-    // Redondeo al múltiplo más cercano del pack size (Mario, 2026-05-27).
-    // Si pack=1 → no cambia nada. Mínimo 1 pack si la qty original era > 0.
     const qty = packSize > 1
       ? Math.max(packSize, Math.round(rawQty / packSize) * packSize)
       : rawQty;
-    // El dashboard hace no-op si ya existe (sku, type) — coherente con la decisión
-    // de "modificar manualmente desde el panel". projectionDate solo aplica a
-    // Container — el handler la usa para calcular DeliveryDate = projectionDate + 30d.
     const isoProjection = type === 'Container' ? format(projectionDate, 'yyyy-MM-dd') : undefined;
     onAddProjectionItem(sku, qty, type, isoProjection);
   };
 
-  const enterPoMode = (mode: Exclude<PoMode, null>) => {
+  const enterPoMode = useCallback((mode: Exclude<PoMode, null>) => {
     setPoMode(mode);
-    setPoMenuOpen(false);
     setSelectedSku(null);
-  };
+  }, []);
 
   const tDays = daysBetween(today, projectionDate);
   const windowLabel = dateRange?.from && dateRange?.to
     ? `${format(dateRange.from, 'd MMM yyyy')} → ${format(dateRange.to, 'd MMM yyyy')} · ${daysBetween(dateRange.from, dateRange.to)}d`
     : 'Default demand window';
   const maxDate = addDays(today, 365);
+
+  const showCart = !!(onAddProjectionItem && poItems && poItems.length > 0 && onPORemove && onPOUpdateQty && onPOClear && onCreatePO);
+  const cartCollapsed = showCart && cartDocked && !!selectedRow;
 
   if (!open) return null;
 
@@ -309,146 +302,184 @@ export function CompleteProjectionDialog({
       aria-label="Complete Projection"
       className="pointer-events-auto fixed inset-0 z-[55] flex h-screen w-screen flex-col overflow-hidden bg-[#f7f7f5]"
     >
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-3">
+      {/* ─── Header (compact) ─────────────────────────────────────────────── */}
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
         <div className="flex items-center gap-3">
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#ede9fe]"><Sparkles size={18} className="text-[#7c3aed]" /></span>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-[#0f1115]">Complete Projection</h2>
-              <span className="inline-flex items-center rounded-full bg-[#ede9fe] px-2 py-0.5 text-[10px] font-bold leading-none text-[#4c1d95]">NEW</span>
-            </div>
-            <p className="text-sm text-[#828a98]">On-hand forecast per SKU · demand · global SOH · pipeline arrivals{eventsLoading && (
-              <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-[#ede9fe] px-2 py-0.5 text-[10px] font-semibold text-[#4c1d95]">loading real ETAs…</span>
-            )}</p>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-bold text-[#0f1115]">Complete Projection</h2>
+            <span className="inline-flex items-center rounded-full bg-[#ede9fe] px-2 py-0.5 text-[10px] font-bold leading-none text-[#4c1d95]">NEW</span>
+            {eventsLoading && (
+              <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-[#ede9fe] px-2 py-0.5 text-[10px] font-semibold text-[#4c1d95]">loading real ETAs…</span>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setHelpOpen(true)}
             title="How this works: formulas, modes and column meanings"
             className="inline-flex items-center gap-1 rounded-md border border-[#e8e8e3] bg-white px-2 py-1.5 text-xs font-medium text-[#5b6270] hover:bg-[#faf9f7] hover:text-[#2a2f38]"
-            aria-label="Help"
           >
             <HelpCircle size={14} /> Help
           </button>
+          <button type="button" className="rounded-md bg-[#0f1115] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#2a2f38]">Export projection</button>
           <button type="button" onClick={() => onOpenChange(false)} className="rounded-md p-1.5 text-[#828a98] hover:bg-[#faf9f7] hover:text-[#2a2f38]" aria-label="Close"><X size={20} /></button>
         </div>
       </div>
 
-      <div className="flex shrink-0 flex-wrap items-end gap-6 border-b border-[#e8e8e3] bg-[#fbfbf9] px-5 py-3">
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#5b6270]">
-            {poMode === 'container' ? 'Container loading date' : poMode === 'production' ? 'Production target date' : 'Projection date'}
-          </label>
-          <div className="flex items-center gap-2">
-            <input type="date" value={format(projectionDate, 'yyyy-MM-dd')} min={format(today, 'yyyy-MM-dd')} max={format(maxDate, 'yyyy-MM-dd')}
-              onChange={(e) => { if (e.target.value) setProjectionDate(new Date(e.target.value + 'T00:00:00')); }}
-              className="h-9 rounded-md border border-[#e8e8e3] bg-white px-2.5 text-sm text-[#2a2f38] focus:outline-none" />
-            <span className="rounded-full bg-[#f0f0ec] px-2.5 py-1 text-sm font-medium text-[#5b6270]">+{tDays}d</span>
-          </div>
-          <div className="mt-2 flex items-center gap-1.5">
-            {PRESETS.map((p) => {
-              const active = tDays === p;
-              return (
-                <button key={p} type="button" onClick={() => setProjectionDate(addDays(today, p))}
-                  className={cn('rounded-full px-2.5 py-1 text-sm font-medium transition-colors', active ? 'bg-[#0f1115] text-white' : 'bg-white text-[#5b6270] border border-[#e8e8e3] hover:bg-[#f0f0ec]')}>{p}d</button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#5b6270]">Stock coverage target</label>
-          <div className="inline-flex overflow-hidden rounded-md border border-[#e8e8e3]">
-            {COVERAGE_PRESETS.map((d) => {
-              const active = coverageDays === d;
-              return (
-                <button key={d} type="button" onClick={() => setCoverageDays(d)}
-                  className={cn('px-3 py-2 text-sm font-medium transition-colors', active ? 'bg-[#7c3aed] text-white' : 'bg-white text-[#5b6270] hover:bg-[#faf9f7]')}>{d}d</button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#5b6270]">Demand window</label>
-          {setDateRange ? (
-            <div className="flex items-center gap-1.5">
-              <input type="date" value={dateRange?.from ? format(dateRange.from, 'yyyy-MM-dd') : ''}
-                onChange={(e) => setDateRange({ from: e.target.value ? new Date(e.target.value + 'T00:00:00') : undefined, to: dateRange?.to })}
-                className="h-9 rounded-md border border-[#e8e8e3] bg-white px-2.5 text-sm text-[#2a2f38] focus:outline-none" />
-              <span className="text-sm text-[#828a98]">→</span>
-              <input type="date" value={dateRange?.to ? format(dateRange.to, 'yyyy-MM-dd') : ''}
-                onChange={(e) => setDateRange({ from: dateRange?.from, to: e.target.value ? new Date(e.target.value + 'T00:00:00') : undefined })}
-                className="h-9 rounded-md border border-[#e8e8e3] bg-white px-2.5 text-sm text-[#2a2f38] focus:outline-none" />
-              {dateRange?.from && dateRange?.to && (
-                <span className="rounded-full bg-[#f0f0ec] px-2.5 py-1 text-sm font-medium text-[#5b6270]">{daysBetween(dateRange.from, dateRange.to)}d</span>
-              )}
-            </div>
-          ) : (
-            <span className="inline-flex h-9 items-center rounded-md border border-[#e8e8e3] bg-white px-2.5 text-sm text-[#5b6270]">{windowLabel}</span>
-          )}
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#5b6270]">Demand scenario</label>
-          <div className="inline-flex overflow-hidden rounded-md border border-[#e8e8e3]">
-            {SCENARIOS.map((s) => {
-              const active = scenario === s;
-              return (
-                <button key={s} type="button" onClick={() => setScenario(s)}
-                  className={cn('px-3 py-2 text-sm font-medium transition-colors', active ? 'bg-[#0f1115] text-white' : 'bg-white text-[#5b6270] hover:bg-[#faf9f7]')}>{SCENARIO_LABEL[s]}</button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#5b6270]">China commitments</label>
-          <label
-            title="When on, subtracts Allocated China (units reserved against pending sales orders) and projected China-W outbound demand from both On hand on date (global) and Available China on date. Off (default) = ignore commitments — Dolo prioritises B2C and most allocations aren't firm."
-            className={cn('inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium cursor-pointer transition-colors',
-              applyChinaCommitments ? 'border-[#7c3aed] bg-[#ede9fe] text-[#4c1d95]' : 'border-[#e8e8e3] bg-white text-[#5b6270] hover:bg-[#faf9f7]')}
-          >
-            <input
-              type="checkbox"
-              checked={applyChinaCommitments}
-              onChange={(e) => setApplyChinaCommitments(e.target.checked)}
-              className="h-3.5 w-3.5 accent-[#7c3aed]"
-            />
-            Apply China commitments{chinaDemandLoading && ' (loading…)'}
-          </label>
-        </div>
-      </div>
-
-      {poMode && (
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#ddd6fe] bg-[#ede9fe] px-5 py-2">
-          <div className="flex flex-col gap-0.5 text-sm text-[#4c1d95]">
-            <div>
-              <span className="font-semibold">{poMode === 'container' ? 'Load container' : 'Create Purchase Order'}</span>
-              {' '}· showing SKUs {poMode === 'container' ? 'covered for' : 'short of'} {coverageDays}d coverage · click the violet cell on each row to add
-            </div>
-            {poMode === 'container' && (
-              <div className="text-[11px] font-medium text-[#6d4ec9]">
-                <span className="rounded bg-white/70 px-1.5 py-0.5 mr-1">Click</span> = Container
-                <span className="mx-1.5 text-[#c4b5fd]">·</span>
-                <span className="rounded bg-white/70 px-1.5 py-0.5 mr-1">Ctrl/Cmd + Click</span> = Production
-                <span className="mx-1.5 text-[#c4b5fd]">·</span>
-                <span className="rounded bg-white/70 px-1.5 py-0.5 mr-1">Alt + Click</span> = custom qty
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setPoMode(null)} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">Exit PO mode</button>
-          </div>
-        </div>
-      )}
-
       <CompleteProjectionHelpPopup open={helpOpen} onClose={() => setHelpOpen(false)} />
 
+      {/* ─── Body: sidebar | main | cart ─────────────────────────────────── */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4">
+        {/* Sidebar izquierdo */}
+        <aside className="flex w-[240px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-[#e8e8e3] bg-[#fbfbf9] px-3 py-3 text-sm">
+          <SidebarSection title={poMode === 'container' ? 'Container loading date' : poMode === 'production' ? 'Production target date' : 'Projection date'}>
+            <div className="flex items-center gap-2">
+              <input type="date" value={format(projectionDate, 'yyyy-MM-dd')} min={format(today, 'yyyy-MM-dd')} max={format(maxDate, 'yyyy-MM-dd')}
+                onChange={(e) => { if (e.target.value) setProjectionDate(new Date(e.target.value + 'T00:00:00')); }}
+                className="h-8 flex-1 rounded-md border border-[#e8e8e3] bg-white px-2 text-xs text-[#2a2f38] focus:outline-none" />
+              <span className="rounded-full bg-[#f0f0ec] px-2 py-0.5 text-[11px] font-medium text-[#5b6270]">+{tDays}d</span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              {PRESETS.map((p) => {
+                const active = tDays === p;
+                return (
+                  <button key={p} type="button" onClick={() => setProjectionDate(addDays(today, p))}
+                    className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors',
+                      active ? 'bg-[#0f1115] text-white' : 'bg-white text-[#5b6270] border border-[#e8e8e3] hover:bg-[#f0f0ec]')}>{p}d</button>
+                );
+              })}
+            </div>
+          </SidebarSection>
+
+          <SidebarSection title="Stock coverage target">
+            <div className="inline-flex overflow-hidden rounded-md border border-[#e8e8e3]">
+              {COVERAGE_PRESETS.map((d) => {
+                const active = coverageDays === d;
+                return (
+                  <button key={d} type="button" onClick={() => setCoverageDays(d)}
+                    className={cn('px-2.5 py-1.5 text-xs font-medium transition-colors',
+                      active ? 'bg-[#7c3aed] text-white' : 'bg-white text-[#5b6270] hover:bg-[#faf9f7]')}>{d}d</button>
+                );
+              })}
+            </div>
+          </SidebarSection>
+
+          <SidebarSection title="Demand window">
+            {setDateRange ? (
+              <div className="flex flex-col gap-1">
+                <input type="date" value={dateRange?.from ? format(dateRange.from, 'yyyy-MM-dd') : ''}
+                  onChange={(e) => setDateRange({ from: e.target.value ? new Date(e.target.value + 'T00:00:00') : undefined, to: dateRange?.to })}
+                  className="h-7 rounded-md border border-[#e8e8e3] bg-white px-2 text-xs text-[#2a2f38] focus:outline-none" />
+                <input type="date" value={dateRange?.to ? format(dateRange.to, 'yyyy-MM-dd') : ''}
+                  onChange={(e) => setDateRange({ from: dateRange?.from, to: e.target.value ? new Date(e.target.value + 'T00:00:00') : undefined })}
+                  className="h-7 rounded-md border border-[#e8e8e3] bg-white px-2 text-xs text-[#2a2f38] focus:outline-none" />
+                {dateRange?.from && dateRange?.to && (
+                  <span className="self-end rounded-full bg-[#f0f0ec] px-2 py-0.5 text-[11px] font-medium text-[#5b6270]">{daysBetween(dateRange.from, dateRange.to)}d</span>
+                )}
+              </div>
+            ) : (
+              <span className="inline-flex h-7 items-center rounded-md border border-[#e8e8e3] bg-white px-2 text-xs text-[#5b6270]">{windowLabel}</span>
+            )}
+          </SidebarSection>
+
+          <SidebarSection title="Demand scenario">
+            <div className="flex flex-col overflow-hidden rounded-md border border-[#e8e8e3]">
+              {SCENARIOS.map((s) => {
+                const active = scenario === s;
+                return (
+                  <button key={s} type="button" onClick={() => setScenario(s)}
+                    className={cn('px-2.5 py-1.5 text-left text-xs font-medium transition-colors',
+                      active ? 'bg-[#0f1115] text-white' : 'bg-white text-[#5b6270] hover:bg-[#faf9f7]')}>{SCENARIO_LABEL[s]}</button>
+                );
+              })}
+            </div>
+          </SidebarSection>
+
+          <SidebarSection title="Options">
+            <label
+              title="When on, subtracts Allocated China and projected China-W outbound demand from both On hand on date (global) and Available China on date. Off (default) = ignore commitments."
+              className={cn('flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors',
+                applyChinaCommitments ? 'border-[#7c3aed] bg-[#ede9fe] text-[#4c1d95]' : 'border-[#e8e8e3] bg-white text-[#5b6270] hover:bg-[#faf9f7]')}
+            >
+              <input
+                type="checkbox"
+                checked={applyChinaCommitments}
+                onChange={(e) => setApplyChinaCommitments(e.target.checked)}
+                className="h-3 w-3 accent-[#7c3aed]"
+              />
+              Apply China commitments{chinaDemandLoading && ' …'}
+            </label>
+            {poMode && (
+              <label
+                title={poMode === 'container'
+                  ? 'Off: only SKUs that need Container Load. On: all SKUs — useful to manually add one the formula did not flag.'
+                  : 'Off: only SKUs that need Production. On: all SKUs.'}
+                className={cn('mt-1 flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors',
+                  showAllSkus ? 'border-[#7c3aed] bg-[#ede9fe] text-[#4c1d95]' : 'border-[#e8e8e3] bg-white text-[#5b6270] hover:bg-[#faf9f7]')}
+              >
+                <input
+                  type="checkbox"
+                  checked={showAllSkus}
+                  onChange={() => setShowAllSkus((v) => !v)}
+                  className="h-3 w-3 accent-[#7c3aed]"
+                />
+                Show all SKUs
+              </label>
+            )}
+          </SidebarSection>
+
+          {/* Shortcuts: solo Container mode tiene Ctrl+click = Production. */}
+          <SidebarSection title="Shortcuts">
+            <div className="space-y-1 text-[11px] text-[#5b6270]">
+              <div className="flex items-center justify-between gap-2">
+                <kbd className="rounded border border-[#e8e8e3] bg-white px-1.5 py-0.5 font-mono text-[10px]">Click</kbd>
+                <span className="text-[#828a98]">→ Container</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <kbd className="rounded border border-[#e8e8e3] bg-white px-1.5 py-0.5 font-mono text-[10px]">Ctrl/Cmd+Click</kbd>
+                <span className="text-[#828a98]">→ Production</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <kbd className="rounded border border-[#e8e8e3] bg-white px-1.5 py-0.5 font-mono text-[10px]">Alt+Click</kbd>
+                <span className="text-[#828a98]">→ custom qty</span>
+              </div>
+              <p className="pt-1 text-[10px] italic text-[#a3a8b1]">*Container mode only</p>
+            </div>
+          </SidebarSection>
+
+          {/* CTAs principales: dos botones apilados con jerarquía visual. */}
+          <div className="mt-auto flex flex-col gap-2 pt-2">
+            <CTAButton
+              active={poMode === 'container'}
+              primary
+              icon={<ContainerIcon size={14} />}
+              title="Load container"
+              subtitle={`SKUs covered for ${coverageDays}d (Container)`}
+              onClick={() => poMode === 'container' ? setPoMode(null) : enterPoMode('container')}
+              disabled={!onAddProjectionItem}
+            />
+            <CTAButton
+              active={poMode === 'production'}
+              icon={<Factory size={14} />}
+              title="Create Purchase Order"
+              subtitle={`SKUs short of ${coverageDays}d coverage (Production)`}
+              onClick={() => poMode === 'production' ? setPoMode(null) : enterPoMode('production')}
+              disabled={!onAddProjectionItem}
+            />
+          </div>
+
+          <div className="pt-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-[#828a98]">Formula</p>
+            <code className="mt-1 block font-mono text-[10px] leading-snug text-[#5b6270]">
+              On hand = SOH_global<br />+ Pipeline·min(t/LT,1)<br />− DailyDemand·t
+            </code>
+          </div>
+        </aside>
+
+        {/* Main: tabla + (chart si hay SKU seleccionado) */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-3">
           <ProjectionTable
             rows={visibleRows} totalCount={allRows.length} projectionDate={projectionDate}
             search={search} onSearch={setSearch} groups={groups} selectedGroups={selectedGroups}
@@ -460,6 +491,8 @@ export function CompleteProjectionDialog({
             showAllSkus={showAllSkus} onToggleShowAllSkus={() => setShowAllSkus((v) => !v)}
           />
         </div>
+
+        {/* Chart panel cuando hay SKU seleccionado */}
         {selectedRow && series && (
           <div className="w-[40%] min-w-[460px] shrink-0 border-l border-[#e8e8e3]">
             <SkuProjectionPanel row={selectedRow} series={series} today={today} projectionDate={projectionDate}
@@ -467,34 +500,87 @@ export function CompleteProjectionDialog({
               events={eventsBySku.get(selectedRow.sku)} poMode={poMode} />
           </div>
         )}
+
+        {/* Cart docked (anclado o rail). Si !cartDocked se renderiza abajo como flotante. */}
+        {showCart && cartDocked && (
+          <POBuilderPanel
+            items={poItems!}
+            onRemove={onPORemove!}
+            onUpdateQty={onPOUpdateQty!}
+            onClear={onPOClear!}
+            onCreatePO={onCreatePO!}
+            creating={poCreating}
+            docked
+            collapsed={cartCollapsed}
+            onToggleDocked={() => setCartDocked(false)}
+            onExpandFromRail={() => setSelectedSku(null)}
+          />
+        )}
       </div>
 
-      <div className="flex shrink-0 items-center justify-between gap-4 border-t border-[#e8e8e3] bg-white px-5 py-2.5">
-        <code className="font-mono text-xs text-[#828a98]">On hand = SOH_global + Pipeline·min(t/LT,1) − DailyDemand·t</code>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => onOpenChange(false)} className="rounded-md border border-[#e8e8e3] bg-white px-3 py-1.5 text-sm font-medium text-[#5b6270] hover:bg-[#faf9f7]">Close</button>
-          <button type="button" className="rounded-md bg-[#0f1115] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#2a2f38]">Export projection</button>
-          <div className="relative">
-            <button type="button" disabled={!onAddProjectionItem} onClick={() => setPoMenuOpen((o) => !o)}
-              className="rounded-md px-3 py-1.5 text-sm font-semibold text-[#3b1f00] disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ background: 'linear-gradient(180deg,#fbbf24,#f59e0b)' }}>Create PO ▾</button>
-            {poMenuOpen && onAddProjectionItem && (
-              <div className="absolute bottom-full right-0 z-50 mb-1 w-56 overflow-hidden rounded-md border border-[#e8e8e3] bg-white shadow-lg">
-                <button type="button" onClick={() => enterPoMode('container')} className="block w-full px-3 py-2 text-left text-sm text-[#2a2f38] hover:bg-[#faf9f7]">
-                  <span className="font-semibold">Load container</span>
-                  <span className="block text-xs text-[#828a98]">SKUs already covered for {coverageDays}d (Container)</span>
-                </button>
-                <button type="button" onClick={() => enterPoMode('production')} className="block w-full border-t border-[#f0f0ec] px-3 py-2 text-left text-sm text-[#2a2f38] hover:bg-[#faf9f7]">
-                  <span className="font-semibold">Create Purchase Order</span>
-                  <span className="block text-xs text-[#828a98]">SKUs short of {coverageDays}d coverage (Production)</span>
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      {/* Cart flotante (si !cartDocked). Se renderiza vía portal así que no afecta el layout. */}
+      {showCart && !cartDocked && (
+        <POBuilderPanel
+          items={poItems!}
+          onRemove={onPORemove!}
+          onUpdateQty={onPOUpdateQty!}
+          onClear={onPOClear!}
+          onCreatePO={onCreatePO!}
+          creating={poCreating}
+          onToggleDocked={() => setCartDocked(true)}
+        />
+      )}
     </div>,
     document.body,
   );
 }
 
+// ─── Sidebar section helper ─────────────────────────────────────────────────
+
+function SidebarSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[#5b6270]">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+// ─── CTA button (Load container / Create PO) ───────────────────────────────-
+
+function CTAButton({
+  active, primary = false, icon, title, subtitle, onClick, disabled,
+}: {
+  active: boolean;
+  primary?: boolean;
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        active
+          ? 'border-[#7c3aed] bg-[#ede9fe] text-[#4c1d95]'
+          : primary
+            ? 'border-amber-300 text-[#3b1f00] hover:brightness-95'
+            : 'border-[#e8e8e3] bg-white text-[#5b6270] hover:bg-[#faf9f7]',
+      )}
+      style={primary && !active ? { background: 'linear-gradient(180deg,#fbbf24,#f59e0b)' } : undefined}
+    >
+      <div className="flex items-center gap-1.5 text-sm font-semibold">
+        {icon}
+        <span>{active ? `${title} · active` : title}</span>
+      </div>
+      <p className={cn('mt-0.5 text-[10px] leading-tight', active ? 'text-[#6d4ec9]' : primary ? 'text-[#7c4a16]' : 'text-[#828a98]')}>
+        {subtitle}
+      </p>
+    </button>
+  );
+}
