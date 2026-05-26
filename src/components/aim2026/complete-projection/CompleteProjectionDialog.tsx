@@ -409,9 +409,20 @@ export function CompleteProjectionDialog({
 
       {poMode && (
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#ddd6fe] bg-[#ede9fe] px-5 py-2">
-          <div className="text-sm text-[#4c1d95]">
-            <span className="font-semibold">{poMode === 'container' ? 'Load container' : 'Create Purchase Order'}</span>
-            {' '}· showing SKUs {poMode === 'container' ? 'covered for' : 'short of'} {coverageDays}d coverage · click the violet cell on each row to add
+          <div className="flex flex-col gap-0.5 text-sm text-[#4c1d95]">
+            <div>
+              <span className="font-semibold">{poMode === 'container' ? 'Load container' : 'Create Purchase Order'}</span>
+              {' '}· showing SKUs {poMode === 'container' ? 'covered for' : 'short of'} {coverageDays}d coverage · click the violet cell on each row to add
+            </div>
+            {poMode === 'container' && (
+              <div className="text-[11px] font-medium text-[#6d4ec9]">
+                <span className="rounded bg-white/70 px-1.5 py-0.5 mr-1">Click</span> = Container
+                <span className="mx-1.5 text-[#c4b5fd]">·</span>
+                <span className="rounded bg-white/70 px-1.5 py-0.5 mr-1">Ctrl/Cmd + Click</span> = Production
+                <span className="mx-1.5 text-[#c4b5fd]">·</span>
+                <span className="rounded bg-white/70 px-1.5 py-0.5 mr-1">Alt + Click</span> = custom qty
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => setPoMode(null)} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">Exit PO mode</button>

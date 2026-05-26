@@ -67,8 +67,11 @@ export function ProjectionTable({
   const colCount = 8 + (expandedSoh ? 3 : 0) + (poMode ? 1 : 0);
   // Inline custom-qty editor: when the user clicks "+ add" on a SKU with no
   // suggested qty, the cell turns into a numeric input focused immediately.
+  // editingType marca el bucket destino — Container por click normal/Alt,
+  // Production por Ctrl/Cmd+click.
   const [editingSku, setEditingSku] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
+  const [editingType, setEditingType] = useState<'Container' | 'Production'>('Container');
   const editingInputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     if (editingSku && editingInputRef.current) {
@@ -78,11 +81,13 @@ export function ProjectionTable({
   }, [editingSku]);
   const commitCustomQty = (sku: string) => {
     const qty = parseInt(editingValue.replace(/[^0-9]/g, ''), 10);
+    const type = editingType;
     setEditingSku(null);
     setEditingValue('');
-    if (isFinite(qty) && qty > 0) onAddToCart(sku, qty);
+    setEditingType('Container');
+    if (isFinite(qty) && qty > 0) onAddToCart(sku, qty, type);
   };
-  const cancelCustomQty = () => { setEditingSku(null); setEditingValue(''); };
+  const cancelCustomQty = () => { setEditingSku(null); setEditingValue(''); setEditingType('Container'); };
 
   const Th = ({ col, children, align = 'right' }: { col: SortCol; children: React.ReactNode; align?: 'left' | 'right' }) => {
     const activeSort = sort.col === col;
@@ -332,26 +337,47 @@ export function ProjectionTable({
                       const stateText = coverState === 'covered' ? 'text-[#7c3aed]' : coverState === 'partial' ? 'text-amber-700' : 'text-red-700';
                       const gapLabel = coverState !== 'covered' ? `cover ${num(chinaCover)} · short ${num(gap)}` : null;
                       const breakdown = hasSuggestion ? buildBreakdown(r, poMode) : '';
+                      // Production suggestion para Ctrl/Cmd+click (manual). Solo aplica en container mode.
+                      const prodSuggestion = poMode === 'container' ? r.productionQty : 0;
+                      const modifierHint = poMode === 'container'
+                        ? '\n\nClick = Container · Ctrl/Cmd+Click = Production · Alt+Click = custom qty'
+                        : '\n\nAlt+Click = custom qty';
                       const tip = isAdded
                         ? (poMode === 'container'
-                            ? `Container: ${num(addedContainer)} u${addedProduction > 0 ? ` · Production: ${num(addedProduction)} u` : ''}. Remaining China after load: ${num(postSurplus)} u.${breakdown ? '\n\n' + breakdown : ''}`
+                            ? `Container: ${num(addedContainer)} u${addedProduction > 0 ? ` · Production: ${num(addedProduction)} u` : ''}. Remaining China after load: ${num(postSurplus)} u.${breakdown ? '\n\n' + breakdown : ''}${addedProduction === 0 ? modifierHint : ''}`
                             : `Production: ${num(addedProduction)} u.${breakdown ? '\n\n' + breakdown : ''}`)
                         : hasSuggestion
                           ? (poMode === 'container'
                               ? (coverState === 'covered'
-                                  ? `Click to load ${num(toCommit)} u — China covers it. Hold Alt/Option for custom qty.\n\n${breakdown}`
-                                  : `Click to load. China covers ${num(chinaCover)} u into the container; gap of ${num(gap)} u can go to Production. Hold Alt/Option for custom qty.\n\n${breakdown}`)
-                              : `Click to produce ${num(toCommit)} u. Hold Alt/Option for custom qty.\n\n${breakdown}`)
+                                  ? `Click to load ${num(toCommit)} u — China covers it.\n\n${breakdown}${modifierHint}`
+                                  : `Click to load. China covers ${num(chinaCover)} u into the container; gap of ${num(gap)} u can go to Production.\n\n${breakdown}${modifierHint}`)
+                              : `Click to produce ${num(toCommit)} u.\n\n${breakdown}${modifierHint}`)
                           : (poMode === 'container'
-                              ? 'No suggested qty — click to enter a custom load qty.'
-                              : 'No suggested qty — click to enter a custom production qty.');
-                      const startEditing = (defaultQty: number) => {
+                              ? `No suggested qty — click to enter a custom load qty.${modifierHint}`
+                              : `No suggested qty — click to enter a custom production qty.${modifierHint}`);
+                      const startEditing = (defaultQty: number, type: 'Container' | 'Production' = 'Container') => {
                         setEditingSku(r.sku);
                         setEditingValue(defaultQty > 0 ? String(defaultQty) : '');
+                        setEditingType(type);
                       };
                       const handleCellClick = (e: React.MouseEvent) => {
                         if (isEditing) { e.stopPropagation(); return; }
                         e.stopPropagation();
+
+                        // Ctrl/Cmd+click en container mode → add to Production (independiente del Container).
+                        // Alt+ctrl no entra acá (alt tiene precedencia para "custom Container qty").
+                        const wantsProduction = poMode === 'container' && (e.ctrlKey || e.metaKey) && !e.altKey;
+                        if (wantsProduction) {
+                          if (addedProduction > 0) return; // ya hay production agregado para este sku
+                          if (prodSuggestion > 0) {
+                            onAddToCart(r.sku, prodSuggestion, 'Production');
+                          } else {
+                            // Sin sugerencia de production → input inline marcado como Production.
+                            startEditing(0, 'Production');
+                          }
+                          return;
+                        }
+
                         if (addedContainer > 0) return; // container portion already added
                         if (!hasSuggestion) { startEditing(0); return; }
                         if (e.altKey) { startEditing(toCommit); return; }
@@ -395,7 +421,7 @@ export function ProjectionTable({
                               </span>
                             )
                           ) : isEditing ? (
-                            <span className="inline-flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                            <span className="inline-flex flex-col items-end gap-0.5 leading-tight" onClick={(e) => e.stopPropagation()}>
                               <input
                                 ref={editingInputRef}
                                 type="text"
@@ -408,8 +434,16 @@ export function ProjectionTable({
                                 }}
                                 onBlur={() => commitCustomQty(r.sku)}
                                 placeholder="qty"
-                                className="w-20 rounded border border-[#c4b5fd] bg-white px-1.5 py-0.5 text-right text-sm font-bold text-[#4c1d95] focus:border-[#7c3aed] focus:outline-none"
+                                className={cn(
+                                  'w-20 rounded border bg-white px-1.5 py-0.5 text-right text-sm font-bold focus:outline-none',
+                                  editingType === 'Production'
+                                    ? 'border-[#fdba74] text-[#c2410c] focus:border-[#ea580c]'
+                                    : 'border-[#c4b5fd] text-[#4c1d95] focus:border-[#7c3aed]',
+                                )}
                               />
+                              <span className={cn('text-[9px] font-medium normal-case', editingType === 'Production' ? 'text-[#c2410c]' : 'text-[#7c3aed]')}>
+                                → {editingType}
+                              </span>
                             </span>
                           ) : hasSuggestion ? (
                             gapLabel ? (
