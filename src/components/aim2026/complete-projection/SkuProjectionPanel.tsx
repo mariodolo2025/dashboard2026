@@ -259,8 +259,17 @@ export function SkuProjectionPanel({
           </div>
           <div className="rounded-lg border border-[#e8e8e3] px-3 py-2">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[#828a98]">Pipeline fully arrived</div>
-            <div className={cn('text-sm font-semibold text-[#2a2f38]', mono)}>{format(pipelineArrival, 'd MMM yyyy')}</div>
-            <div className="text-xs text-[#828a98]">{pipelineArrivalLabel}</div>
+            {row.pipeline > 0 || (events && events.length > 0) ? (
+              <>
+                <div className={cn('text-sm font-semibold text-[#2a2f38]', mono)}>{format(pipelineArrival, 'd MMM yyyy')}</div>
+                <div className="text-xs text-[#828a98]">{pipelineArrivalLabel}</div>
+              </>
+            ) : (
+              <>
+                <div className="text-sm font-semibold text-[#828a98]">—</div>
+                <div className="text-xs text-[#828a98]">no pipeline</div>
+              </>
+            )}
           </div>
         </div>
       </div>

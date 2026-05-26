@@ -67,11 +67,13 @@ export function CompleteProjectionDialog({
   // already counted in sohGlobal).
   const [eventsBySku, setEventsBySku] = useState<Map<string, PipelineEvent[]>>(new Map());
   const [eventsLoading, setEventsLoading] = useState(false);
-  // China-W outbound demand per SKU (daily units). Toggle-controlled —
-  // subtracted from availableChinaOnDate only when subtractChinaDemand is true.
+  // China-W outbound demand per SKU (daily units). When "Apply China commitments"
+  // toggle is on, we subtract both allocatedChina and this projected demand from
+  // availableChinaOnDate. Default off — Dolo prioritises B2C and allocations
+  // aren't firm commitments.
   const [chinaDailyBySku, setChinaDailyBySku] = useState<Map<string, number>>(new Map());
   const [chinaDemandLoading, setChinaDemandLoading] = useState(false);
-  const [subtractChinaDemand, setSubtractChinaDemand] = useState(false);
+  const [applyChinaCommitments, setApplyChinaCommitments] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -90,7 +92,7 @@ export function CompleteProjectionDialog({
     setSort({ col: 'effDailyDemand', dir: 'desc' });
     setEventsBySku(new Map());
     setChinaDailyBySku(new Map());
-    setSubtractChinaDemand(false);
+    setApplyChinaCommitments(false);
     if (setDateRange) setDateRange({ from: new Date(2026, 0, 1), to: startOfToday() });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -135,7 +137,7 @@ export function CompleteProjectionDialog({
   // window. We only need this when the user enables the toggle; we fetch it
   // lazily on first toggle-on so the open flow stays fast.
   useEffect(() => {
-    if (!open || !subtractChinaDemand) return;
+    if (!open || !applyChinaCommitments) return;
     if (chinaDailyBySku.size > 0) return; // already loaded
     const from = dateRange?.from;
     const to = dateRange?.to;
@@ -158,7 +160,7 @@ export function CompleteProjectionDialog({
     }).catch(() => { if (!cancelled) setChinaDemandLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, subtractChinaDemand, dateRange?.from, dateRange?.to]);
+  }, [open, applyChinaCommitments, dateRange?.from, dateRange?.to]);
 
   useEffect(() => {
     if (!open) return;
@@ -190,9 +192,9 @@ export function CompleteProjectionDialog({
   const allRows = useMemo(
     () => buildProjectionRows(
       filteredData, projectionDate, today, scenario, demandIsDaily, coverageDays,
-      eventsBySku, subtractChinaDemand ? chinaDailyBySku : undefined,
+      eventsBySku, applyChinaCommitments, chinaDailyBySku,
     ),
-    [filteredData, projectionDate, today, scenario, demandIsDaily, coverageDays, eventsBySku, subtractChinaDemand, chinaDailyBySku],
+    [filteredData, projectionDate, today, scenario, demandIsDaily, coverageDays, eventsBySku, applyChinaCommitments, chinaDailyBySku],
   );
 
   const visibleRows = useMemo(() => {
@@ -361,16 +363,16 @@ export function CompleteProjectionDialog({
           <div className="flex items-center gap-2">
             {poMode === 'container' && (
               <label
-                title="When on, Available China on date subtracts China-W outbound demand (B2B + B2C shipped from China) for the demand window. Off = raw availability, no demand draw-down."
+                title="When on, Available China on date subtracts both (1) Allocated China (units reserved against pending sales orders) and (2) projected China-W outbound demand for the date window. Off = raw SOH China + arriving production, ignoring commitments (Dolo prioritises B2C and most allocations aren't firm)."
                 className="inline-flex items-center gap-1.5 rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff] cursor-pointer"
               >
                 <input
                   type="checkbox"
-                  checked={subtractChinaDemand}
-                  onChange={(e) => setSubtractChinaDemand(e.target.checked)}
+                  checked={applyChinaCommitments}
+                  onChange={(e) => setApplyChinaCommitments(e.target.checked)}
                   className="h-3 w-3 accent-[#7c3aed]"
                 />
-                Subtract China-W demand{chinaDemandLoading && ' (loading…)'}
+                Apply China commitments{chinaDemandLoading && ' (loading…)'}
               </label>
             )}
             <button type="button" onClick={() => setPoHelpOpen(true)} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">How does this work?</button>

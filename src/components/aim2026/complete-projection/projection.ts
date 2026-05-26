@@ -63,9 +63,9 @@ export const SCENARIO_MULT: Record<Scenario, number> = {
 };
 
 export const SCENARIO_LABEL: Record<Scenario, string> = {
-  optimistic: 'Optimistic −15%',
+  optimistic: 'Low demand −15%',
   expected: 'Expected 0%',
-  pessimistic: 'Pessimistic +20%',
+  pessimistic: 'High demand +20%',
 };
 
 export type ProjectionStatus = 'stockout' | 'atrisk' | 'surplus' | 'healthy';
@@ -157,9 +157,15 @@ export function buildProjectionRow(
   demandIsDaily: boolean,
   coverageDays = 90,
   events?: PipelineEvent[],
+  /** When true ("Apply China commitments" toggle on), subtract from
+   *  availableChinaOnDate: (1) allocatedChina (units reserved against pending
+   *  sales orders), and (2) chinaDailyDemand × t (China-W outbound consumption
+   *  over the projection window). Default false — Dolo prioritises B2C and
+   *  most allocations aren't firm commitments, so raw stock is the right
+   *  baseline. */
+  applyChinaCommitments?: boolean,
   /** Daily outbound demand from the China warehouse for this SKU (units/day).
-   *  When provided, it is subtracted from availableChinaOnDate so the cifra
-   *  reflects what is actually free to load into a container. */
+   *  Only used when applyChinaCommitments is true. */
   chinaDailyDemand?: number,
 ): ProjectionRow {
   const dailyDemand = baseDailyDemand(row, demandIsDaily);
@@ -194,8 +200,16 @@ export function buildProjectionRow(
   // we add production POs arriving by day t (all PipelineEvents target China). We do
   // NOT subtract China outbound demand here — that requires a backend field
   // (demand_china) we don't have yet; tracked separately.
-  const availableChinaToday = Number(row.availableChina ?? Math.max(0, sohChina - Number(row.allocatedChina ?? 0)));
-  const chinaDemandConsumed = chinaDailyDemand != null && chinaDailyDemand > 0 ? chinaDailyDemand * t : 0;
+  // Default: availableChinaToday = raw sohChina (Dolo prioritises B2C, allocations
+  // aren't firm commitments). Toggle "Apply China commitments" makes us subtract
+  // both allocatedChina and the projected China-W outbound demand.
+  const allocChina = Number(row.allocatedChina ?? 0);
+  const availableChinaToday = applyChinaCommitments
+    ? Math.max(0, sohChina - allocChina)
+    : sohChina;
+  const chinaDemandConsumed = applyChinaCommitments && chinaDailyDemand != null && chinaDailyDemand > 0
+    ? chinaDailyDemand * t
+    : 0;
   const availableChinaOnDate = availableChinaToday + pipelineReceived - chinaDemandConsumed;
   const projectedOnHand = sohGlobal + pipelineReceived - demandConsumed;
 
@@ -242,14 +256,18 @@ export function buildProjectionRows(
   demandIsDaily: boolean,
   coverageDays = 90,
   eventsBySku?: Map<string, PipelineEvent[]>,
-  /** Optional daily China outbound demand per SKU. Pass when the user wants
-   *  Available China on date to subtract China-W demand. */
+  /** When true, applies China commitments (allocatedChina + chinaDailyBySku
+   *  outbound demand) to availableChinaOnDate per SKU. */
+  applyChinaCommitments?: boolean,
+  /** Optional daily China outbound demand per SKU. Used only when
+   *  applyChinaCommitments is true. */
   chinaDailyBySku?: Map<string, number>,
 ): ProjectionRow[] {
   return rows.map((r) =>
     buildProjectionRow(
       r, projectionDate, today, scenario, demandIsDaily, coverageDays,
       eventsBySku?.get(r.sku),
+      applyChinaCommitments,
       chinaDailyBySku?.get(r.sku),
     ),
   );
