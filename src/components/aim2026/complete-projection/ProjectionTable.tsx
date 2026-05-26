@@ -369,10 +369,16 @@ export function ProjectionTable({
                         const wantsProduction = poMode === 'container' && (e.ctrlKey || e.metaKey) && !e.altKey;
                         if (wantsProduction) {
                           if (addedProduction > 0) return; // ya hay production agregado para este sku
-                          if (prodSuggestion > 0) {
-                            onAddToCart(r.sku, prodSuggestion, 'Production');
+                          // Fallback cuando productionQty=0 (SOH cubre coverage): usar coverageDemand
+                          // (= effDailyDemand × coverageDays) como qty default. Mantiene
+                          // consistencia — Ctrl+click siempre agrega directo al carrito; la qty
+                          // se modifica desde el panel si hace falta. Solo abre input si ambos
+                          // dan 0 (caso degenerado: SKU sin demanda).
+                          const fallback = Math.round(r.coverageDemand);
+                          const prodQty = prodSuggestion > 0 ? prodSuggestion : fallback;
+                          if (prodQty > 0) {
+                            onAddToCart(r.sku, prodQty, 'Production');
                           } else {
-                            // Sin sugerencia de production → input inline marcado como Production.
                             startEditing(0, 'Production');
                           }
                           return;
@@ -396,32 +402,15 @@ export function ProjectionTable({
                           onClick={handleCellClick}
                           className={cn('px-2.5 py-2 text-right text-base font-bold', mono, stateBg, !isAdded && !isEditing && cn('cursor-pointer', stateHover))}
                         >
-                          {isAdded ? (
-                            poMode === 'container' ? (
-                              <span className="inline-flex flex-col items-end gap-0.5 leading-tight">
-                                <span className={cn('text-[#059669]', mono)}>+{num(postSurplus)}</span>
-                                <span className="text-[10px] font-medium normal-case text-[#7c3aed]">loaded: {num(addedContainer)}</span>
-                                {addedProduction > 0 && (
-                                  <span className="text-[10px] font-medium normal-case text-[#c2410c]">+ produce: {num(addedProduction)}</span>
-                                )}
-                                {addedProduction === 0 && gap > 0 && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); onAddToCart(r.sku, gap, 'Production'); }}
-                                    className="mt-0.5 rounded border border-[#fdba74] bg-[#fff7ed] px-1.5 py-0.5 text-[10px] font-semibold normal-case text-[#c2410c] hover:bg-[#fed7aa]"
-                                  >
-                                    + {num(gap)} to production
-                                  </button>
-                                )}
-                              </span>
-                            ) : (
-                              <span className="inline-flex flex-col items-end gap-0.5 leading-tight">
-                                <span className={cn('text-[#059669]', mono)}>✓</span>
-                                <span className="text-[10px] font-medium normal-case text-[#c2410c]">produce: {num(addedProduction)}</span>
-                              </span>
-                            )
-                          ) : isEditing ? (
+                          {isEditing ? (
+                            // Input inline. Tiene precedencia sobre isAdded — si la celda
+                            // ya tenía Container loaded y el user hace Ctrl+click para agregar
+                            // Production con qty custom, mostramos el contexto loaded arriba
+                            // y el input debajo.
                             <span className="inline-flex flex-col items-end gap-0.5 leading-tight" onClick={(e) => e.stopPropagation()}>
+                              {isAdded && addedContainer > 0 && (
+                                <span className="text-[10px] font-medium normal-case text-[#7c3aed]">loaded: {num(addedContainer)}</span>
+                              )}
                               <input
                                 ref={editingInputRef}
                                 type="text"
@@ -445,6 +434,30 @@ export function ProjectionTable({
                                 → {editingType}
                               </span>
                             </span>
+                          ) : isAdded ? (
+                            poMode === 'container' ? (
+                              <span className="inline-flex flex-col items-end gap-0.5 leading-tight">
+                                <span className={cn('text-[#059669]', mono)}>+{num(postSurplus)}</span>
+                                <span className="text-[10px] font-medium normal-case text-[#7c3aed]">loaded: {num(addedContainer)}</span>
+                                {addedProduction > 0 && (
+                                  <span className="text-[10px] font-medium normal-case text-[#c2410c]">+ produce: {num(addedProduction)}</span>
+                                )}
+                                {addedProduction === 0 && gap > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); onAddToCart(r.sku, gap, 'Production'); }}
+                                    className="mt-0.5 rounded border border-[#fdba74] bg-[#fff7ed] px-1.5 py-0.5 text-[10px] font-semibold normal-case text-[#c2410c] hover:bg-[#fed7aa]"
+                                  >
+                                    + {num(gap)} to production
+                                  </button>
+                                )}
+                              </span>
+                            ) : (
+                              <span className="inline-flex flex-col items-end gap-0.5 leading-tight">
+                                <span className={cn('text-[#059669]', mono)}>✓</span>
+                                <span className="text-[10px] font-medium normal-case text-[#c2410c]">produce: {num(addedProduction)}</span>
+                              </span>
+                            )
                           ) : hasSuggestion ? (
                             gapLabel ? (
                               <span className="inline-flex flex-col items-end leading-tight">
