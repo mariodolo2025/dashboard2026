@@ -352,6 +352,23 @@ export function CompleteProjectionDialog({
             })}
           </div>
         </div>
+
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[#5b6270]">China commitments</label>
+          <label
+            title="When on, subtracts Allocated China (units reserved against pending sales orders) and projected China-W outbound demand from both On hand on date (global) and Available China on date. Off (default) = ignore commitments — Dolo prioritises B2C and most allocations aren't firm."
+            className={cn('inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium cursor-pointer transition-colors',
+              applyChinaCommitments ? 'border-[#7c3aed] bg-[#ede9fe] text-[#4c1d95]' : 'border-[#e8e8e3] bg-white text-[#5b6270] hover:bg-[#faf9f7]')}
+          >
+            <input
+              type="checkbox"
+              checked={applyChinaCommitments}
+              onChange={(e) => setApplyChinaCommitments(e.target.checked)}
+              className="h-3.5 w-3.5 accent-[#7c3aed]"
+            />
+            Apply China commitments{chinaDemandLoading && ' (loading…)'}
+          </label>
+        </div>
       </div>
 
       {poMode && (
@@ -361,20 +378,6 @@ export function CompleteProjectionDialog({
             {' '}· showing SKUs {poMode === 'container' ? 'covered for' : 'short of'} {coverageDays}d coverage · click the violet cell on each row to add
           </div>
           <div className="flex items-center gap-2">
-            {poMode === 'container' && (
-              <label
-                title="When on, Available China on date subtracts both (1) Allocated China (units reserved against pending sales orders) and (2) projected China-W outbound demand for the date window. Off = raw SOH China + arriving production, ignoring commitments (Dolo prioritises B2C and most allocations aren't firm)."
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff] cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={applyChinaCommitments}
-                  onChange={(e) => setApplyChinaCommitments(e.target.checked)}
-                  className="h-3 w-3 accent-[#7c3aed]"
-                />
-                Apply China commitments{chinaDemandLoading && ' (loading…)'}
-              </label>
-            )}
             <button type="button" onClick={() => setPoHelpOpen(true)} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">How does this work?</button>
             <button type="button" onClick={() => { setPoMode(null); setAddedSkus(new Map()); }} className="rounded-md border border-[#c4b5fd] bg-white px-2.5 py-1 text-xs font-medium text-[#4c1d95] hover:bg-[#f5f3ff]">Exit PO mode</button>
           </div>

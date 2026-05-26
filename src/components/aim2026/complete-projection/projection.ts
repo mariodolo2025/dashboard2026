@@ -202,7 +202,9 @@ export function buildProjectionRow(
   // (demand_china) we don't have yet; tracked separately.
   // Default: availableChinaToday = raw sohChina (Dolo prioritises B2C, allocations
   // aren't firm commitments). Toggle "Apply China commitments" makes us subtract
-  // both allocatedChina and the projected China-W outbound demand.
+  // both allocatedChina and the projected China-W outbound demand. When on, the
+  // same descuentos también se aplican al on-hand global (porque esos
+  // commitments china reducen lo verdaderamente disponible cross-warehouse).
   const allocChina = Number(row.allocatedChina ?? 0);
   const availableChinaToday = applyChinaCommitments
     ? Math.max(0, sohChina - allocChina)
@@ -211,7 +213,10 @@ export function buildProjectionRow(
     ? chinaDailyDemand * t
     : 0;
   const availableChinaOnDate = availableChinaToday + pipelineReceived - chinaDemandConsumed;
-  const projectedOnHand = sohGlobal + pipelineReceived - demandConsumed;
+  const globalCommitmentsDeduction = applyChinaCommitments
+    ? allocChina + chinaDemandConsumed
+    : 0;
+  const projectedOnHand = sohGlobal + pipelineReceived - demandConsumed - globalCommitmentsDeduction;
 
   const daysOfCover =
     effDailyDemand > 0 ? Math.max(projectedOnHand, 0) / effDailyDemand : Infinity;

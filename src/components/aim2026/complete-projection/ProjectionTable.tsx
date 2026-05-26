@@ -285,11 +285,26 @@ export function ProjectionTable({
                       const postSurplus = poMode === 'container' ? Math.round(Math.abs(r.neededQty)) : 0;
                       const hasSuggestion = toCommit > 0;
                       const isEditing = editingSku === r.sku;
+                      // Coverage state — only meaningful for container mode with a suggestion.
+                      // Violet = China cubre el load; amber = gap < 30% del load; red = gap ≥ 30%.
+                      const chinaCover = Math.max(0, Math.round(r.availableChinaOnDate));
+                      const gap = poMode === 'container' && hasSuggestion ? Math.max(0, toCommit - chinaCover) : 0;
+                      const gapRatio = toCommit > 0 ? gap / toCommit : 0;
+                      const coverState: 'covered' | 'partial' | 'short' =
+                        poMode === 'container' && hasSuggestion
+                          ? (gap <= 0 ? 'covered' : gapRatio < 0.3 ? 'partial' : 'short')
+                          : 'covered';
+                      const stateBg = coverState === 'covered' ? violetCell : coverState === 'partial' ? 'bg-amber-50' : 'bg-red-50';
+                      const stateHover = coverState === 'covered' ? 'hover:bg-[#ddd6fe]' : coverState === 'partial' ? 'hover:bg-amber-100' : 'hover:bg-red-100';
+                      const stateText = coverState === 'covered' ? 'text-[#7c3aed]' : coverState === 'partial' ? 'text-amber-700' : 'text-red-700';
+                      const gapLabel = coverState !== 'covered' ? `cover ${num(chinaCover)} · short ${num(gap)}` : null;
                       const tip = added != null
                         ? `Added ${num(added)} to the PO. ${poMode === 'container' ? `Remaining China stock after load: ${num(postSurplus)} u.` : 'Shortfall covered.'}`
                         : hasSuggestion
                           ? (poMode === 'container'
-                              ? `Click to load ${num(toCommit)} u. Hold Alt/Option to enter a custom qty.`
+                              ? (coverState === 'covered'
+                                  ? `Click to load ${num(toCommit)} u. China can cover it. Hold Alt/Option to enter a custom qty.`
+                                  : `Click to load ${num(toCommit)} u. China only covers ${num(chinaCover)} u (gap ${num(gap)}). Click adds the full qty — resolve the shortfall separately. Hold Alt/Option to enter a custom qty.`)
                               : `Click to produce ${num(toCommit)} u. Hold Alt/Option to enter a custom qty.`)
                           : (poMode === 'container'
                               ? 'No suggested qty — click to enter a custom load qty.'
@@ -309,7 +324,7 @@ export function ProjectionTable({
                             if (e.altKey) { startEditing(toCommit); return; }
                             onAddToCart(r.sku);
                           }}
-                          className={cn('px-2.5 py-2 text-right text-base font-bold', mono, violetCell, added == null && !isEditing && 'cursor-pointer hover:bg-[#ddd6fe]')}
+                          className={cn('px-2.5 py-2 text-right text-base font-bold', mono, stateBg, added == null && !isEditing && cn('cursor-pointer', stateHover))}
                         >
                           {added != null ? (
                             <span className="inline-flex flex-col items-end gap-0.5 leading-tight">
@@ -334,7 +349,16 @@ export function ProjectionTable({
                               />
                             </span>
                           ) : hasSuggestion ? (
-                            <span className="text-[#7c3aed]">+{num(toCommit)}</span>
+                            gapLabel ? (
+                              <span className="inline-flex flex-col items-end leading-tight">
+                                <span className={cn('inline-flex items-center gap-1', stateText)}>
+                                  {coverState === 'short' ? '⚠ ' : ''}+{num(toCommit)}
+                                </span>
+                                <span className={cn('text-[10px] font-medium normal-case', coverState === 'partial' ? 'text-amber-700' : 'text-red-700')}>{gapLabel}</span>
+                              </span>
+                            ) : (
+                              <span className={stateText}>+{num(toCommit)}</span>
+                            )
                           ) : (
                             <span className="inline-flex flex-col items-end leading-tight">
                               <span className="text-[#7c3aed]">+ add</span>
