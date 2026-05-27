@@ -125,12 +125,15 @@ export function CompleteProjectionDialog({
     prevPoBuilderMode.current = poBuilderMode;
   }, [poBuilderMode, poMode]);
 
-  // Fetch real PO ETAs for SKUs with onProduction > 0. One HTTP call per SKU
-  // (Promise.all). For ~50–100 production SKUs this completes in a few seconds;
-  // the projection falls back to the linear approximation while loading.
+  // Fetch real PO ETAs for SKUs with any inbound stock — production OR
+  // container OR DHL. Production POs land in China (counted in pipelineReceived).
+  // Container/DHL POs land in Main (counted in mainAtArrival). Both feed the
+  // projection. One HTTP call per SKU (Promise.all).
   useEffect(() => {
     if (!open) return;
-    const skus = filteredData.filter((r) => r.onProduction > 0).map((r) => r.sku);
+    const skus = filteredData
+      .filter((r) => r.onProduction > 0 || r.container > 0 || r.dhl > 0)
+      .map((r) => r.sku);
     if (skus.length === 0) { setEventsBySku(new Map()); return; }
     let cancelled = false;
     setEventsLoading(true);

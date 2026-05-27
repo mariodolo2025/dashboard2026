@@ -70,8 +70,8 @@ export function CompleteProjectionHelpPopup({ open, onClose }: HelpPopupProps) {
             />
             <Formula
               label="pipelineReceived(t)"
-              formula="Σ qty of production POs with ETA ≤ today + t"
-              example="Falls back to a linear pipeline × min(t/leadTime, 1) when ETAs are not loaded"
+              formula="Σ qty of production POs landing in China with ETA ≤ today + t"
+              example="Falls back to a linear pipeline × min(t/leadTime, 1) when ETAs are not loaded. Container/DHL POs DON'T count here — they're already in sohGlobal and instead feed mainArrivals."
             />
           </Section>
 
@@ -101,7 +101,11 @@ export function CompleteProjectionHelpPopup({ open, onClose }: HelpPopupProps) {
                 </div>
               </div>
             </div>
-            <Formula label="mainAtArrival" formula="max(0, sohMain − effDailyDemand × arrivalDay)" />
+            <Formula
+              label="mainAtArrival"
+              formula="max(0, sohMain + mainArrivals(arrivalDay) − effDailyDemand × arrivalDay)"
+              example="mainArrivals = container/DHL POs already in transit whose ETA ≤ arrivalDay. Production POs land in China, not Main — they go through the container loop separately."
+            />
           </Section>
 
           <Section title="Available China on date (Container mode only)">
@@ -119,8 +123,8 @@ export function CompleteProjectionHelpPopup({ open, onClose }: HelpPopupProps) {
             />
             <Formula
               label="mainDeficitAtArrival (always applied)"
-              formula={`max(0, effDailyDemand × (t + ${CONTAINER_TRANSIT_DAYS}d) − sohMain)`}
-              example="If Main runs out before the container lands, those units must ship from China by DHL — they can't be loaded into the container. Applied even when 'Apply China commitments' is OFF."
+              formula={`max(0, effDailyDemand × (t + ${CONTAINER_TRANSIT_DAYS}d) − sohMain − mainArrivals(t + ${CONTAINER_TRANSIT_DAYS}d))`}
+              example="If Main runs out before the new container lands AND no existing container/DHL covers the gap, those units must ship from China by DHL — they can't be loaded into the new container. Applied even when 'Apply China commitments' is OFF."
             />
             <p className="text-[11px] text-[#5b6270]">
               When ON, the allocated + chinaDailyDemand deductions also reduce the global <em>On hand on date</em>. mainDeficitAtArrival doesn't reduce global — it's a routing constraint inside the China-to-Main flow, not extra demand.

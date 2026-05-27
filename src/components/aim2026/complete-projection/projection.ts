@@ -7,18 +7,28 @@ import type { RecentOrder } from '@/lib/aim2026/api';
 
 // ─── Pipeline events (real ETAs from purchase orders) ────────────────────────-
 
-/** A single inbound shipment that lands on `day` (offset from today). */
+/** A single inbound shipment that lands on `day` (offset from today).
+ *  destination tells where the stock physically ends up:
+ *  - 'china' = production PO arriving at the China warehouse (still has to be
+ *    loaded into a container to reach Main).
+ *  - 'main'  = container/DHL PO already in transit to Main. Counts as arrival
+ *    at Main when computing mainAtContainerArrival. */
 export interface PipelineEvent {
   day: number;
   qty: number;
+  destination: 'china' | 'main';
 }
 
 /**
- * Derive pipeline events from a SKU's recent orders. DHL + Container statuses
- * are excluded — they're already counted inside `sohGlobal` (per BUG #1
- * decision: in-transit stock is treated as available today). Only production
- * POs (status=Placed in the China warehouse, or qty matching onProduction)
- * count as future arrivals.
+ * Derive pipeline events from a SKU's recent orders. Distinción por warehouse,
+ * no por status — todas las POs vienen con status='Placed' desde Unleashed;
+ * el CustomOrderStatus (Container/Production/DHL) NO está expuesto en el
+ * endpoint recent_orders, pero el WAREHOUSE sí distingue claramente:
+ *  - warehouse 'Main Warehouse' (o 'MAIN') → la PO va a Main = container o DHL → destination='main'
+ *  - warehouse 'China-W' (o cualquier 'China*') → la PO va a China = production → destination='china'
+ *
+ * Solo se consideran POs en status 'Placed' (in-flight). Status como
+ * 'Completed', 'Receipted', etc. se ignoran (ya están reflejadas en SOH).
  */
 export function buildPipelineEvents(
   orders: RecentOrder[],
@@ -28,27 +38,42 @@ export function buildPipelineEvents(
   const events: PipelineEvent[] = [];
   for (const o of orders) {
     if (o.orderType !== 'purchase' || !o.deliveryDate) continue;
-    const status = (o.status ?? '').toLowerCase();
-    // Skip DHL/Container — already in sohGlobal.
-    if (status === 'dhl' || status === 'container') continue;
-    // Production orders: status=Placed, China warehouse OR matching onProduction qty.
+    const status = (o.status ?? '').toLowerCase().trim();
     if (status !== 'placed') continue;
-    const isChina = (o.warehouse ?? '').toLowerCase().trim().startsWith('china');
-    const matchesOnProd = row.onProduction > 0 && Math.abs(o.quantity - row.onProduction) < 1;
-    if (!isChina && !matchesOnProd) continue;
     const eta = new Date(o.deliveryDate);
     if (isNaN(eta.getTime())) continue;
     const day = Math.round((eta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    events.push({ day, qty: o.quantity });
+
+    const wh = (o.warehouse ?? '').toLowerCase().trim();
+    if (wh.startsWith('china')) {
+      // Production PO → China-W. También usamos el match por qty contra
+      // onProduction como salvavidas si el warehouse no estuviera presente.
+      const matchesOnProd = row.onProduction > 0 && Math.abs(o.quantity - row.onProduction) < 1;
+      if (!wh && !matchesOnProd) continue;
+      events.push({ day, qty: o.quantity, destination: 'china' });
+      continue;
+    }
+    if (wh.startsWith('main')) {
+      // Container o DHL llegando a Main. Status='Placed' siempre, el
+      // CustomOrderStatus real (Container/DHL-Inbounds) no nos lo da el endpoint.
+      events.push({ day, qty: o.quantity, destination: 'main' });
+      continue;
+    }
+    // Otros warehouses: ignorar.
   }
   return events;
 }
 
-/** Sum of qty for events whose ETA day <= t (already arrived by day t). */
-export function pipelineReceivedAt(events: PipelineEvent[], t: number): number {
+/** Sum of qty for events whose ETA day <= t and destination matches.
+ *  Default destination = 'china' (back-compat for production POs landing in China). */
+export function pipelineReceivedAt(
+  events: PipelineEvent[],
+  t: number,
+  destination: 'china' | 'main' = 'china',
+): number {
   let sum = 0;
   for (const e of events) {
-    if (e.day <= t) sum += e.qty;
+    if (e.destination === destination && e.day <= t) sum += e.qty;
   }
   return sum;
 }
@@ -245,15 +270,27 @@ export function buildProjectionRow(
   // is per-SKU (fabrication + shipping).
   const containerArrivalDay = t + CONTAINER_TRANSIT_DAYS;
   const productionArrivalDay = leadTime;
-  const mainAtContainerArrival = Math.max(0, sohMain - effDailyDemand * containerArrivalDay);
-  const mainAtProductionArrival = Math.max(0, sohMain - effDailyDemand * productionArrivalDay);
+  // Main arrivals: container y DHL POs ya en tránsito hacia Main. Sumamos los
+  // que llegan dentro del horizonte. Si no hay events cargados, fallback
+  // conservador = 0 (no asumimos nada). Fix 2026-05-27 — antes la fórmula
+  // ignoraba container/DHL en mainAtArrival, lo que sobreestimaba la carga
+  // sugerida cuando ya había un container en tránsito.
+  const mainArrivalsByContainer = events
+    ? pipelineReceivedAt(events, containerArrivalDay, 'main')
+    : 0;
+  const mainArrivalsByProduction = events
+    ? pipelineReceivedAt(events, productionArrivalDay, 'main')
+    : 0;
+  const mainAtContainerArrival = Math.max(0, sohMain + mainArrivalsByContainer - effDailyDemand * containerArrivalDay);
+  const mainAtProductionArrival = Math.max(0, sohMain + mainArrivalsByProduction - effDailyDemand * productionArrivalDay);
 
   // Main deficit at container arrival: las unidades que Main va a tener que
   // recibir desde China antes que el container (DHL u otro envío urgente) para
   // no quebrar durante el tránsito. Salen de China sí o sí → no están
   // disponibles para cargar al container. Se aplica SIEMPRE (Mario, 2026-05-26),
-  // no condicionado al toggle "Apply China commitments".
-  const mainDeficitAtArrival = Math.max(0, effDailyDemand * containerArrivalDay - sohMain);
+  // no condicionado al toggle "Apply China commitments". El deficit también
+  // descuenta los main arrivals existentes (container/DHL ya en tránsito).
+  const mainDeficitAtArrival = Math.max(0, effDailyDemand * containerArrivalDay - sohMain - mainArrivalsByContainer);
   const availableChinaOnDate = availableChinaToday + pipelineReceived - chinaDemandConsumed - mainDeficitAtArrival;
 
   const globalCommitmentsDeduction = applyChinaCommitments
