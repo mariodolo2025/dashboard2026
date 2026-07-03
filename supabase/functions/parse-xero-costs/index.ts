@@ -29,23 +29,28 @@ interface CostsResponse {
   periodEnd?: string;
 }
 
-function parseMonthLabel(label: string): { year: number; month: number } {
+function parseMonthLabel(label: string): { year: number; month: number } | null {
   const monthMap: Record<string, number> = {
     'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
-    'jul': 7, 'aug': 8, 'sep': 9, 'sept': 9, 'oct': 10, 'nov': 11, 'dec': 12
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
   };
 
   const lowerLabel = label.toLowerCase().trim();
 
   const match = lowerLabel.match(/([a-z]+)\s*(\d{4})/);
   if (match) {
-    const monthStr = match[1];
+    // Xero mixes short and long month names in the same export
+    // ("Apr 2026" but "July 2026", "June 2026", "Sept 2025"), so match
+    // on the first 3 letters, which are unambiguous for English months.
+    const monthStr = match[1].slice(0, 3);
     const year = parseInt(match[2], 10);
-    const month = monthMap[monthStr] || 1;
-    return { year, month };
+    const month = monthMap[monthStr];
+    if (month) {
+      return { year, month };
+    }
   }
 
-  return { year: 2025, month: 1 };
+  return null;
 }
 
 function cleanNumber(value: any): number {
@@ -193,13 +198,19 @@ Deno.serve(async (req: Request) => {
       if (cell && cell.v) {
         const label = String(cell.v).trim();
         if (label) {
-          const { year, month } = parseMonthLabel(label);
+          const parsed = parseMonthLabel(label);
+          if (!parsed) {
+            // Skip non-month header columns (e.g. "Total") instead of
+            // silently misfiling them into January.
+            console.warn(`Skipping unrecognized month column header: "${label}"`);
+            continue;
+          }
           rawMonths.push({
             index: rawMonths.length,
             colIndex: col,
             label,
-            year,
-            month
+            year: parsed.year,
+            month: parsed.month
           });
         }
       }
