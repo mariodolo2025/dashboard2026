@@ -24,6 +24,7 @@ import InventoryReorderDashboard from '@/components/InventoryReorderDashboard';
 import MarioDashboard from '@/components/MarioDashboard';
 import CostsCanvas from '@/components/CostsCanvas';
 import { AIM2026Overlay } from '@/components/AIM2026Overlay';
+import { FYReportOverlay } from '@/components/fyreport/FYReportOverlay';
 import EcommerceTab from '@/components/EcommerceTab';
 import { fetchDashboardData, recalcKPIsForDateRange } from '@/lib/aim2026/api';
 import type { SKURow } from '@/lib/aim2026/types';
@@ -134,7 +135,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
   // Modal for each nav pill - pills open modals instead of inline content
-  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | null>(null);
+  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | 'fy-report' | null>(null);
   
   // Configurable financial parameters
   const [shippingCostPercent, setShippingCostPercent] = useState<number>(0.157);
@@ -1920,6 +1921,17 @@ function App() {
                 <ShoppingBag className="h-3.5 w-3.5 mr-1.5" />
                 E-commerce
               </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'fy-report' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'fy-report' ? null : 'fy-report')}
+              >
+                FY Report
+              </Button>
             </div>
           </div>
 
@@ -3325,6 +3337,12 @@ function App() {
           onClose={() => setActiveModal(null)}
           dateRange={dateRange}
           setDateRange={setDateRange}
+        />
+
+        {/* FY Report — fiscal-year closing report over the frozen snapshot */}
+        <FYReportOverlay
+          open={activeModal === 'fy-report'}
+          onClose={() => setActiveModal(null)}
         />
 
         {/* E-commerce modal (Shopify + Meta) */}
