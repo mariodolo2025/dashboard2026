@@ -1239,12 +1239,18 @@ function App() {
       return [min, max];
     };
 
+    // Compare at day granularity: backend dates arrive as UTC ISO timestamps
+    // and end up with a time-of-day offset after parsing, so a raw Date
+    // comparison flags gaps that don't exist at day level (picker gives
+    // Jul 1 00:00 local while the data's first day parses as Jul 1 10:00).
+    const dayNumber = (d: Date) => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+
     const check = (name: string, min: Date | null, max: Date | null) => {
       if (!min || !max) {
         warnings.push({ source: name, minDate: null, maxDate: null });
         return;
       }
-      if (rangeFrom < min || rangeTo > max) {
+      if (dayNumber(rangeFrom) < dayNumber(min) || dayNumber(rangeTo) > dayNumber(max)) {
         warnings.push({ source: name, minDate: min, maxDate: max });
       }
     };
