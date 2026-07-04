@@ -53,6 +53,9 @@ interface DataResponse {
 interface RequestBody {
   startDate?: string;
   endDate?: string;
+  // Optional storage folder to read the source files from, e.g. "fy2025-26".
+  // Empty/absent = live files at the bucket root (default behavior).
+  prefix?: string;
 }
 
 const corsHeaders = {
@@ -603,6 +606,11 @@ Deno.serve(async (req: Request) => {
     const startDate = requestBody.startDate ? new Date(requestBody.startDate) : new Date(new Date().getFullYear(), 0, 1);
     const endDate = requestBody.endDate ? new Date(requestBody.endDate) : new Date();
 
+    // Optional snapshot folder (e.g. "fy2025-26"). Only fiscal-year folders
+    // are accepted; anything else falls back to the live bucket root.
+    const folder = /^fy\d{4}-\d{2}$/.test(requestBody.prefix ?? '') ? requestBody.prefix as string : '';
+    const pathPrefix = folder ? `${folder}/` : '';
+
     // Get dynamic exchange rates for the date range
     const fxRates = await getExchangeRatesForDateRange(supabase, startDate, endDate);
 
@@ -614,7 +622,7 @@ Deno.serve(async (req: Request) => {
     try {
       const { data: fileList, error: listError } = await supabase.storage
         .from('csv-files')
-        .list();
+        .list(folder || undefined);
 
       if (listError) {
         console.error('Error listing files:', listError);
@@ -634,14 +642,16 @@ Deno.serve(async (req: Request) => {
       console.error('Error searching for Shopify file:', error);
     }
 
-    // File names in storage
+    // File names in storage (optionally inside the snapshot folder)
     const fileNames = [
       'SalesEnquiryList.csv',
       shopifySalesFileName,
       'old-shopify-sales.csv',
       '2-Mario-for-Danshboard.csv',
       'costs.csv'
-    ].filter(name => name !== ''); // Remove empty shopify filename if not found
+    ]
+      .filter(name => name !== '') // Remove empty shopify filename if not found
+      .map(name => `${pathPrefix}${name}`);
 
     console.log('Using filenames:', fileNames);
 

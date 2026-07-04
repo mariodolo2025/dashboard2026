@@ -305,7 +305,10 @@ const migrateOldConfig = (): CostsConfig | null => {
 
 export const computeCostsSnapshot = (
   xeroData: XeroData | null,
-  dateRange: DateRange
+  dateRange: DateRange,
+  // Optional config override (e.g. the frozen FY snapshot config).
+  // Default: the live config from localStorage, as always.
+  configOverride?: CostsConfig
 ): CostsSnapshot => {
   const emptySnapshot: CostsSnapshot = {
     dateRange: {
@@ -325,7 +328,7 @@ export const computeCostsSnapshot = (
   }
 
   try {
-    const config = loadCostsConfig();
+    const config = configOverride ?? loadCostsConfig();
 
     const assignments = config.boards;
     const sliders = config.sliders;

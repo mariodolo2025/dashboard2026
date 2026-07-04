@@ -173,10 +173,15 @@ Deno.serve(async (req: Request) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // Optional snapshot folder (e.g. "fy2025-26"). Only fiscal-year folders
+    // are accepted; anything else falls back to the live bucket root.
+    const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
+    const folder = /^fy\d{4}-\d{2}$/.test(body?.prefix ?? '') ? `${body.prefix}/` : '';
+
     const { data: fileData, error: downloadError } = await supabase
       .storage
       .from('csv-files')
-      .download('Dolo_Ent_PTY_Ltd_-_Profit_and_Loss_Mario_2026.xlsx');
+      .download(`${folder}Dolo_Ent_PTY_Ltd_-_Profit_and_Loss_Mario_2026.xlsx`);
 
     if (downloadError) {
       throw new Error(`Failed to download file: ${downloadError.message}`);
