@@ -36,6 +36,13 @@ import {
   saveCostsConfigToSupabase,
   CostsConfig,
 } from '@/lib/costsCalculator';
+import {
+  fetchCostProfiles,
+  saveCostProfiles,
+  profileToConfig,
+  SEED_PROFILES,
+  type CostProfile,
+} from '@/lib/costsProfiles';
 
 interface DateRange {
   from?: Date;
@@ -114,6 +121,11 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
   const [isTrashModalOpen, setIsTrashModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<CostItemWithBoard | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [profiles, setProfiles] = useState<CostProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>(() => {
+    try { return localStorage.getItem('costs-active-profile') ?? ''; } catch { return ''; }
+  });
+  const [profilesBusy, setProfilesBusy] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
@@ -318,6 +330,136 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
         console.error('Failed to save costs config to Supabase:', error);
       });
     }, 500);
+  };
+
+  // ─── Cost Profiles ──────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    // Load saved profiles; seed the three defaults on first ever run.
+    fetchCostProfiles()
+      .then((list) => {
+        if (list.length === 0) {
+          setProfiles(SEED_PROFILES);
+          saveCostProfiles(SEED_PROFILES).catch(() => {});
+        } else {
+          setProfiles(list);
+        }
+      })
+      .catch((e) => console.error('Failed to load cost profiles:', e));
+  }, []);
+
+  /** Snapshot of the current canvas state as a CostsConfig. */
+  const buildConfigFromState = (): CostsConfig => {
+    const config: CostsConfig = {
+      schemaVersion: 1,
+      boards: {},
+      sliders: {},
+      adjustments: {},
+      excluded: {},
+      updatedAt: new Date().toISOString(),
+    };
+    items.forEach((item) => {
+      if (item.board !== 'pool') config.boards[item.name] = item.board;
+      config.sliders[item.name] = item.sliderValue;
+      config.adjustments[item.name] = { percent: item.adjustmentPercent, note: item.notes };
+    });
+    excludedItems.forEach((_, key) => { config.excluded[key] = true; });
+    return config;
+  };
+
+  /** Rebuild the canvas (items + excluded) from a config, and persist it as
+   *  the ACTIVE config so every downstream consumer follows the profile. */
+  const applyConfig = (config: CostsConfig) => {
+    if (!xeroData) return;
+    const adjustments: Record<string, number> = {};
+    const notes: Record<string, string> = {};
+    Object.keys(config.adjustments).forEach((n) => {
+      adjustments[n] = config.adjustments[n].percent;
+      notes[n] = config.adjustments[n].note;
+    });
+
+    const excludedMap = new Map<string, ExcludedItem>();
+    const nextItems: CostItemWithBoard[] = [];
+    xeroData.items.forEach((item) => {
+      const withBoard: CostItemWithBoard = {
+        ...item,
+        board: config.boards[item.name] || 'fixed',
+        sliderValue: config.sliders[item.name] !== undefined ? config.sliders[item.name] : 50,
+        adjustmentPercent: adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
+        notes: notes[item.name] || '',
+        id: item.name,
+      };
+      if (config.excluded[item.name]) {
+        excludedMap.set(item.name, { item: withBoard, originalBoard: withBoard.board });
+      } else {
+        nextItems.push(withBoard);
+      }
+    });
+
+    setItems(nextItems);
+    setExcludedItems(excludedMap);
+    updateConfig(nextItems, excludedMap);
+  };
+
+  const handleSelectProfile = (id: string) => {
+    setSelectedProfileId(id);
+    try { localStorage.setItem('costs-active-profile', id); } catch { /* */ }
+    const profile = profiles.find((p) => p.id === id);
+    if (profile) applyConfig(profileToConfig(profile));
+  };
+
+  const persistProfiles = async (next: CostProfile[]) => {
+    setProfilesBusy(true);
+    setProfiles(next);
+    try {
+      await saveCostProfiles(next);
+    } finally {
+      setProfilesBusy(false);
+    }
+  };
+
+  const handleSaveAsProfile = () => {
+    const name = window.prompt('New profile name:');
+    if (!name || !name.trim()) return;
+    const cfg = buildConfigFromState();
+    const profile: CostProfile = {
+      id: `p-${Date.now().toString(36)}`,
+      name: name.trim().slice(0, 60),
+      boards: cfg.boards,
+      sliders: cfg.sliders,
+      adjustments: cfg.adjustments,
+      excluded: cfg.excluded,
+      updatedAt: new Date().toISOString(),
+    };
+    setSelectedProfileId(profile.id);
+    try { localStorage.setItem('costs-active-profile', profile.id); } catch { /* */ }
+    persistProfiles([...profiles, profile]);
+  };
+
+  const handleUpdateProfile = () => {
+    const idx = profiles.findIndex((p) => p.id === selectedProfileId);
+    if (idx === -1) return;
+    if (!window.confirm(`Overwrite profile "${profiles[idx].name}" with the current canvas?`)) return;
+    const cfg = buildConfigFromState();
+    const next = [...profiles];
+    next[idx] = {
+      ...next[idx],
+      boards: cfg.boards,
+      sliders: cfg.sliders,
+      adjustments: cfg.adjustments,
+      excluded: cfg.excluded,
+      updatedAt: new Date().toISOString(),
+    };
+    persistProfiles(next);
+  };
+
+  const handleDeleteProfile = () => {
+    const profile = profiles.find((p) => p.id === selectedProfileId);
+    if (!profile) return;
+    if (!window.confirm(`Delete profile "${profile.name}"? The current canvas keeps its state.`)) return;
+    setSelectedProfileId('');
+    try { localStorage.removeItem('costs-active-profile'); } catch { /* */ }
+    persistProfiles(profiles.filter((p) => p.id !== selectedProfileId));
   };
 
   const handleSliderChange = (itemId: string, value: number[]) => {
@@ -536,6 +678,36 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
             </div>
             <TrashZone onOpenModal={() => setIsTrashModalOpen(true)} excludedCount={excludedItems.size} />
           </div>
+        </div>
+
+        {/* ─── Cost Profiles bar ─────────────────────────────────────────── */}
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-gray-50/60 px-3 py-2">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Profile</span>
+          <select
+            value={selectedProfileId}
+            onChange={(e) => handleSelectProfile(e.target.value)}
+            className="h-8 rounded-md border bg-white px-2 text-sm"
+            disabled={profilesBusy || loading}
+          >
+            <option value="">— custom (unsaved) —</option>
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          <Button variant="outline" size="sm" onClick={handleSaveAsProfile} disabled={profilesBusy || loading}>
+            Save as new…
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleUpdateProfile} disabled={profilesBusy || loading || !selectedProfileId}>
+            Update
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleDeleteProfile} disabled={profilesBusy || loading || !selectedProfileId}>
+            Delete
+          </Button>
+          {selectedProfileId && (
+            <span className="ml-1 max-w-[520px] truncate text-xs text-muted-foreground" title={profiles.find((p) => p.id === selectedProfileId)?.description}>
+              {profiles.find((p) => p.id === selectedProfileId)?.description}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-4">
