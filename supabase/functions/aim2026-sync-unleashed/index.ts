@@ -618,10 +618,14 @@ async function syncPurchaseOrders(
   supabase: any,
   creds: UnleashedCreds
 ): Promise<number> {
-  // Fetch all non-completed POs. Custom statuses (Container, DHL, Production)
-  // are used by this business to track in-transit goods.
-  // Try multiple status queries since Unleashed may not support "all"
-  const statusesToFetch = ["Placed", "Container", "DHL", "Production"];
+  // Fetch all non-completed POs. In Unleashed, OrderStatus and
+  // CustomOrderStatus are orthogonal: every in-transit PO keeps
+  // OrderStatus=Placed while the operational stage (CONTAINER,
+  // DHL-INBOUNDS, PRODUCTION, CUSTOM-PROYECTS) lives in
+  // CustomOrderStatus. The API's orderStatus filter only accepts fixed
+  // statuses — querying orderStatus=Container/DHL/Production returns 0
+  // rows — so fetching Placed covers the whole in-transit pipeline.
+  const statusesToFetch = ["Placed"];
   let allOrders: any[] = [];
 
   for (const status of statusesToFetch) {
@@ -667,7 +671,11 @@ async function syncPurchaseOrders(
   const onProdMap = new Map<string, number>();
 
   for (const order of allOrders) {
-    const status = String(order.OrderStatus ?? "").trim().toLowerCase();
+    // Effective operational status: the custom status when set (CONTAINER,
+    // DHL-INBOUNDS, PRODUCTION, ...), else the fixed OrderStatus. Same
+    // criterion as the PurchaseEnquiryList CSV loader, whose Order Status
+    // column carries the custom status.
+    const status = String(order.CustomOrderStatus ?? order.OrderStatus ?? "").trim().toLowerCase();
     if (!validStatuses.includes(status)) continue;
 
     const warehouse = String(
@@ -744,8 +752,16 @@ async function syncPurchaseOrders(
   }
 
   if (poRows.length > 0) {
-    // Delete today's PO-based snapshots only
+    // Delete today's PO-based snapshots only — and only for warehouses this
+    // sync actually produced data for. Never wipe a pseudo-warehouse whose
+    // map came back empty: that would replace CSV-loaded rows with nothing.
+    const mapsByWarehouse: Record<string, Map<string, number>> = {
+      "Container": containerMap,
+      "DHL": dhlMap,
+      "On Production": onProdMap,
+    };
     for (const wh of ["Container", "DHL", "On Production"]) {
+      if (mapsByWarehouse[wh].size === 0) continue;
       await supabase
         .from("aim2026_soh_snapshots")
         .delete()
