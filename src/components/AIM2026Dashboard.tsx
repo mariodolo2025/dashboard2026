@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from 'react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon, Download, BarChart2, ChevronDown, Truck, Container } from 'lucide-react';
+import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart, X, Warehouse, Calendar as CalendarIcon, Download, BarChart2, ChevronDown, Truck, Container, ClipboardList } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
@@ -21,6 +21,8 @@ import { FutureProjectedDemandDialog } from './aim2026/FutureProjectedDemandDial
 import { RealInboundStockDialog } from './aim2026/RealInboundStockDialog';
 import { ContainerFeasibility } from './aim2026/ContainerFeasibility';
 import { CompleteProjectionDialog } from './aim2026/complete-projection/CompleteProjectionDialog';
+import { ActionListDialog } from './aim2026/action-list/ActionListDialog';
+import { buildWorklist, DEFAULT_WORKLIST_CONFIG } from './aim2026/action-list/worklist';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -106,6 +108,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   const [realInboundOpen, setRealInboundOpen] = useState(false);
   const [containerFeasibilityOpen, setContainerFeasibilityOpen] = useState(false);
   const [completeProjectionOpen, setCompleteProjectionOpen] = useState(false);
+  const [actionListOpen, setActionListOpen] = useState(false);
 
   // PO Builder state — cart persists in localStorage across panel toggles
   const [poBuilderMode, setPOBuilderMode] = useState(false);
@@ -369,6 +372,30 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
         ? filteredData.filter((r) => exportSelectedSKUs.has(r.sku))
         : filteredData,
     [exportSelectedSKUs, filteredData]
+  );
+
+  /** Row set for the Action List (respects the export selection overlay too). */
+  const actionListData = useMemo(
+    () =>
+      exportSelectedSKUs.size > 0
+        ? filteredData.filter((r) => exportSelectedSKUs.has(r.sku))
+        : filteredData,
+    [exportSelectedSKUs, filteredData]
+  );
+
+  /** Count of SKUs needing a replenishment decision (default config), for the
+   *  top-bar Action List badge. Uses the shared worklist engine. */
+  const actionableCount = useMemo(() => {
+    const t = new Date();
+    t.setHours(0, 0, 0, 0);
+    return buildWorklist(actionListData, t, DEFAULT_WORKLIST_CONFIG)
+      .filter((r) => r.action !== 'OK').length;
+  }, [actionListData]);
+
+  /** Cart keys (sku::poType) so the Action List can show an "In draft" state. */
+  const cartKeys = useMemo(
+    () => new Set(poItems.map((i) => `${i.sku}::${i.poType}`)),
+    [poItems]
   );
 
   const filteredCount = filteredData.length;
@@ -989,6 +1016,25 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
             )}
           </Button>
 
+          <Button
+            onClick={() => setActionListOpen(true)}
+            size="sm"
+            variant="outline"
+            disabled={loading || filteredCount === 0}
+            className={`h-8 gap-1.5 text-xs font-medium ${
+              actionableCount > 0 ? 'border-amber-400 text-amber-700 hover:bg-amber-50' : ''
+            }`}
+            title="SKUs that need a replenishment decision"
+          >
+            <ClipboardList size={14} />
+            Action List
+            {actionableCount > 0 && (
+              <span className="inline-flex items-center justify-center bg-amber-500 text-white text-[9px] font-bold rounded-full min-w-[16px] h-[16px] px-1 leading-none">
+                {actionableCount}
+              </span>
+            )}
+          </Button>
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -1003,6 +1049,15 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setActionListOpen(true)}>
+                <ClipboardList size={13} className="mr-2 text-muted-foreground" />
+                Action List
+                {actionableCount > 0 && (
+                  <span className="ml-2 inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold leading-none text-amber-800">
+                    {actionableCount}
+                  </span>
+                )}
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setReportsOpen(true)}>
                 <BarChart2 size={13} className="mr-2 text-muted-foreground" />
                 Future Projected Demand
@@ -1590,6 +1645,14 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
       <ContainerFeasibility
         open={containerFeasibilityOpen}
         onOpenChange={setContainerFeasibilityOpen}
+      />
+
+      <ActionListDialog
+        open={actionListOpen}
+        onOpenChange={setActionListOpen}
+        filteredData={actionListData}
+        onAddProjectionItem={handleAddProjectionItem}
+        addedKeys={cartKeys}
       />
 
       <CompleteProjectionDialog
