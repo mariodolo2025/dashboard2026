@@ -15,7 +15,7 @@ import {
   useDroppable,
   MeasuringStrategy,
 } from '@dnd-kit/core';
-import { AlertTriangle, RefreshCw, Trash2, CalendarIcon, X } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Trash2, CalendarIcon, X, HelpCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Slider } from '@/components/ui/slider';
@@ -722,6 +722,78 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
         {/* ─── Cost Profiles bar ─────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-gray-50/60 px-3 py-2">
           <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Profile</span>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:bg-gray-200/70 hover:text-foreground"
+                title="How the Costs tab works"
+              >
+                <HelpCircle className="h-4 w-4" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[440px] max-h-[70vh] overflow-y-auto text-sm leading-relaxed">
+              <div className="space-y-3">
+                <div>
+                  <h4 className="font-semibold text-foreground">What this tab does</h4>
+                  <p className="text-muted-foreground">
+                    Costs come <b>live from the Xero API</b> (synced daily — see Config → Connections),
+                    not from a manual file. Each expense account is placed on a board so the rest of the
+                    dashboard (Cost distribution, By Channel, FY Report) knows how to treat it.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-foreground">The boards</h4>
+                  <ul className="list-disc pl-4 text-muted-foreground space-y-0.5">
+                    <li><b>Fixed</b> — structural costs that don't scale with sales (wages, software, rent-like).</li>
+                    <li><b>Variable</b> — costs that scale with each sale (advertising, freight, payment fees).</li>
+                    <li><b>Andrea's costs</b> — her discretionary costs, toggled separately in By Channel.</li>
+                    <li><b>Pool</b> — parked / unclassified: <b>shown but NOT counted</b>. New Xero accounts land here until you place them, so nothing silently inflates a total.</li>
+                    <li><b>Trash</b> — excluded from all calculations. The trash is <b>per profile</b>.</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-foreground">What Xero sends, and what we filter</h4>
+                  <p className="text-muted-foreground">
+                    Only <b>Operating Expense</b> accounts reach this canvas. Income and Cost of Sales
+                    accounts (Sales, cost of goods sold) are filtered out at the source — COGS is already
+                    deducted per-SKU elsewhere, so counting it here would double it.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-foreground">Excluded on purpose (in the seed profiles)</h4>
+                  <ul className="list-disc pl-4 text-muted-foreground space-y-0.5">
+                    <li><b>Stock purchased</b> — inventory buys = COGS, already counted per-SKU.</li>
+                    <li><b>Rates &amp; Taxes — Tax remittances</b> — GST/BAS (pass-through), income tax (below the operating line), personal tax, and super remittances (already in the Superannuation account). Not a cost of operating.</li>
+                    <li><b>Foreign Currency Gains and Losses</b> — accounting revaluations, not spend.</li>
+                    <li><b>Interest Expense</b>.</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-foreground">Split accounts</h4>
+                  <p className="text-muted-foreground">
+                    "Rates &amp; Taxes" is split by transaction contact into <b>— Tax remittances</b> (ATO,
+                    excluded), <b>— Property &amp; Compliance</b> (council rates, body corporate, ASIC, land
+                    tax — a real cost) and <b>— Review / — Unclassified</b> (unknown contacts or amounts not
+                    explained by transactions, e.g. accountant journals). Nothing is ever estimated.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-foreground">Profiles</h4>
+                  <p className="text-muted-foreground">
+                    A profile is a saved classification (which account sits on which board + what's trashed).
+                    Switching profiles re-frames the whole dashboard. Edit anything and a <b>Save changes</b>
+                    button appears to update that profile, or use <b>Save as new</b>.
+                  </p>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
           <select
             value={selectedProfileId}
             onChange={(e) => handleSelectProfile(e.target.value)}
