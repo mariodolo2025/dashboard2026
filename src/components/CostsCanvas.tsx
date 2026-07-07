@@ -477,19 +477,28 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
     });
     excludedItems.forEach((_, key) => { cfg.excluded[key] = true; });
 
-    const normSliders = (s: Record<string, number>, names: string[]) => {
-      const out: Record<string, number> = {};
-      names.forEach((n) => { out[n] = s[n] !== undefined ? s[n] : 50; });
-      return out;
-    };
-    const allNames = [...items.map((i) => i.name)];
-    return (
-      JSON.stringify(cfg.boards) !== JSON.stringify(
-        Object.fromEntries(Object.entries(profile.boards).filter(([n]) => allNames.includes(n) || cfg.boards[n] !== undefined))
-      ) ||
-      JSON.stringify(normSliders(cfg.sliders, allNames)) !== JSON.stringify(normSliders(profile.sliders, allNames)) ||
-      JSON.stringify(Object.keys(cfg.excluded).sort()) !== JSON.stringify(Object.keys(profile.excluded).filter((k) => profile.excluded[k]).sort())
-    );
+    // Build one canonical, order-independent signature per side over the SAME
+    // universe of accounts (everything currently visible: columns + trash).
+    // Each account maps to [state, slider], where state is its board, 'pool',
+    // or 'excluded'. Comparing sorted signatures is robust to key order.
+    const universe = new Set<string>([
+      ...items.map((i) => i.name),
+      ...Array.from(excludedItems.keys()),
+    ]);
+
+    const canvasSig = Array.from(universe).sort().map((name) => {
+      const state = cfg.excluded[name] ? 'excluded' : (cfg.boards[name] ?? 'pool');
+      const slider = cfg.sliders[name] !== undefined ? cfg.sliders[name] : 50;
+      return `${name}|${state}|${slider}`;
+    });
+
+    const profileSig = Array.from(universe).sort().map((name) => {
+      const state = profile.excluded[name] ? 'excluded' : (profile.boards[name] ?? 'pool');
+      const slider = profile.sliders[name] !== undefined ? profile.sliders[name] : 50;
+      return `${name}|${state}|${slider}`;
+    });
+
+    return JSON.stringify(canvasSig) !== JSON.stringify(profileSig);
   }, [items, excludedItems, profiles, selectedProfileId, loading]);
 
   const handleSliderChange = (itemId: string, value: number[]) => {
