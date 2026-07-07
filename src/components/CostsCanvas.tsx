@@ -732,8 +732,11 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
                 <HelpCircle className="h-4 w-4" />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-[440px] max-h-[70vh] overflow-y-auto text-sm leading-relaxed">
-              <div className="space-y-3">
+            <PopoverContent align="start" collisionPadding={12} className="w-[440px] p-0 text-sm leading-relaxed">
+              <div
+                className="max-h-[60vh] space-y-3 overflow-y-auto overscroll-contain p-4"
+                onWheel={(e) => e.stopPropagation()}
+              >
                 <div>
                   <h4 className="font-semibold text-foreground">What this tab does</h4>
                   <p className="text-muted-foreground">
