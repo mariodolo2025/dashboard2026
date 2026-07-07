@@ -20,6 +20,10 @@ create table if not exists xero_pl_monthly (
   year int not null,
   month int not null check (month between 1 and 12),
   amount numeric not null default 0,
+  -- P&L section the account belongs to (Income / Less Cost of Sales /
+  -- Less Operating Expenses ...). The costs canvas only consumes expense
+  -- sections; income and COGS never reach it.
+  section text,
   synced_at timestamptz not null default now(),
   primary key (account_name, year, month)
 );

@@ -264,13 +264,13 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
             excludedMap.set(itemName, {
               item: {
                 ...matchingItem,
-                board: assignments[itemName] || 'fixed',
+                board: assignments[itemName] || 'pool',
                 sliderValue: sliders[itemName] !== undefined ? sliders[itemName] : 50,
                 adjustmentPercent: adjustments[itemName] !== undefined ? adjustments[itemName] : 100,
                 notes: notes[itemName] || '',
                 id: itemName,
               },
-              originalBoard: assignments[itemName] || 'fixed',
+              originalBoard: assignments[itemName] || 'pool',
             });
           }
         }
@@ -280,7 +280,7 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
         .filter((item) => !config.excluded[item.name])
         .map((item) => ({
           ...item,
-          board: assignments[item.name] || 'fixed',
+          board: assignments[item.name] || 'pool',
           sliderValue: sliders[item.name] !== undefined ? sliders[item.name] : 50,
           adjustmentPercent: adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
           notes: notes[item.name] || '',
@@ -383,7 +383,7 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
     xeroData.items.forEach((item) => {
       const withBoard: CostItemWithBoard = {
         ...item,
-        board: config.boards[item.name] || 'fixed',
+        board: config.boards[item.name] || 'pool',
         sliderValue: config.sliders[item.name] !== undefined ? config.sliders[item.name] : 50,
         adjustmentPercent: adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
         notes: notes[item.name] || '',
@@ -439,7 +439,6 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
   const handleUpdateProfile = () => {
     const idx = profiles.findIndex((p) => p.id === selectedProfileId);
     if (idx === -1) return;
-    if (!window.confirm(`Overwrite profile "${profiles[idx].name}" with the current canvas?`)) return;
     const cfg = buildConfigFromState();
     const next = [...profiles];
     next[idx] = {
@@ -461,6 +460,37 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
     try { localStorage.removeItem('costs-active-profile'); } catch { /* */ }
     persistProfiles(profiles.filter((p) => p.id !== selectedProfileId));
   };
+
+  /** True when the canvas differs from the selected profile — drives the
+   *  "Save changes" button so edits are never silently lost. */
+  const profileDirty = useMemo(() => {
+    const profile = profiles.find((p) => p.id === selectedProfileId);
+    if (!profile || loading) return false;
+    const cfg = {
+      boards: {} as Record<string, string>,
+      sliders: {} as Record<string, number>,
+      excluded: {} as Record<string, boolean>,
+    };
+    items.forEach((item) => {
+      if (item.board !== 'pool') cfg.boards[item.name] = item.board;
+      cfg.sliders[item.name] = item.sliderValue;
+    });
+    excludedItems.forEach((_, key) => { cfg.excluded[key] = true; });
+
+    const normSliders = (s: Record<string, number>, names: string[]) => {
+      const out: Record<string, number> = {};
+      names.forEach((n) => { out[n] = s[n] !== undefined ? s[n] : 50; });
+      return out;
+    };
+    const allNames = [...items.map((i) => i.name)];
+    return (
+      JSON.stringify(cfg.boards) !== JSON.stringify(
+        Object.fromEntries(Object.entries(profile.boards).filter(([n]) => allNames.includes(n) || cfg.boards[n] !== undefined))
+      ) ||
+      JSON.stringify(normSliders(cfg.sliders, allNames)) !== JSON.stringify(normSliders(profile.sliders, allNames)) ||
+      JSON.stringify(Object.keys(cfg.excluded).sort()) !== JSON.stringify(Object.keys(profile.excluded).filter((k) => profile.excluded[k]).sort())
+    );
+  }, [items, excludedItems, profiles, selectedProfileId, loading]);
 
   const handleSliderChange = (itemId: string, value: number[]) => {
     setItems((prev) => {
@@ -694,16 +724,23 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
+          {selectedProfileId && profileDirty && (
+            <>
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                modified
+              </span>
+              <Button size="sm" onClick={handleUpdateProfile} disabled={profilesBusy || loading}>
+                Save changes
+              </Button>
+            </>
+          )}
           <Button variant="outline" size="sm" onClick={handleSaveAsProfile} disabled={profilesBusy || loading}>
             Save as new…
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleUpdateProfile} disabled={profilesBusy || loading || !selectedProfileId}>
-            Update
           </Button>
           <Button variant="outline" size="sm" onClick={handleDeleteProfile} disabled={profilesBusy || loading || !selectedProfileId}>
             Delete
           </Button>
-          {selectedProfileId && (
+          {selectedProfileId && !profileDirty && (
             <span className="ml-1 max-w-[520px] truncate text-xs text-muted-foreground" title={profiles.find((p) => p.id === selectedProfileId)?.description}>
               {profiles.find((p) => p.id === selectedProfileId)?.description}
             </span>

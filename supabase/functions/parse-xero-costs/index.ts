@@ -172,10 +172,19 @@ const SPLIT_RULES: Record<string, { bucket: string; pattern: RegExp }[]> = {
  *  tables (populated daily by xero-sync). Returns null when the tables are
  *  empty (Xero not synced yet) so the caller can fall back to the xlsx. */
 async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
-  const { data: plRows, error } = await supabase
+  const { data: allRows, error } = await supabase
     .from('xero_pl_monthly')
-    .select('account_name, year, month, amount');
-  if (error || !plRows || plRows.length === 0) return null;
+    .select('account_name, year, month, amount, section');
+  if (error || !allRows || allRows.length === 0) return null;
+
+  // The costs canvas is about COSTS: only expense sections qualify. Income
+  // and Cost of Sales accounts (Sales, cost of goods sold, ...) must never
+  // reach the canvas — the manual xlsx only exported expenses and the API
+  // path has to match that contract. Rows without a section (pre-section
+  // syncs) are treated as unusable so the caller falls back to the xlsx
+  // until a fresh sync fills the column.
+  const plRows = allRows.filter((r: any) => /expens/i.test(String(r.section ?? '')));
+  if (plRows.length === 0) return null;
 
   // Months present, sorted ascending.
   const monthKeys = new Map<string, { year: number; month: number }>();

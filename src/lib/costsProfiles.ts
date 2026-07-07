@@ -50,6 +50,10 @@ const COMMON_EXCLUDED: Record<string, boolean> = {
   'Unrealised Currency Gains': true,
   'Realised Currency Gains': true,
   'Bank Revaluations': true,
+  // The API standard P&L layout consolidates the three currency lines above
+  // into this single account; both forms stay excluded (xlsx fallback keeps
+  // the old names).
+  'Foreign Currency Gains and Losses': true,
   'Interest Expense': true,
 };
 

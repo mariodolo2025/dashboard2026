@@ -150,10 +150,12 @@ async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: s
     .map((c: any) => parseHeaderCell(String(c?.Value ?? '')));
 
   const upserts: any[] = [];
-  const walk = (rows: any[]) => {
+  const walk = (rows: any[], section: string) => {
     for (const row of rows ?? []) {
       if (row.RowType === 'Section') {
-        walk(row.Rows);
+        // Section title tells us Income vs Cost of Sales vs Operating
+        // Expenses — the costs canvas later filters on it.
+        walk(row.Rows, String(row.Title ?? section ?? '').trim());
         continue;
       }
       if (row.RowType !== 'Row') continue; // skip SummaryRow (totals)
@@ -169,12 +171,13 @@ async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: s
           year: period.year,
           month: period.month,
           amount,
+          section: section || null,
           synced_at: new Date().toISOString(),
         });
       }
     }
   };
-  walk(rep.Rows);
+  walk(rep.Rows, '');
 
   for (let i = 0; i < upserts.length; i += 500) {
     const { error } = await supabase
