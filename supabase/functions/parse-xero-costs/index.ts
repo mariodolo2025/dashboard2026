@@ -1,5 +1,6 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import * as XLSX from 'npm:xlsx@0.18.5';
+import { SPLIT_RULES, classifyLine } from '../_shared/xeroSplitRules.ts';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -155,40 +156,8 @@ function shouldSkipPlAccountRow(name: string): boolean {
   return false;
 }
 
-// ─── Virtual account split rules ─────────────────────────────────────────────
-// Accounts that mix non-operating and operating spend get split into virtual
-// accounts using the transaction lines synced by xero-sync (matched by
-// contact). Anything the rules don't recognize lands in "— Review"; any P&L
-// remainder not covered by transaction lines lands in "— Unclassified" (e.g.
-// accountant manual journals) — never silently estimated.
-const SPLIT_RULES: Record<string, { bucket: string; pattern: RegExp }[]> = {
-  'Rates & Taxes': [
-    { bucket: 'Tax remittances', pattern: /taxation office|(^|\W)ato(\W|$)/i },
-    { bucket: 'Property & Compliance', pattern: /gold coast|body corporate|asic|land tax|council/i },
-  ],
-  // Freight matches on the supplier CONTACT (line descriptions are generic
-  // "freight"). Order matters — first match wins:
-  //   Inbound — Container            = Diamond (sea freight bills)
-  //   Inbound — DHL International     = the "DHL"/"DHL EXPRESS" contact (import
-  //                                    air freight for goods that missed the
-  //                                    container). NOT "DHL e-commerce".
-  //   Outbound — B2C AU              = Australia Post + DHL e-commerce (old B2C courier)
-  //   Outbound — B2B                 = One Freight, Star Track, Interparcel, TFM,
-  //                                    Regional Express, Interflow
-  //   Outbound — US                  = UPS + ZONOS (US import taxes we pay)
-  //   Subscription                   = Starshipit (software sub, not shipping)
-  // NOTE (2026-07): market-level split (AU vs US) can't come from Xero because
-  // US parcels also ship via Australia Post — that needs the Starshipit
-  // connector (planned).
-  'Freight & Courier': [
-    { bucket: 'Subscription (Starshipit)', pattern: /starshipit|starship/i },
-    { bucket: 'Inbound — Container', pattern: /diamond/i },
-    { bucket: 'Inbound — DHL International', pattern: /^dhl(\s+express)?$/i },
-    { bucket: 'Outbound — B2C AU', pattern: /australia\s*post|dhl\s*e-?commerce/i },
-    { bucket: 'Outbound — B2B', pattern: /one\s*freight|star\s*track|interparcel|tfm|regional\s*express|interflow/i },
-    { bucket: 'Outbound — US', pattern: /\bups\b|zonos/i },
-  ],
-};
+// Split rules live in ../_shared/xeroSplitRules.ts (single source of truth,
+// shared with the drill-down function xero-account-detail).
 
 /** Build the CostsResponse from the xero_pl_monthly / xero_account_lines
  *  tables (populated daily by xero-sync). Returns null when the tables are
@@ -234,14 +203,15 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
   }
 
   // Split watched accounts into virtual accounts by transaction lines.
-  for (const [account, rules] of Object.entries(SPLIT_RULES)) {
+  for (const account of Object.keys(SPLIT_RULES)) {
     if (!byAccount.has(account)) continue;
     const plMonthly = byAccount.get(account)!;
 
     const { data: lines, error: linesErr } = await supabase
       .from('xero_account_lines')
       .select('journal_date, contact_name, net_amount')
-      .eq('account_name', account);
+      .eq('account_name', account)
+      .limit(100000); // override PostgREST's default 1000-row cap
     if (linesErr || !lines) continue; // keep the raw account if detail is unavailable
 
     const buckets = new Map<string, number[]>();
@@ -256,9 +226,7 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
       const d = new Date(line.journal_date);
       const idx = monthIndex.get(`${d.getFullYear()}-${d.getMonth() + 1}`);
       if (idx === undefined) continue; // line outside the P&L window
-      const contact = String(line.contact_name ?? '');
-      const rule = rules.find((r) => r.pattern.test(contact));
-      const bucket = rule ? rule.bucket : 'Review';
+      const bucket = classifyLine(account, line.contact_name) ?? 'Review';
       ensure(bucket)[idx] += Number(line.net_amount) || 0;
       coveredByLines[idx] += Number(line.net_amount) || 0;
     }

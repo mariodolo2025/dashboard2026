@@ -8,13 +8,26 @@
 // =============================================================================
 
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { RefreshCw, Download, Info } from 'lucide-react';
+import { RefreshCw, Download, Info, X, Search } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn, downloadCSV } from '@/lib/utils';
+
+interface DetailLine {
+  date: string; contact: string | null; description: string | null;
+  amount: number; source: string; bucket: string;
+}
+interface DetailData {
+  total: number; count: number;
+  byContact: { contact: string; total: number; count: number }[];
+  lines: DetailLine[];
+}
+
+const fmtAUD2 = (v: number) => `$${v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 interface MonthMeta { label: string; year: number; month: number; }
 interface CostItem { name: string; monthly: number[]; }
@@ -50,6 +63,32 @@ export function FreightReportContent() {
   const [items, setItems] = useState<CostItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Drill-down state: the category being inspected + its transaction detail.
+  const [detailBucket, setDetailBucket] = useState<string | null>(null);
+  const [detail, setDetail] = useState<DetailData | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailSearch, setDetailSearch] = useState('');
+
+  const openDetail = (bucket: string) => {
+    // Unclassified has no transaction lines (it's the P&L remainder), so skip.
+    if (bucket === 'Unclassified') return;
+    setDetailBucket(bucket);
+    setDetail(null);
+    setDetailSearch('');
+    setDetailLoading(true);
+    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/xero-account-detail`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ account: 'Freight & Courier', bucket }),
+    })
+      .then((r) => r.json())
+      .then((d) => { if (d.success) setDetail(d); else throw new Error(d.message); })
+      .catch((e) => setDetail({ total: 0, count: 0, byContact: [], lines: [], ...{ error: String(e) } } as any))
+      .finally(() => setDetailLoading(false));
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -128,20 +167,28 @@ export function FreightReportContent() {
             <>
               {/* KPI cards */}
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                {categories.map((c) => (
-                  <Card key={c.name}>
-                    <CardContent className="pt-4 pb-3">
-                      <div className="flex items-center gap-1.5">
-                        <span className="h-2.5 w-2.5 rounded-full" style={{ background: COLORS[c.name] }} />
-                        <p className="text-xs font-medium text-muted-foreground">{c.name}</p>
-                      </div>
-                      <p className="mt-1 text-xl font-bold tabular-nums">{fmtAUD(c.total)}</p>
-                      <p className="text-[11px] text-muted-foreground">
-                        {grandTotal > 0 ? ((c.total / grandTotal) * 100).toFixed(1) : 0}% of freight
-                      </p>
-                    </CardContent>
-                  </Card>
-                ))}
+                {categories.map((c) => {
+                  const clickable = c.name !== 'Unclassified';
+                  return (
+                    <Card
+                      key={c.name}
+                      onClick={() => clickable && openDetail(c.name)}
+                      className={cn(clickable && 'cursor-pointer transition-shadow hover:shadow-md')}
+                    >
+                      <CardContent className="pt-4 pb-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ background: COLORS[c.name] }} />
+                          <p className="text-xs font-medium text-muted-foreground">{c.name}</p>
+                        </div>
+                        <p className="mt-1 text-xl font-bold tabular-nums">{fmtAUD(c.total)}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {grandTotal > 0 ? ((c.total / grandTotal) * 100).toFixed(1) : 0}% of freight
+                          {clickable && <span className="ml-1 text-blue-600">· view detail</span>}
+                        </p>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
               </div>
 
               {/* Note about market split */}
@@ -185,7 +232,11 @@ export function FreightReportContent() {
                     </thead>
                     <tbody>
                       {categories.map((c) => (
-                        <tr key={c.name} className="border-b last:border-0">
+                        <tr
+                          key={c.name}
+                          className={cn('border-b last:border-0', c.name !== 'Unclassified' && 'cursor-pointer hover:bg-[#faf9f7]')}
+                          onClick={() => openDetail(c.name)}
+                        >
                           <td className="px-2 py-1.5">
                             <span className="inline-flex items-center gap-1.5">
                               <span className="h-2 w-2 rounded-full" style={{ background: COLORS[c.name] }} />
@@ -217,6 +268,132 @@ export function FreightReportContent() {
           )}
         </div>
       </div>
+
+      {detailBucket && (
+        <DetailModal
+          bucket={detailBucket}
+          data={detail}
+          loading={detailLoading}
+          search={detailSearch}
+          onSearch={setDetailSearch}
+          onClose={() => setDetailBucket(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// --- Drill-down modal ----------------------------------------------------------
+
+function DetailModal({
+  bucket, data, loading, search, onSearch, onClose,
+}: {
+  bucket: string;
+  data: DetailData | null;
+  loading: boolean;
+  search: string;
+  onSearch: (v: string) => void;
+  onClose: () => void;
+}) {
+  const lines = useMemo(() => {
+    if (!data) return [];
+    const q = search.trim().toLowerCase();
+    return q
+      ? data.lines.filter((l) => `${l.contact ?? ''} ${l.description ?? ''}`.toLowerCase().includes(q))
+      : data.lines;
+  }, [data, search]);
+
+  return createPortal(
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex shrink-0 items-center justify-between border-b px-5 py-3">
+          <div>
+            <h3 className="text-sm font-bold">Freight — {bucket}</h3>
+            {data && (
+              <p className="text-xs text-muted-foreground">
+                {data.count} transactions · {fmtAUD(data.total)} (raw ledger, pre-P&L reconciliation)
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="rounded-md p-1.5 text-[#828a98] hover:bg-[#faf9f7]" aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+
+        {loading && (
+          <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
+            <RefreshCw className="h-4 w-4 animate-spin" /> Loading transactions…
+          </div>
+        )}
+
+        {data && !loading && (
+          <div className="flex min-h-0 flex-1 flex-col">
+            {/* Contact rollup */}
+            <div className="shrink-0 border-b bg-[#faf9f7] px-5 py-2">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                {data.byContact.map((c) => (
+                  <span key={c.contact} className="text-muted-foreground">
+                    <b className="text-foreground">{c.contact}</b> {fmtAUD(c.total)} <span className="opacity-60">({c.count})</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* Search */}
+            <div className="shrink-0 px-5 py-2">
+              <div className="relative">
+                <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={search}
+                  onChange={(e) => onSearch(e.target.value)}
+                  placeholder="Search contact / description"
+                  className="h-7 w-full rounded-md border pl-7 pr-2 text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Lines */}
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-4">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-white">
+                  <tr className="border-b text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="py-1.5 pr-3">Date</th>
+                    <th className="py-1.5 pr-3">Contact</th>
+                    <th className="py-1.5 pr-3">Description</th>
+                    <th className="py-1.5 pr-3">Source</th>
+                    <th className="py-1.5 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((l, i) => (
+                    <tr key={i} className="border-b last:border-0">
+                      <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{l.date}</td>
+                      <td className="py-1.5 pr-3">{l.contact ?? '—'}</td>
+                      <td className="py-1.5 pr-3 text-muted-foreground">{l.description || '·'}</td>
+                      <td className="py-1.5 pr-3">
+                        <span className={cn(
+                          'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                          l.source === 'invoice' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-600',
+                        )}>
+                          {l.source === 'invoice' ? 'bill' : 'bank'}
+                        </span>
+                      </td>
+                      <td className="py-1.5 text-right tabular-nums">{fmtAUD2(l.amount)}</td>
+                    </tr>
+                  ))}
+                  {lines.length === 0 && (
+                    <tr><td colSpan={5} className="py-10 text-center text-sm text-muted-foreground">No transactions match.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body,
   );
 }
