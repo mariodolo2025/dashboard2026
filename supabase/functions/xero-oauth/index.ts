@@ -16,7 +16,13 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
-const SCOPES = 'offline_access accounting.reports.read accounting.journals.read';
+// Granular scopes (mandatory for apps created after March 2026; the old broad
+// accounting.reports.read / accounting.journals.read return invalid_scope).
+// Journals (general ledger) is premium-gated now — we use BankTransactions
+// instead for account-line detail, which covers the Spend Money payments that
+// make up the accounts we need to split. settings.read = chart of accounts
+// (code → name mapping).
+const SCOPES = 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.settings.read';
 const AUTHORIZE_URL = 'https://login.xero.com/identity/connect/authorize';
 const TOKEN_URL = 'https://identity.xero.com/connect/token';
 const CONNECTIONS_URL = 'https://api.xero.com/connections';

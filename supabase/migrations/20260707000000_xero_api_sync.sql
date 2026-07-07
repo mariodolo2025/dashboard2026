@@ -27,9 +27,10 @@ alter table xero_pl_monthly enable row level security;
 
 create table if not exists xero_account_lines (
   journal_line_id uuid primary key,
-  journal_number bigint not null,
+  journal_number bigint,
   journal_date date not null,
   account_name text not null,
+  contact_name text,
   description text,
   net_amount numeric not null,
   created_at timestamptz not null default now()

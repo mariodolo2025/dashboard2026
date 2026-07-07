@@ -1,14 +1,18 @@
 // =============================================================================
 // Xero API sync — pulls accounting data into Supabase tables.
 //
-// Steps (POST body { step?: "pl" | "journals" | "all" }, default "all"):
-//   pl        → Reports/ProfitAndLoss by account × month (rolling 12 months)
-//               → upserts xero_pl_monthly. 1:1 replacement for the manual
-//               "Profit and Loss Mario" xlsx.
-//   journals  → walks the Journals endpoint incrementally (offset cursor in
-//               xero_sync_state) and stores lines for WATCHED_ACCOUNTS only
-//               (accounts that need transaction-level breakdown, e.g.
-//               "Rates & Taxes") → xero_account_lines.
+// Steps (POST body { step?: "pl" | "transactions" | "all" }, default "all"):
+//   pl           → Reports/ProfitAndLoss by account × month (rolling 12
+//                  months) → upserts xero_pl_monthly. 1:1 replacement for the
+//                  manual "Profit and Loss Mario" xlsx.
+//   transactions → BankTransactions (Spend/Receive Money) whose line items hit
+//                  a WATCHED_ACCOUNT (accounts needing transaction-level
+//                  breakdown, e.g. "Rates & Taxes") → xero_account_lines.
+//                  Incremental via If-Modified-Since (last sync time in
+//                  xero_sync_state). The Journals endpoint would be the
+//                  canonical source but is premium-gated for post-2026 apps;
+//                  Spend Money covers these accounts (validated against the
+//                  Apr–Jun 2026 account-transaction exports).
 //
 // Token handling: Xero refresh tokens ROTATE on every use. The new refresh
 // token is persisted immediately after each refresh; the daily cron keeps it
@@ -26,12 +30,14 @@ const corsHeaders = {
 const TOKEN_URL = 'https://identity.xero.com/connect/token';
 const API_BASE = 'https://api.xero.com/api.xro/2.0';
 
-/** Accounts whose journal lines we persist for breakdown rules. */
+/** Accounts whose transaction lines we persist for breakdown rules. */
 const WATCHED_ACCOUNTS = ['Rates & Taxes'];
 
-/** Max journal pages (100 journals each) per invocation — the first full walk
- *  resumes across runs via the cursor instead of hitting edge CPU limits. */
-const MAX_JOURNAL_PAGES_PER_RUN = 60;
+/** History start for the first transactions pull (prior FY start, for YoY). */
+const TRANSACTIONS_SINCE = '2024-07-01';
+
+/** Max BankTransactions pages (100 each) per invocation. */
+const MAX_TX_PAGES_PER_RUN = 60;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -84,19 +90,20 @@ async function getAccessToken(supabase: any): Promise<{ accessToken: string; ten
   return { accessToken: tokens.access_token, tenantId: row.tenant_id };
 }
 
-async function xeroGet(path: string, accessToken: string, tenantId: string): Promise<any> {
+async function xeroGet(path: string, accessToken: string, tenantId: string, extraHeaders: Record<string, string> = {}): Promise<any> {
   const res = await fetch(`${API_BASE}/${path}`, {
     headers: {
       'Authorization': `Bearer ${accessToken}`,
       'Xero-Tenant-Id': tenantId,
       'Accept': 'application/json',
+      ...extraHeaders,
     },
   });
   if (res.status === 429) {
     // Basic backoff on rate limit, single retry.
     const wait = Number(res.headers.get('Retry-After') ?? 2);
     await new Promise((r) => setTimeout(r, Math.min(wait, 10) * 1000));
-    return xeroGet(path, accessToken, tenantId);
+    return xeroGet(path, accessToken, tenantId, extraHeaders);
   }
   if (!res.ok) {
     throw new Error(`Xero GET ${path.split('?')[0]} failed: HTTP ${res.status}`);
@@ -178,50 +185,83 @@ async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: s
   return upserts.length;
 }
 
-// ─── Step: Journals (incremental cursor, watched accounts only) ─────────────
+// ─── Step: BankTransactions (watched accounts only, If-Modified-Since) ──────
 
 function parseXeroDate(v: string): string | null {
-  // "/Date(1783295311986+0000)/" → ISO date
-  const m = String(v ?? '').match(/\/Date\((\d+)/);
+  const s = String(v ?? '');
+  // Prefer plain "2026-05-05T00:00:00" (DateString), fall back to /Date(ms)/.
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const m = s.match(/\/Date\((\d+)/);
   if (!m) return null;
   return new Date(Number(m[1])).toISOString().slice(0, 10);
 }
 
-async function syncJournals(supabase: any, accessToken: string, tenantId: string): Promise<{ lines: number; cursor: number; done: boolean }> {
+async function syncBankTransactions(supabase: any, accessToken: string, tenantId: string): Promise<{ lines: number; pages: number; done: boolean }> {
+  // Chart of accounts: resolve the account CODES for the watched names —
+  // BankTransactions line items carry AccountCode, not AccountName.
+  const accountsBody = await xeroGet('Accounts', accessToken, tenantId);
+  const codeToName = new Map<string, string>();
+  for (const a of accountsBody?.Accounts ?? []) {
+    if (a.Code) codeToName.set(String(a.Code), String(a.Name ?? '').trim());
+  }
+  const watchedCodes = new Set(
+    [...codeToName.entries()].filter(([, name]) => WATCHED_ACCOUNTS.includes(name)).map(([code]) => code),
+  );
+  if (watchedCodes.size === 0) {
+    return { lines: 0, pages: 0, done: true };
+  }
+
+  // Incremental: only transactions modified since the last successful run.
   const { data: stateRow } = await supabase
     .from('xero_sync_state')
     .select('value')
-    .eq('key', 'journals_cursor')
+    .eq('key', 'banktx_since')
     .maybeSingle();
-  let offset: number = stateRow?.value?.offset ?? 0;
+  const modifiedSince: string | null = stateRow?.value?.modifiedSince ?? null;
+  const runStartedAt = new Date().toISOString();
+
+  const headers: Record<string, string> = modifiedSince
+    ? { 'If-Modified-Since': new Date(modifiedSince).toUTCString() }
+    : {};
+  const whereDate = `Date >= DateTime(${TRANSACTIONS_SINCE.split('-').map(Number).join(',')})`;
 
   let stored = 0;
+  let page = 1;
   let done = false;
 
-  for (let page = 0; page < MAX_JOURNAL_PAGES_PER_RUN; page++) {
-    const body = await xeroGet(`Journals?offset=${offset}`, accessToken, tenantId);
-    const journals: any[] = body?.Journals ?? [];
-    if (journals.length === 0) {
+  for (; page <= MAX_TX_PAGES_PER_RUN; page++) {
+    const body = await xeroGet(
+      `BankTransactions?where=${encodeURIComponent(whereDate)}&page=${page}`,
+      accessToken,
+      tenantId,
+      headers,
+    );
+    const txs: any[] = body?.BankTransactions ?? [];
+    if (txs.length === 0) {
       done = true;
       break;
     }
 
     const rows: any[] = [];
-    for (const j of journals) {
-      const jDate = parseXeroDate(j.JournalDate);
-      for (const line of j.JournalLines ?? []) {
-        const account = String(line.AccountName ?? '').trim();
-        if (!WATCHED_ACCOUNTS.includes(account)) continue;
+    for (const tx of txs) {
+      if (tx.Status === 'DELETED' || tx.Status === 'VOIDED') continue;
+      const txDate = parseXeroDate(tx.DateString ?? tx.Date);
+      const contact = String(tx.Contact?.Name ?? '').trim() || null;
+      // RECEIVE money against an expense account = refund → negative.
+      const sign = String(tx.Type ?? '').startsWith('RECEIVE') ? -1 : 1;
+      for (const line of tx.LineItems ?? []) {
+        const code = String(line.AccountCode ?? '');
+        if (!watchedCodes.has(code)) continue;
         rows.push({
-          journal_line_id: line.JournalLineID,
-          journal_number: j.JournalNumber,
-          journal_date: jDate,
-          account_name: account,
+          journal_line_id: line.LineItemID,
+          journal_number: null,
+          journal_date: txDate,
+          account_name: codeToName.get(code),
+          contact_name: contact,
           description: line.Description ?? null,
-          net_amount: Number(line.NetAmount ?? 0),
+          net_amount: sign * Number(line.LineAmount ?? 0),
         });
       }
-      offset = Math.max(offset, Number(j.JournalNumber ?? offset));
     }
 
     if (rows.length > 0) {
@@ -232,19 +272,22 @@ async function syncJournals(supabase: any, accessToken: string, tenantId: string
       stored += rows.length;
     }
 
-    if (journals.length < 100) {
+    if (txs.length < 100) {
       done = true;
       break;
     }
   }
 
-  await supabase.from('xero_sync_state').upsert({
-    key: 'journals_cursor',
-    value: { offset },
-    updated_at: new Date().toISOString(),
-  });
+  if (done) {
+    // Next run only needs deltas from this run's start.
+    await supabase.from('xero_sync_state').upsert({
+      key: 'banktx_since',
+      value: { modifiedSince: runStartedAt },
+      updated_at: new Date().toISOString(),
+    });
+  }
 
-  return { lines: stored, cursor: offset, done };
+  return { lines: stored, pages: page, done };
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -269,8 +312,8 @@ Deno.serve(async (req: Request) => {
     if (step === 'pl' || step === 'all') {
       result.plRows = await syncProfitAndLoss(supabase, accessToken, tenantId);
     }
-    if (step === 'journals' || step === 'all') {
-      result.journals = await syncJournals(supabase, accessToken, tenantId);
+    if (step === 'transactions' || step === 'all') {
+      result.transactions = await syncBankTransactions(supabase, accessToken, tenantId);
     }
 
     return json(result);
