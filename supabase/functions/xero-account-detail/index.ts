@@ -39,6 +39,9 @@ Deno.serve(async (req: Request) => {
     const body = await req.json().catch(() => ({}));
     const account = String(body?.account ?? '');
     const bucket = body?.bucket ? String(body.bucket) : null;
+    // Optional single-month filter (e.g. year=2025, month=11 → Nov 2025 only).
+    const year = Number.isInteger(body?.year) ? body.year as number : null;
+    const month = Number.isInteger(body?.month) ? body.month as number : null;
     if (!SPLIT_RULES[account]) {
       return json({ success: false, message: `Account "${account}" is not a split account` }, 400);
     }
@@ -50,7 +53,7 @@ Deno.serve(async (req: Request) => {
     for (let from = 0; ; from += pageSize) {
       const { data, error } = await supabase
         .from('xero_account_lines')
-        .select('journal_date, contact_name, description, net_amount, source')
+        .select('journal_date, contact_name, description, reference, net_amount, currency, source')
         .eq('account_name', account)
         .order('journal_date', { ascending: false })
         .range(from, from + pageSize - 1);
@@ -64,11 +67,20 @@ Deno.serve(async (req: Request) => {
         date: r.journal_date,
         contact: r.contact_name,
         description: r.description,
+        reference: r.reference ?? null,
         amount: Number(r.net_amount) || 0,
-        source: r.source ?? 'banktx',
+        currency: r.currency ?? 'AUD',
+        source: r.source ?? 'csv',
         bucket: classifyLine(account, r.contact_name) ?? 'Review',
       }))
-      .filter((l: any) => (bucket ? l.bucket === bucket : true));
+      .filter((l: any) => {
+        if (bucket && l.bucket !== bucket) return false;
+        if (year !== null && month !== null) {
+          const d = new Date(l.date);
+          if (d.getUTCFullYear() !== year || d.getUTCMonth() + 1 !== month) return false;
+        }
+        return true;
+      });
 
     // Contact rollup for a quick "what's inside" view.
     const byContactMap = new Map<string, { total: number; count: number }>();

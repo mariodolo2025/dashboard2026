@@ -12,14 +12,15 @@ import { createPortal } from 'react-dom';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { RefreshCw, Download, Info, X, Search } from 'lucide-react';
+import { RefreshCw, Download, Info, X, Search, HelpCircle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn, downloadCSV } from '@/lib/utils';
 
 interface DetailLine {
   date: string; contact: string | null; description: string | null;
-  amount: number; source: string; bucket: string;
+  reference: string | null; amount: number; currency: string; source: string; bucket: string;
 }
 interface DetailData {
   total: number; count: number;
@@ -63,16 +64,18 @@ export function FreightReportContent() {
   const [items, setItems] = useState<CostItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Drill-down state: the category being inspected + its transaction detail.
+  // Drill-down state: the category (+ optional month) being inspected.
   const [detailBucket, setDetailBucket] = useState<string | null>(null);
+  const [detailMonthLabel, setDetailMonthLabel] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailData | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailSearch, setDetailSearch] = useState('');
 
-  const openDetail = (bucket: string) => {
+  const openDetail = (bucket: string, m?: MonthMeta) => {
     // Unclassified has no transaction lines (it's the P&L remainder), so skip.
     if (bucket === 'Unclassified') return;
     setDetailBucket(bucket);
+    setDetailMonthLabel(m ? m.label : null);
     setDetail(null);
     setDetailSearch('');
     setDetailLoading(true);
@@ -82,7 +85,7 @@ export function FreightReportContent() {
         Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ account: 'Freight & Courier', bucket }),
+      body: JSON.stringify({ account: 'Freight & Courier', bucket, ...(m ? { year: m.year, month: m.month } : {}) }),
     })
       .then((r) => r.json())
       .then((d) => { if (d.success) setDetail(d); else throw new Error(d.message); })
@@ -145,7 +148,55 @@ export function FreightReportContent() {
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold text-[#0f1115]">Freight by Category</h3>
-          <span className="text-xs text-muted-foreground">Xero · rolling 12 months · reconciled to P&amp;L</span>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button type="button" className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:bg-gray-200/70 hover:text-foreground" title="How categories are built">
+                <HelpCircle className="h-4 w-4" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[460px] p-0 text-sm leading-relaxed">
+              <div className="max-h-[65vh] space-y-3 overflow-y-auto overscroll-contain p-4" onWheel={(e) => e.stopPropagation()}>
+                <div>
+                  <h4 className="font-semibold text-foreground">Source of the data</h4>
+                  <p className="text-muted-foreground">
+                    From Xero's <b>Account Transactions</b> export (uploaded), which already gives the
+                    AUD-converted amount per line. USD/EUR bills are already in AUD — no conversion here.
+                    Totals reconcile to the Xero P&amp;L to the cent.
+                  </p>
+                </div>
+                <div>
+                  <h4 className="font-semibold text-foreground">How each line is categorised (by supplier Contact)</h4>
+                  <ul className="list-disc pl-4 text-muted-foreground space-y-0.5">
+                    <li><b>Inbound — Container</b>: Diamond Freight (sea freight into AU).</li>
+                    <li><b>Inbound — DHL International</b>: the DHL forwarding contact (air freight for stock that missed the container).</li>
+                    <li><b>Outbound — B2C AU</b>: Australia Post, DHL e-commerce (customer parcels).</li>
+                    <li><b>Outbound — B2B</b>: One Freight, Star Track, Interparcel, TFM, Regional Express, Interflow.</li>
+                    <li><b>Outbound — US</b>: UPS, ZONOS (US import taxes we pay to ship there).</li>
+                    <li><b>Subscription</b>: Starshipit (software, not shipping).</li>
+                    <li><b>Review</b>: unrecognised contacts (small: Mavam, BWT, El Rocio, Hoon Choi).</li>
+                    <li><b>Unclassified</b>: a month's P&amp;L total not covered by uploaded lines (e.g. the current month before you re-export).</li>
+                  </ul>
+                </div>
+                <div>
+                  <h4 className="font-semibold text-foreground">"TAX DISBURSEMENT INVOICE" &amp; duty/GST lines</h4>
+                  <p className="text-muted-foreground">
+                    These are import duty/GST that the forwarder (Diamond, DHL) pays at customs and re-bills.
+                    They are <b>NOT excluded</b> — they sit inside <b>Inbound — Container</b> (Diamond) and
+                    <b> Inbound — DHL International</b> (DHL's "AUST GOVT CHARGES / DUTY TAX PROCESSING").
+                  </p>
+                </div>
+                <div>
+                  <h4 className="font-semibold text-foreground">Market split (AU vs US)</h4>
+                  <p className="text-muted-foreground">
+                    Not possible from Xero — US parcels also ship via Australia Post. That needs the
+                    Starshipit connector (planned).
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground">Click a category card, a monthly cell, or a row to see the transactions behind it.</p>
+              </div>
+            </PopoverContent>
+          </Popover>
+          <span className="text-xs text-muted-foreground">Xero · reconciled to P&amp;L</span>
         </div>
         <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={exportCsv} disabled={!categories.length}>
           <Download className="h-3.5 w-3.5" /> CSV
@@ -244,7 +295,14 @@ export function FreightReportContent() {
                             </span>
                           </td>
                           {c.monthly.map((v, i) => (
-                            <td key={i} className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+                            <td
+                              key={i}
+                              className={cn(
+                                'px-2 py-1.5 text-right tabular-nums text-muted-foreground',
+                                v && c.name !== 'Unclassified' && 'cursor-pointer hover:bg-blue-50 hover:text-blue-700',
+                              )}
+                              onClick={(e) => { if (v && c.name !== 'Unclassified') { e.stopPropagation(); openDetail(c.name, months[i]); } }}
+                            >
                               {v ? fmtAUD(v) : '·'}
                             </td>
                           ))}
@@ -272,6 +330,7 @@ export function FreightReportContent() {
       {detailBucket && (
         <DetailModal
           bucket={detailBucket}
+          monthLabel={detailMonthLabel}
           data={detail}
           loading={detailLoading}
           search={detailSearch}
@@ -286,9 +345,10 @@ export function FreightReportContent() {
 // --- Drill-down modal ----------------------------------------------------------
 
 function DetailModal({
-  bucket, data, loading, search, onSearch, onClose,
+  bucket, monthLabel, data, loading, search, onSearch, onClose,
 }: {
   bucket: string;
+  monthLabel: string | null;
   data: DetailData | null;
   loading: boolean;
   search: string;
@@ -311,10 +371,10 @@ function DetailModal({
       >
         <div className="flex shrink-0 items-center justify-between border-b px-5 py-3">
           <div>
-            <h3 className="text-sm font-bold">Freight — {bucket}</h3>
+            <h3 className="text-sm font-bold">Freight — {bucket}{monthLabel ? ` · ${monthLabel}` : ''}</h3>
             {data && (
               <p className="text-xs text-muted-foreground">
-                {data.count} transactions · {fmtAUD(data.total)} (raw ledger, pre-P&L reconciliation)
+                {data.count} transactions · {fmtAUD(data.total)} AUD{monthLabel ? '' : ' (full period)'}
               </p>
             )}
           </div>
@@ -363,8 +423,8 @@ function DetailModal({
                     <th className="py-1.5 pr-3">Date</th>
                     <th className="py-1.5 pr-3">Contact</th>
                     <th className="py-1.5 pr-3">Description</th>
-                    <th className="py-1.5 pr-3">Source</th>
-                    <th className="py-1.5 text-right">Amount</th>
+                    <th className="py-1.5 pr-3">Ref</th>
+                    <th className="py-1.5 text-right">Amount (AUD)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -373,15 +433,13 @@ function DetailModal({
                       <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{l.date}</td>
                       <td className="py-1.5 pr-3">{l.contact ?? '—'}</td>
                       <td className="py-1.5 pr-3 text-muted-foreground">{l.description || '·'}</td>
-                      <td className="py-1.5 pr-3">
-                        <span className={cn(
-                          'rounded px-1.5 py-0.5 text-[10px] font-medium',
-                          l.source === 'invoice' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-600',
-                        )}>
-                          {l.source === 'invoice' ? 'bill' : 'bank'}
-                        </span>
+                      <td className="py-1.5 pr-3 text-[11px] text-muted-foreground">{l.reference || '·'}</td>
+                      <td className="py-1.5 text-right tabular-nums">
+                        {fmtAUD2(l.amount)}
+                        {l.currency && l.currency !== 'AUD' && (
+                          <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-medium text-amber-700">{l.currency}</span>
+                        )}
                       </td>
-                      <td className="py-1.5 text-right tabular-nums">{fmtAUD2(l.amount)}</td>
                     </tr>
                   ))}
                   {lines.length === 0 && (
