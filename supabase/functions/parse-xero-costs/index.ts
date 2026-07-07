@@ -155,6 +155,103 @@ function shouldSkipPlAccountRow(name: string): boolean {
   return false;
 }
 
+// ─── Virtual account split rules ─────────────────────────────────────────────
+// Accounts that mix non-operating and operating spend get split into virtual
+// accounts using the transaction lines synced by xero-sync (matched by
+// contact). Anything the rules don't recognize lands in "— Review"; any P&L
+// remainder not covered by transaction lines lands in "— Unclassified" (e.g.
+// accountant manual journals) — never silently estimated.
+const SPLIT_RULES: Record<string, { bucket: string; pattern: RegExp }[]> = {
+  'Rates & Taxes': [
+    { bucket: 'Tax remittances', pattern: /taxation office|(^|\W)ato(\W|$)/i },
+    { bucket: 'Property & Compliance', pattern: /gold coast|body corporate|asic|land tax|council/i },
+  ],
+};
+
+/** Build the CostsResponse from the xero_pl_monthly / xero_account_lines
+ *  tables (populated daily by xero-sync). Returns null when the tables are
+ *  empty (Xero not synced yet) so the caller can fall back to the xlsx. */
+async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
+  const { data: plRows, error } = await supabase
+    .from('xero_pl_monthly')
+    .select('account_name, year, month, amount');
+  if (error || !plRows || plRows.length === 0) return null;
+
+  // Months present, sorted ascending.
+  const monthKeys = new Map<string, { year: number; month: number }>();
+  for (const r of plRows) {
+    monthKeys.set(`${r.year}-${String(r.month).padStart(2, '0')}`, { year: r.year, month: r.month });
+  }
+  const sorted = [...monthKeys.values()].sort((a, b) => (a.year - b.year) || (a.month - b.month));
+  const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const months: MonthData[] = sorted.map((m, idx) => ({
+    index: idx,
+    label: `${MONTH_LABELS[m.month - 1]} ${m.year}`,
+    year: m.year,
+    month: m.month,
+  }));
+  const monthIndex = new Map(sorted.map((m, idx) => [`${m.year}-${m.month}`, idx]));
+
+  // Base items from the P&L.
+  const byAccount = new Map<string, number[]>();
+  for (const r of plRows) {
+    const name = String(r.account_name).trim();
+    if (!name || shouldSkipPlAccountRow(name)) continue;
+    if (!byAccount.has(name)) byAccount.set(name, new Array(months.length).fill(0));
+    const idx = monthIndex.get(`${r.year}-${r.month}`);
+    if (idx !== undefined) byAccount.get(name)![idx] = Number(r.amount) || 0;
+  }
+
+  // Split watched accounts into virtual accounts by transaction lines.
+  for (const [account, rules] of Object.entries(SPLIT_RULES)) {
+    if (!byAccount.has(account)) continue;
+    const plMonthly = byAccount.get(account)!;
+
+    const { data: lines, error: linesErr } = await supabase
+      .from('xero_account_lines')
+      .select('journal_date, contact_name, net_amount')
+      .eq('account_name', account);
+    if (linesErr || !lines) continue; // keep the raw account if detail is unavailable
+
+    const buckets = new Map<string, number[]>();
+    const ensure = (bucket: string) => {
+      const key = `${account} — ${bucket}`;
+      if (!buckets.has(key)) buckets.set(key, new Array(months.length).fill(0));
+      return buckets.get(key)!;
+    };
+
+    const coveredByLines = new Array(months.length).fill(0);
+    for (const line of lines) {
+      const d = new Date(line.journal_date);
+      const idx = monthIndex.get(`${d.getFullYear()}-${d.getMonth() + 1}`);
+      if (idx === undefined) continue; // line outside the P&L window
+      const contact = String(line.contact_name ?? '');
+      const rule = rules.find((r) => r.pattern.test(contact));
+      const bucket = rule ? rule.bucket : 'Review';
+      ensure(bucket)[idx] += Number(line.net_amount) || 0;
+      coveredByLines[idx] += Number(line.net_amount) || 0;
+    }
+
+    // P&L remainder not explained by transaction lines (manual journals etc).
+    for (let i = 0; i < months.length; i++) {
+      const remainder = plMonthly[i] - coveredByLines[i];
+      if (Math.abs(remainder) > 0.01) {
+        ensure('Unclassified')[i] += remainder;
+      }
+    }
+
+    byAccount.delete(account);
+    for (const [name, monthly] of buckets) byAccount.set(name, monthly);
+  }
+
+  const items: CostItem[] = [...byAccount.entries()].map(([name, monthly]) => ({ name, monthly }));
+
+  // Data is synced daily — the current month is partial up to today.
+  const periodEnd = new Date().toISOString().slice(0, 10);
+
+  return { months, items, periodEnd };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -177,6 +274,19 @@ Deno.serve(async (req: Request) => {
     // are accepted; anything else falls back to the live bucket root.
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
     const folder = /^fy\d{4}-\d{2}$/.test(body?.prefix ?? '') ? `${body.prefix}/` : '';
+
+    // Live path: Xero API tables first (synced daily by xero-sync), with the
+    // manually-uploaded xlsx as fallback. Snapshot path (prefix set): ALWAYS
+    // the frozen xlsx — the closed FY must never drift with new syncs.
+    if (!folder) {
+      const fromDb = await loadFromDatabase(supabase);
+      if (fromDb) {
+        return new Response(JSON.stringify(fromDb), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      console.warn('xero_pl_monthly empty — falling back to xlsx');
+    }
 
     const { data: fileData, error: downloadError } = await supabase
       .storage

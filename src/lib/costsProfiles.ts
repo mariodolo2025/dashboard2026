@@ -39,7 +39,14 @@ export interface CostProfile {
 
 const COMMON_EXCLUDED: Record<string, boolean> = {
   'Stock purchased': true,
+  // Plain 'Rates & Taxes' only exists in xlsx-fallback mode; the live API path
+  // splits it into virtual accounts (see parse-xero-costs SPLIT_RULES). The
+  // remittances/review/unclassified parts are never operating costs; the
+  // Property & Compliance part is assigned per profile below.
   'Rates & Taxes': true,
+  'Rates & Taxes — Tax remittances': true,
+  'Rates & Taxes — Review': true,
+  'Rates & Taxes — Unclassified': true,
   'Unrealised Currency Gains': true,
   'Realised Currency Gains': true,
   'Bank Revaluations': true,
@@ -64,6 +71,7 @@ const ANDREA_ITEMS = [
 ];
 
 const FIXED_ITEMS = [
+  'Rates & Taxes — Property & Compliance',
   'Wages and Salaries',
   'Superannuation',
   'Computer & Software',

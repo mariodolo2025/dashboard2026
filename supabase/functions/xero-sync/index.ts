@@ -211,14 +211,16 @@ async function syncBankTransactions(supabase: any, accessToken: string, tenantId
     return { lines: 0, pages: 0, done: true };
   }
 
-  // Incremental: only transactions modified since the last successful run.
+  // Incremental: only transactions modified since the last completed walk,
+  // resuming from the saved page when a walk spans multiple invocations.
   const { data: stateRow } = await supabase
     .from('xero_sync_state')
     .select('value')
     .eq('key', 'banktx_since')
     .maybeSingle();
   const modifiedSince: string | null = stateRow?.value?.modifiedSince ?? null;
-  const runStartedAt = new Date().toISOString();
+  const startPage: number = stateRow?.value?.nextPage ?? 1;
+  const runStartedAt: string = stateRow?.value?.walkStartedAt ?? new Date().toISOString();
 
   const headers: Record<string, string> = modifiedSince
     ? { 'If-Modified-Since': new Date(modifiedSince).toUTCString() }
@@ -226,10 +228,10 @@ async function syncBankTransactions(supabase: any, accessToken: string, tenantId
   const whereDate = `Date >= DateTime(${TRANSACTIONS_SINCE.split('-').map(Number).join(',')})`;
 
   let stored = 0;
-  let page = 1;
+  let page = startPage;
   let done = false;
 
-  for (; page <= MAX_TX_PAGES_PER_RUN; page++) {
+  for (; page < startPage + MAX_TX_PAGES_PER_RUN; page++) {
     const body = await xeroGet(
       `BankTransactions?where=${encodeURIComponent(whereDate)}&page=${page}`,
       accessToken,
@@ -279,15 +281,24 @@ async function syncBankTransactions(supabase: any, accessToken: string, tenantId
   }
 
   if (done) {
-    // Next run only needs deltas from this run's start.
+    // Walk finished: next run only needs deltas modified after this walk began.
     await supabase.from('xero_sync_state').upsert({
       key: 'banktx_since',
       value: { modifiedSince: runStartedAt },
       updated_at: new Date().toISOString(),
     });
+  } else {
+    // Walk incomplete: persist the page cursor so the next invocation resumes
+    // instead of re-reading from page 1. Keep the original walk start time so
+    // the eventual modifiedSince doesn't miss transactions created mid-walk.
+    await supabase.from('xero_sync_state').upsert({
+      key: 'banktx_since',
+      value: { modifiedSince, nextPage: page, walkStartedAt: runStartedAt },
+      updated_at: new Date().toISOString(),
+    });
   }
 
-  return { lines: stored, pages: page, done };
+  return { lines: stored, pages: page - startPage, done };
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -305,16 +316,33 @@ Deno.serve(async (req: Request) => {
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
     const step = body?.step ?? 'all';
 
-    const { accessToken, tenantId } = await getAccessToken(supabase);
-
     const result: Record<string, unknown> = { success: true, step };
 
-    if (step === 'pl' || step === 'all') {
-      result.plRows = await syncProfitAndLoss(supabase, accessToken, tenantId);
+    try {
+      const { accessToken, tenantId } = await getAccessToken(supabase);
+
+      if (step === 'pl' || step === 'all') {
+        result.plRows = await syncProfitAndLoss(supabase, accessToken, tenantId);
+      }
+      if (step === 'transactions' || step === 'all') {
+        result.transactions = await syncBankTransactions(supabase, accessToken, tenantId);
+      }
+    } catch (e) {
+      // Record the failure for the Connections panel, then rethrow.
+      await supabase.from('xero_sync_state').upsert({
+        key: 'last_sync',
+        value: { at: new Date().toISOString(), ok: false, step, error: e instanceof Error ? e.message : 'Unknown error' },
+        updated_at: new Date().toISOString(),
+      });
+      throw e;
     }
-    if (step === 'transactions' || step === 'all') {
-      result.transactions = await syncBankTransactions(supabase, accessToken, tenantId);
-    }
+
+    // Record success for the Connections panel.
+    await supabase.from('xero_sync_state').upsert({
+      key: 'last_sync',
+      value: { at: new Date().toISOString(), ok: true, step, summary: result },
+      updated_at: new Date().toISOString(),
+    });
 
     return json(result);
   } catch (e) {
