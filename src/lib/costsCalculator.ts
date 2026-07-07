@@ -342,7 +342,10 @@ export const computeCostsSnapshot = (
       .filter((item) => !excludedSet.has(item.name))
       .map((item) => ({
         ...item,
-        board: assignments[item.name] || 'fixed',
+        // Unknown accounts (e.g. new in Xero, not yet classified in any
+        // profile) land in the Pool — visible but NOT counted — instead of
+        // silently inflating fixed costs.
+        board: assignments[item.name] || 'pool',
         sliderValue: sliders[item.name] !== undefined ? sliders[item.name] : 50,
         adjustmentPercent: adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
       }));

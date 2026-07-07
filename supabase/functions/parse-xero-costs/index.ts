@@ -155,6 +155,143 @@ function shouldSkipPlAccountRow(name: string): boolean {
   return false;
 }
 
+// ─── Virtual account split rules ─────────────────────────────────────────────
+// Accounts that mix non-operating and operating spend get split into virtual
+// accounts using the transaction lines synced by xero-sync (matched by
+// contact). Anything the rules don't recognize lands in "— Review"; any P&L
+// remainder not covered by transaction lines lands in "— Unclassified" (e.g.
+// accountant manual journals) — never silently estimated.
+const SPLIT_RULES: Record<string, { bucket: string; pattern: RegExp }[]> = {
+  'Rates & Taxes': [
+    { bucket: 'Tax remittances', pattern: /taxation office|(^|\W)ato(\W|$)/i },
+    { bucket: 'Property & Compliance', pattern: /gold coast|body corporate|asic|land tax|council/i },
+  ],
+  // Freight matches on the supplier CONTACT (line descriptions are generic
+  // "freight"). Order matters — first match wins:
+  //   Inbound — Container            = Diamond (sea freight bills)
+  //   Inbound — DHL International     = the "DHL"/"DHL EXPRESS" contact (import
+  //                                    air freight for goods that missed the
+  //                                    container). NOT "DHL e-commerce".
+  //   Outbound — B2C AU              = Australia Post + DHL e-commerce (old B2C courier)
+  //   Outbound — B2B                 = One Freight, Star Track, Interparcel, TFM,
+  //                                    Regional Express, Interflow
+  //   Outbound — US                  = UPS + ZONOS (US import taxes we pay)
+  //   Subscription                   = Starshipit (software sub, not shipping)
+  // NOTE (2026-07): market-level split (AU vs US) can't come from Xero because
+  // US parcels also ship via Australia Post — that needs the Starshipit
+  // connector (planned).
+  'Freight & Courier': [
+    { bucket: 'Subscription (Starshipit)', pattern: /starshipit|starship/i },
+    { bucket: 'Inbound — Container', pattern: /diamond/i },
+    { bucket: 'Inbound — DHL International', pattern: /^dhl(\s+express)?$/i },
+    { bucket: 'Outbound — B2C AU', pattern: /australia\s*post|dhl\s*e-?commerce/i },
+    { bucket: 'Outbound — B2B', pattern: /one\s*freight|star\s*track|interparcel|tfm|regional\s*express|interflow/i },
+    { bucket: 'Outbound — US', pattern: /\bups\b|zonos/i },
+  ],
+};
+
+/** Build the CostsResponse from the xero_pl_monthly / xero_account_lines
+ *  tables (populated daily by xero-sync). Returns null when the tables are
+ *  empty (Xero not synced yet) so the caller can fall back to the xlsx. */
+async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
+  const { data: allRows, error } = await supabase
+    .from('xero_pl_monthly')
+    .select('account_name, year, month, amount, section');
+  if (error || !allRows || allRows.length === 0) return null;
+
+  // The costs canvas is about COSTS: only expense sections qualify. Income
+  // and Cost of Sales accounts (Sales, cost of goods sold, ...) must never
+  // reach the canvas — the manual xlsx only exported expenses and the API
+  // path has to match that contract. Rows without a section (pre-section
+  // syncs) are treated as unusable so the caller falls back to the xlsx
+  // until a fresh sync fills the column.
+  const plRows = allRows.filter((r: any) => /expens/i.test(String(r.section ?? '')));
+  if (plRows.length === 0) return null;
+
+  // Months present, sorted ascending.
+  const monthKeys = new Map<string, { year: number; month: number }>();
+  for (const r of plRows) {
+    monthKeys.set(`${r.year}-${String(r.month).padStart(2, '0')}`, { year: r.year, month: r.month });
+  }
+  const sorted = [...monthKeys.values()].sort((a, b) => (a.year - b.year) || (a.month - b.month));
+  const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const months: MonthData[] = sorted.map((m, idx) => ({
+    index: idx,
+    label: `${MONTH_LABELS[m.month - 1]} ${m.year}`,
+    year: m.year,
+    month: m.month,
+  }));
+  const monthIndex = new Map(sorted.map((m, idx) => [`${m.year}-${m.month}`, idx]));
+
+  // Base items from the P&L.
+  const byAccount = new Map<string, number[]>();
+  for (const r of plRows) {
+    const name = String(r.account_name).trim();
+    if (!name || shouldSkipPlAccountRow(name)) continue;
+    if (!byAccount.has(name)) byAccount.set(name, new Array(months.length).fill(0));
+    const idx = monthIndex.get(`${r.year}-${r.month}`);
+    if (idx !== undefined) byAccount.get(name)![idx] = Number(r.amount) || 0;
+  }
+
+  // Split watched accounts into virtual accounts by transaction lines.
+  for (const [account, rules] of Object.entries(SPLIT_RULES)) {
+    if (!byAccount.has(account)) continue;
+    const plMonthly = byAccount.get(account)!;
+
+    const { data: lines, error: linesErr } = await supabase
+      .from('xero_account_lines')
+      .select('journal_date, contact_name, net_amount')
+      .eq('account_name', account);
+    if (linesErr || !lines) continue; // keep the raw account if detail is unavailable
+
+    const buckets = new Map<string, number[]>();
+    const ensure = (bucket: string) => {
+      const key = `${account} — ${bucket}`;
+      if (!buckets.has(key)) buckets.set(key, new Array(months.length).fill(0));
+      return buckets.get(key)!;
+    };
+
+    const coveredByLines = new Array(months.length).fill(0);
+    for (const line of lines) {
+      const d = new Date(line.journal_date);
+      const idx = monthIndex.get(`${d.getFullYear()}-${d.getMonth() + 1}`);
+      if (idx === undefined) continue; // line outside the P&L window
+      const contact = String(line.contact_name ?? '');
+      const rule = rules.find((r) => r.pattern.test(contact));
+      const bucket = rule ? rule.bucket : 'Review';
+      ensure(bucket)[idx] += Number(line.net_amount) || 0;
+      coveredByLines[idx] += Number(line.net_amount) || 0;
+    }
+
+    // Reconcile each month to the authoritative P&L total.
+    for (let i = 0; i < months.length; i++) {
+      const covered = coveredByLines[i];
+      const pl = plMonthly[i];
+      if (covered > pl + 0.01) {
+        // Lines over-count the P&L (GST-inclusive amounts, or an expense
+        // booked as both a bill and a direct payment). Scale the buckets down
+        // proportionally so they sum exactly to the P&L for the month.
+        const factor = covered > 0 ? pl / covered : 0;
+        for (const monthly of buckets.values()) monthly[i] *= factor;
+      } else if (pl - covered > 0.01) {
+        // Lines under-count: the gap is spend not captured by transaction
+        // lines (e.g. accountant manual journals). Surface it, never estimate.
+        ensure('Unclassified')[i] += pl - covered;
+      }
+    }
+
+    byAccount.delete(account);
+    for (const [name, monthly] of buckets) byAccount.set(name, monthly);
+  }
+
+  const items: CostItem[] = [...byAccount.entries()].map(([name, monthly]) => ({ name, monthly }));
+
+  // Data is synced daily — the current month is partial up to today.
+  const periodEnd = new Date().toISOString().slice(0, 10);
+
+  return { months, items, periodEnd };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -177,6 +314,19 @@ Deno.serve(async (req: Request) => {
     // are accepted; anything else falls back to the live bucket root.
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
     const folder = /^fy\d{4}-\d{2}$/.test(body?.prefix ?? '') ? `${body.prefix}/` : '';
+
+    // Live path: Xero API tables first (synced daily by xero-sync), with the
+    // manually-uploaded xlsx as fallback. Snapshot path (prefix set): ALWAYS
+    // the frozen xlsx — the closed FY must never drift with new syncs.
+    if (!folder) {
+      const fromDb = await loadFromDatabase(supabase);
+      if (fromDb) {
+        return new Response(JSON.stringify(fromDb), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      console.warn('xero_pl_monthly empty — falling back to xlsx');
+    }
 
     const { data: fileData, error: downloadError } = await supabase
       .storage

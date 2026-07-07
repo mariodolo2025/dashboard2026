@@ -24,7 +24,8 @@ import InventoryReorderDashboard from '@/components/InventoryReorderDashboard';
 import MarioDashboard from '@/components/MarioDashboard';
 import CostsCanvas from '@/components/CostsCanvas';
 import { AIM2026Overlay } from '@/components/AIM2026Overlay';
-import { FYReportOverlay } from '@/components/fyreport/FYReportOverlay';
+import { ReportsOverlay } from '@/components/ReportsOverlay';
+import { ConnectionsPanel } from '@/components/ConnectionsPanel';
 import EcommerceTab from '@/components/EcommerceTab';
 import { fetchDashboardData, recalcKPIsForDateRange } from '@/lib/aim2026/api';
 import type { SKURow } from '@/lib/aim2026/types';
@@ -1930,7 +1931,7 @@ function App() {
                 )}
                 onClick={() => setActiveModal(activeModal === 'fy-report' ? null : 'fy-report')}
               >
-                FY Report
+                Reports
               </Button>
             </div>
           </div>
@@ -3339,8 +3340,8 @@ function App() {
           setDateRange={setDateRange}
         />
 
-        {/* FY Report — fiscal-year closing report over the frozen snapshot */}
-        <FYReportOverlay
+        {/* Reports — op-manager reports container (FY Report, Freight, …) */}
+        <ReportsOverlay
           open={activeModal === 'fy-report'}
           onClose={() => setActiveModal(null)}
         />
@@ -3555,6 +3556,9 @@ function App() {
               Configure the financial parameters used in calculations
             </DialogDescription>
           </DialogHeader>
+          <div className="border-b pb-4">
+            <ConnectionsPanel />
+          </div>
           <div className="grid gap-4 py-4">
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="shipping-cost" className="text-right">
