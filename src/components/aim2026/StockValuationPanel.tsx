@@ -37,7 +37,7 @@ const LOCATION_COLORS: Record<string, string> = {
 
 const LOCATION_LABELS: Record<string, string> = {
   mainWarehouse: 'Main Warehouse',
-  china: 'China WH',
+  china: 'China WH (net)',
   container: 'Container (Sea)',
   dhl: 'DHL (Express)',
   onProduction: 'On Production',

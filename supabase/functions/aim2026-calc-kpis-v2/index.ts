@@ -918,8 +918,18 @@ Deno.serve(async (req: Request) => {
         },
       });
 
+      // De-duplicate in-transit stock from China. Production completes to
+      // China SOH; goods then ship via Container (sea) or DHL (air) to Main,
+      // but the Unleashed warehouse transfer only fires on AU receipt — so
+      // while a shipment is in transit, its units are STILL counted in the
+      // China-W SOH. The Container/DHL pseudo-warehouses (from PO lines) count
+      // them again, double-counting total inventory. Net them out of China so
+      // each physical unit is valued once. Capped at 0 (never negative) for the
+      // edge case where a shipment's units aren't reflected in China SOH.
+      const netChinaQty = Math.max(0, chinaWH.quantity - containerWH.quantity - dhlWH.quantity);
+
       totalValuationMainWH += mainWH.quantity * landedCostAUD;
-      totalValuationChina += chinaWH.quantity * params.productCostChina;
+      totalValuationChina += netChinaQty * params.productCostChina;
       totalValuationContainer += containerWH.quantity * landedCostAUD;
       totalValuationDHL += dhlWH.quantity * landedCostAUD;
       totalValuationOnProd += onProdWH.quantity * params.productCostChina;

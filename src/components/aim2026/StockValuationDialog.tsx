@@ -37,8 +37,8 @@ interface StockValuationDialogProps {
 
 const LOCATIONS = [
   { key: 'mainWarehouse', label: 'Main Warehouse', color: '#3b82f6', desc: 'Physical stock in the main warehouse in Australia, valued at landed cost (AUD).' },
-  { key: 'china', label: 'China WH', color: '#8b5cf6', desc: 'Stock held in the China warehouse, valued at FOB cost × exchange rate.' },
-  { key: 'container', label: 'Container (Sea)', color: '#06b6d4', desc: 'Stock currently in sea freight containers en route to Australia.' },
+  { key: 'china', label: 'China WH (net)', color: '#8b5cf6', desc: 'Stock physically in the China warehouse, valued at FOB cost × exchange rate. Net of units already in transit (Container/DHL): those ship from China but stay in the China SOH until AU receipt, so they are subtracted here to avoid double-counting.' },
+  { key: 'container', label: 'Container (Sea)', color: '#06b6d4', desc: 'Stock currently in sea freight containers en route to Australia (already netted out of China WH).' },
   { key: 'dhl', label: 'DHL (Express)', color: '#f97316', desc: 'Stock being shipped via DHL express courier (5-7 business days).' },
   { key: 'onProduction', label: 'On Production', color: '#a855f7', desc: 'Stock currently being manufactured in China, not yet shipped.' },
   { key: 'pesadoKorea', label: 'Pesado Korea', color: '#ec4899', desc: 'Stock held at the Pesado Korea warehouse/partner.' },
