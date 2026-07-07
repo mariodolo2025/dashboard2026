@@ -43,13 +43,21 @@ Deno.serve(async (req: Request) => {
       return json({ success: false, message: `Account "${account}" is not a split account` }, 400);
     }
 
-    const { data: rows, error } = await supabase
-      .from('xero_account_lines')
-      .select('journal_date, contact_name, description, net_amount, source')
-      .eq('account_name', account)
-      .order('journal_date', { ascending: false })
-      .limit(100000); // override PostgREST's default 1000-row cap
-    if (error) return json({ success: false, message: error.message }, 500);
+    // PostgREST caps a response at 1000 rows (max-rows) regardless of .limit(),
+    // so page with .range() to get every line.
+    const rows: any[] = [];
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabase
+        .from('xero_account_lines')
+        .select('journal_date, contact_name, description, net_amount, source')
+        .eq('account_name', account)
+        .order('journal_date', { ascending: false })
+        .range(from, from + pageSize - 1);
+      if (error) return json({ success: false, message: error.message }, 500);
+      rows.push(...(data ?? []));
+      if (!data || data.length < pageSize) break;
+    }
 
     const lines = (rows ?? [])
       .map((r: any) => ({

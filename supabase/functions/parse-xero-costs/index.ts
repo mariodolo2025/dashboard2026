@@ -159,6 +159,24 @@ function shouldSkipPlAccountRow(name: string): boolean {
 // Split rules live in ../_shared/xeroSplitRules.ts (single source of truth,
 // shared with the drill-down function xero-account-detail).
 
+/** Fetch every line for an account. PostgREST caps a single response at 1000
+ *  rows (max-rows) regardless of .limit(), so we page with .range(). */
+async function fetchAllLines(supabase: any, account: string): Promise<any[]> {
+  const all: any[] = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from('xero_account_lines')
+      .select('journal_date, contact_name, net_amount')
+      .eq('account_name', account)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    all.push(...(data ?? []));
+    if (!data || data.length < pageSize) break;
+  }
+  return all;
+}
+
 /** Build the CostsResponse from the xero_pl_monthly / xero_account_lines
  *  tables (populated daily by xero-sync). Returns null when the tables are
  *  empty (Xero not synced yet) so the caller can fall back to the xlsx. */
@@ -207,12 +225,12 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
     if (!byAccount.has(account)) continue;
     const plMonthly = byAccount.get(account)!;
 
-    const { data: lines, error: linesErr } = await supabase
-      .from('xero_account_lines')
-      .select('journal_date, contact_name, net_amount')
-      .eq('account_name', account)
-      .limit(100000); // override PostgREST's default 1000-row cap
-    if (linesErr || !lines) continue; // keep the raw account if detail is unavailable
+    let lines: any[];
+    try {
+      lines = await fetchAllLines(supabase, account);
+    } catch {
+      continue; // keep the raw account if detail is unavailable
+    }
 
     const buckets = new Map<string, number[]>();
     const ensure = (bucket: string) => {
