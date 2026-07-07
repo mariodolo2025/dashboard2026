@@ -35,24 +35,26 @@ interface CostItem { name: string; monthly: number[]; }
 
 const PREFIX = 'Freight & Courier — ';
 
-// Display order + colour per category.
+// Display order + colour per category. Starshipit (software subscription,
+// mis-booked in the freight account) is deliberately NOT listed — it's kept
+// out of the freight view.
 const CATEGORY_ORDER = [
   'Inbound — Container',
   'Inbound — DHL International',
+  'Inbound — B2B related',
   'Outbound — B2C AU',
   'Outbound — B2B',
-  'Outbound — US',
-  'Subscription (Starshipit)',
+  'Outbound — B2C USA',
   'Review',
   'Unclassified',
 ];
 const COLORS: Record<string, string> = {
   'Inbound — Container': '#0ea5e9',
   'Inbound — DHL International': '#6366f1',
+  'Inbound — B2B related': '#8b5cf6',
   'Outbound — B2C AU': '#22c55e',
   'Outbound — B2B': '#14b8a6',
-  'Outbound — US': '#f59e0b',
-  'Subscription (Starshipit)': '#a855f7',
+  'Outbound — B2C USA': '#f59e0b',
   'Review': '#94a3b8',
   'Unclassified': '#cbd5e1',
 };
@@ -169,13 +171,14 @@ export function FreightReportContent() {
                   <ul className="list-disc pl-4 text-muted-foreground space-y-0.5">
                     <li><b>Inbound — Container</b>: Diamond Freight (sea freight into AU).</li>
                     <li><b>Inbound — DHL International</b>: the DHL forwarding contact (air freight for stock that missed the container).</li>
+                    <li><b>Inbound — B2B related</b>: freight on merchandise we receive/move for the B2B channel — BWT, Dipacci, Coffee Machine Technologies, El Rocio, REPA Italia, Xtracted Espresso.</li>
                     <li><b>Outbound — B2C AU</b>: Australia Post, DHL e-commerce (customer parcels).</li>
                     <li><b>Outbound — B2B</b>: One Freight, Star Track, Interparcel, TFM, Regional Express, Interflow.</li>
-                    <li><b>Outbound — US</b>: UPS, ZONOS (US import taxes we pay to ship there).</li>
-                    <li><b>Subscription</b>: Starshipit (software, not shipping).</li>
-                    <li><b>Review</b>: unrecognised contacts (small: Mavam, BWT, El Rocio, Hoon Choi).</li>
+                    <li><b>Outbound — B2C USA</b>: UPS, ZONOS (US import taxes we pay to ship there), Hoon Choi (US returns/replacements).</li>
+                    <li><b>Review</b>: not tied to a channel — e.g. Mavam LLC (freight of a trade-show stand to Belgium).</li>
                     <li><b>Unclassified</b>: a month's P&amp;L total not covered by uploaded lines (e.g. the current month before you re-export).</li>
                   </ul>
+                  <p className="mt-1 text-xs text-muted-foreground">The Starshipit software subscription is booked in this account but excluded from the freight view (it isn't shipping).</p>
                 </div>
                 <div>
                   <h4 className="font-semibold text-foreground">"TAX DISBURSEMENT INVOICE" &amp; duty/GST lines</h4>

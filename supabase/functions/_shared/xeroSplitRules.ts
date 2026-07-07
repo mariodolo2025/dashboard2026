@@ -24,9 +24,13 @@ export const SPLIT_RULES: Record<string, SplitRule[]> = {
     { bucket: 'Subscription (Starshipit)', pattern: /starshipit|starship/i },
     { bucket: 'Inbound — Container', pattern: /diamond/i },
     { bucket: 'Inbound — DHL International', pattern: /^dhl(\s+express)?$/i },
+    // Freight on merchandise we receive/move for the B2B channel.
+    { bucket: 'Inbound — B2B related', pattern: /\bbwt\b|dipacci|coffee\s*machine\s*technolog|el\s*rocio|repa\s*italia|xtracted/i },
     { bucket: 'Outbound — B2C AU', pattern: /australia\s*post|dhl\s*e-?commerce/i },
     { bucket: 'Outbound — B2B', pattern: /one\s*freight|star\s*track|interparcel|tfm|regional\s*express|interflow/i },
-    { bucket: 'Outbound — US', pattern: /\bups\b|zonos/i },
+    // US customer shipping (UPS/ZONOS) + Hoon Choi (US returns/replacements).
+    { bucket: 'Outbound — B2C USA', pattern: /\bups\b|zonos|hoon\s*choi/i },
+    // Unmatched → "Review" (e.g. Mavam LLC = freight of a trade-show stand to Belgium).
   ],
 };
 
