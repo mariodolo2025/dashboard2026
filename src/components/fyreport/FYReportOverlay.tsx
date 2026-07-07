@@ -13,8 +13,7 @@
 // =============================================================================
 
 import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { X, Printer, Download, RefreshCw } from 'lucide-react';
+import { Printer, Download, RefreshCw } from 'lucide-react';
 import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
@@ -41,12 +40,10 @@ const fmtPct = (v: number | null, decimals = 1) =>
 
 const fmtRatio = (v: number | null) => (v === null ? '—' : v.toFixed(2));
 
-interface FYReportOverlayProps {
-  open: boolean;
-  onClose: () => void;
-}
-
-export function FYReportOverlay({ open, onClose }: FYReportOverlayProps) {
+// Embeddable content for the Reports tab (the Reports shell owns the portal,
+// close button and Escape/scroll handling). Loads the FY snapshot on mount —
+// it is only mounted when FY Report is the active report.
+export function FYReportContent() {
   const [role, setRole] = useState<Role>('ceo');
   const [metrics, setMetrics] = useState<FYMetrics | null>(null);
   const [stockValuation, setStockValuation] = useState<FYStockValuation | null>(null);
@@ -54,7 +51,7 @@ export function FYReportOverlay({ open, onClose }: FYReportOverlayProps) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!open || metrics || loading) return;
+    if (metrics || loading) return;
     setLoading(true);
     setError(null);
     Promise.all([loadFYSnapshotData(), loadFYStockValuation()])
@@ -64,27 +61,8 @@ export function FYReportOverlay({ open, onClose }: FYReportOverlayProps) {
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load FY snapshot'))
       .finally(() => setLoading(false));
-  }, [open, metrics, loading]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
-  useEffect(() => {
-    if (!open) return;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [open]);
-
-  if (!open) return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const roleTitle: Record<Role, string> = {
     ceo: 'CEO view',
@@ -92,14 +70,8 @@ export function FYReportOverlay({ open, onClose }: FYReportOverlayProps) {
     marketing: 'Marketing view',
   };
 
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={`FY Report ${FY_LABEL}`}
-      className="pointer-events-auto fixed inset-0 z-[50] flex h-screen w-screen flex-col overflow-hidden bg-[#f7f7f5]"
-      id="fy-report-root"
-    >
+  return (
+    <div className="flex h-full flex-col">
       {/* Scoped print stylesheet: only the report body prints */}
       <style>{`
         @media print {
@@ -118,10 +90,10 @@ export function FYReportOverlay({ open, onClose }: FYReportOverlayProps) {
         }
       `}</style>
 
-      {/* Header */}
-      <div className="fy-no-print flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-3">
+      {/* Report sub-header: role selector + print */}
+      <div className="fy-no-print flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
         <div className="flex items-center gap-4">
-          <h2 className="text-base font-bold text-[#0f1115]">FY Report {FY_LABEL}</h2>
+          <h3 className="text-sm font-semibold text-[#0f1115]">FY Report {FY_LABEL}</h3>
           <div className="flex items-center rounded-xl bg-[#f1f1ee] p-0.5">
             {(['ceo', 'operations', 'marketing'] as Role[]).map((r) => (
               <Button
@@ -139,26 +111,15 @@ export function FYReportOverlay({ open, onClose }: FYReportOverlayProps) {
             ))}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => window.print()}>
-            <Printer className="h-3.5 w-3.5" />
-            Print / PDF
-          </Button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1.5 text-[#828a98] hover:bg-[#faf9f7] hover:text-[#2a2f38]"
-            aria-label="Close"
-          >
-            <X size={18} />
-          </button>
-        </div>
+        <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => window.print()}>
+          <Printer className="h-3.5 w-3.5" />
+          Print / PDF
+        </Button>
       </div>
 
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-y-auto" id="fy-report-print">
         <div className="mx-auto max-w-6xl p-6">
-          {/* Print-only title */}
           <div className="hidden print:block mb-6">
             <h1 className="text-2xl font-bold">Dolo Ent PTY Ltd — FY Report {FY_LABEL}</h1>
             <p className="text-sm text-muted-foreground">
@@ -187,8 +148,7 @@ export function FYReportOverlay({ open, onClose }: FYReportOverlayProps) {
           )}
         </div>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
 }
 

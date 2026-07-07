@@ -57,12 +57,34 @@ const COMMON_EXCLUDED: Record<string, boolean> = {
   'Interest Expense': true,
 };
 
+// Freight & Courier is split into virtual accounts by the transaction-level
+// split (see parse-xero-costs). All stay VARIABLE (Option A — split for
+// visibility, totals unchanged). The B2B slider matches the channel: outbound
+// B2C AU / US = 0% B2B, outbound B2B = 100% B2B, inbound = shared (25%). The
+// Starshipit subscription is software, not shipping → goes to Fixed.
+const FREIGHT_VARIABLE: Record<string, number> = {
+  'Freight & Courier — Inbound — Container': 25,
+  'Freight & Courier — Inbound — DHL International': 25,
+  'Freight & Courier — Outbound — B2C AU': 0,
+  'Freight & Courier — Outbound — B2B': 100,
+  'Freight & Courier — Outbound — US': 0,
+  'Freight & Courier — Review': 25,
+  'Freight & Courier — Unclassified': 25,
+};
+const FREIGHT_ACCOUNTS = Object.keys(FREIGHT_VARIABLE);
+
 const VARIABLE_SLIDERS: Record<string, number> = {
   'Advertising': 10,
+  // 'Freight & Courier' (single) only exists in xlsx-fallback mode; the API
+  // path splits it into FREIGHT_VARIABLE. Keep both assigned so either mode
+  // classifies correctly — only one set is present at a time.
   'Freight & Courier': 25,
+  ...FREIGHT_VARIABLE,
   'Bank Fees': 10,
   'Stripe Fees (no GST)': 0,
 };
+
+const FREIGHT_VARIABLE_NAMES = ['Freight & Courier', ...FREIGHT_ACCOUNTS];
 
 const ANDREA_ITEMS = [
   'Cleaning',
@@ -76,6 +98,7 @@ const ANDREA_ITEMS = [
 
 const FIXED_ITEMS = [
   'Rates & Taxes — Property & Compliance',
+  'Freight & Courier — Subscription (Starshipit)',
   'Wages and Salaries',
   'Superannuation',
   'Computer & Software',
@@ -108,7 +131,7 @@ export const SEED_PROFILES: CostProfile[] = [
       'Andrea board = her discretionary costs (toggle in By Channel). COGS, import duties and currency noise excluded — ' +
       'COGS is already deducted per-SKU downstream.',
     boards: boardsFrom({
-      variable: ['Advertising', 'Freight & Courier', 'Bank Fees', 'Stripe Fees (no GST)'],
+      variable: ['Advertising', ...FREIGHT_VARIABLE_NAMES, 'Bank Fees', 'Stripe Fees (no GST)'],
       andrea: ANDREA_ITEMS,
       fixed: FIXED_ITEMS,
     }),
@@ -124,7 +147,7 @@ export const SEED_PROFILES: CostProfile[] = [
       'What it costs to run and fulfil, with marketing stripped out: Advertising excluded on top of the common ' +
       'exclusions. Variable = Freight and payment fees; structure and Andrea unchanged from CEO.',
     boards: boardsFrom({
-      variable: ['Freight & Courier', 'Bank Fees', 'Stripe Fees (no GST)'],
+      variable: [...FREIGHT_VARIABLE_NAMES, 'Bank Fees', 'Stripe Fees (no GST)'],
       andrea: ANDREA_ITEMS,
       fixed: FIXED_ITEMS,
     }),
@@ -140,7 +163,7 @@ export const SEED_PROFILES: CostProfile[] = [
       'Contribution lens: ONLY costs that scale with each sale (Advertising, Freight, payment fees). All fixed ' +
       'structure and Andrea costs excluded, so By Channel shows sales − COGS − variable = contribution margin.',
     boards: boardsFrom({
-      variable: ['Advertising', 'Freight & Courier', 'Bank Fees', 'Stripe Fees (no GST)'],
+      variable: ['Advertising', ...FREIGHT_VARIABLE_NAMES, 'Bank Fees', 'Stripe Fees (no GST)'],
     }),
     sliders: { ...VARIABLE_SLIDERS },
     adjustments: {},

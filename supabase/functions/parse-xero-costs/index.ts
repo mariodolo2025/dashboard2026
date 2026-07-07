@@ -166,6 +166,28 @@ const SPLIT_RULES: Record<string, { bucket: string; pattern: RegExp }[]> = {
     { bucket: 'Tax remittances', pattern: /taxation office|(^|\W)ato(\W|$)/i },
     { bucket: 'Property & Compliance', pattern: /gold coast|body corporate|asic|land tax|council/i },
   ],
+  // Freight matches on the supplier CONTACT (line descriptions are generic
+  // "freight"). Order matters — first match wins:
+  //   Inbound — Container            = Diamond (sea freight bills)
+  //   Inbound — DHL International     = the "DHL"/"DHL EXPRESS" contact (import
+  //                                    air freight for goods that missed the
+  //                                    container). NOT "DHL e-commerce".
+  //   Outbound — B2C AU              = Australia Post + DHL e-commerce (old B2C courier)
+  //   Outbound — B2B                 = One Freight, Star Track, Interparcel, TFM,
+  //                                    Regional Express, Interflow
+  //   Outbound — US                  = UPS + ZONOS (US import taxes we pay)
+  //   Subscription                   = Starshipit (software sub, not shipping)
+  // NOTE (2026-07): market-level split (AU vs US) can't come from Xero because
+  // US parcels also ship via Australia Post — that needs the Starshipit
+  // connector (planned).
+  'Freight & Courier': [
+    { bucket: 'Subscription (Starshipit)', pattern: /starshipit|starship/i },
+    { bucket: 'Inbound — Container', pattern: /diamond/i },
+    { bucket: 'Inbound — DHL International', pattern: /^dhl(\s+express)?$/i },
+    { bucket: 'Outbound — B2C AU', pattern: /australia\s*post|dhl\s*e-?commerce/i },
+    { bucket: 'Outbound — B2B', pattern: /one\s*freight|star\s*track|interparcel|tfm|regional\s*express|interflow/i },
+    { bucket: 'Outbound — US', pattern: /\bups\b|zonos/i },
+  ],
 };
 
 /** Build the CostsResponse from the xero_pl_monthly / xero_account_lines
@@ -241,11 +263,20 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
       coveredByLines[idx] += Number(line.net_amount) || 0;
     }
 
-    // P&L remainder not explained by transaction lines (manual journals etc).
+    // Reconcile each month to the authoritative P&L total.
     for (let i = 0; i < months.length; i++) {
-      const remainder = plMonthly[i] - coveredByLines[i];
-      if (Math.abs(remainder) > 0.01) {
-        ensure('Unclassified')[i] += remainder;
+      const covered = coveredByLines[i];
+      const pl = plMonthly[i];
+      if (covered > pl + 0.01) {
+        // Lines over-count the P&L (GST-inclusive amounts, or an expense
+        // booked as both a bill and a direct payment). Scale the buckets down
+        // proportionally so they sum exactly to the P&L for the month.
+        const factor = covered > 0 ? pl / covered : 0;
+        for (const monthly of buckets.values()) monthly[i] *= factor;
+      } else if (pl - covered > 0.01) {
+        // Lines under-count: the gap is spend not captured by transaction
+        // lines (e.g. accountant manual journals). Surface it, never estimate.
+        ensure('Unclassified')[i] += pl - covered;
       }
     }
 

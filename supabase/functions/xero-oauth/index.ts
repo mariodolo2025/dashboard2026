@@ -22,7 +22,15 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 // instead for account-line detail, which covers the Spend Money payments that
 // make up the accounts we need to split. settings.read = chart of accounts
 // (code → name mapping).
-const SCOPES = 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.settings.read';
+// Granular scopes (mandatory for apps created after March 2026).
+// - reports.profitandloss.read : the P&L by account × month
+// - banktransactions.read      : Spend/Receive Money lines (direct expenses)
+// - invoices.read              : ACCPAY bills (freight is largely booked as
+//                                supplier bills, e.g. Diamond container freight,
+//                                DHL International Freight) — needed to split
+//                                accounts by line description, not just contact
+// - settings.read              : chart of accounts (code → name)
+const SCOPES = 'offline_access accounting.reports.profitandloss.read accounting.banktransactions.read accounting.invoices.read accounting.settings.read';
 const AUTHORIZE_URL = 'https://login.xero.com/identity/connect/authorize';
 const TOKEN_URL = 'https://identity.xero.com/connect/token';
 const CONNECTIONS_URL = 'https://api.xero.com/connections';

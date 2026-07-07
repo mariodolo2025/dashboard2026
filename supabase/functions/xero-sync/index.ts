@@ -31,7 +31,7 @@ const TOKEN_URL = 'https://identity.xero.com/connect/token';
 const API_BASE = 'https://api.xero.com/api.xro/2.0';
 
 /** Accounts whose transaction lines we persist for breakdown rules. */
-const WATCHED_ACCOUNTS = ['Rates & Taxes'];
+const WATCHED_ACCOUNTS = ['Rates & Taxes', 'Freight & Courier'];
 
 /** History start for the first transactions pull (prior FY start, for YoY). */
 const TRANSACTIONS_SINCE = '2024-07-01';
@@ -130,54 +130,67 @@ function parseHeaderCell(title: string): { year: number; month: number } | null 
 }
 
 async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: string): Promise<number> {
-  // Rolling 12 months ending this month.
-  const now = new Date();
-  const toDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const now = new Date();
 
-  const report = await xeroGet(
-    `Reports/ProfitAndLoss?toDate=${fmt(toDate)}&periods=11&timeframe=MONTH&standardLayout=true`,
-    accessToken,
-    tenantId,
-  );
-
-  const rep = report?.Reports?.[0];
-  if (!rep) throw new Error('Unexpected P&L response shape');
-
-  // Header row gives the period end date per column (col 0 is the row title).
-  const headerRow = rep.Rows?.find((r: any) => r.RowType === 'Header');
-  const periods: ({ year: number; month: number } | null)[] = (headerRow?.Cells ?? [])
-    .map((c: any) => parseHeaderCell(String(c?.Value ?? '')));
-
-  const upserts: any[] = [];
-  const walk = (rows: any[], section: string) => {
-    for (const row of rows ?? []) {
-      if (row.RowType === 'Section') {
-        // Section title tells us Income vs Cost of Sales vs Operating
-        // Expenses — the costs canvas later filters on it.
-        walk(row.Rows, String(row.Title ?? section ?? '').trim());
-        continue;
+  const collect = (rep: any, upserts: any[]) => {
+    const headerRow = rep.Rows?.find((r: any) => r.RowType === 'Header');
+    const periods: ({ year: number; month: number } | null)[] = (headerRow?.Cells ?? [])
+      .map((c: any) => parseHeaderCell(String(c?.Value ?? '')));
+    const walk = (rows: any[], section: string) => {
+      for (const row of rows ?? []) {
+        if (row.RowType === 'Section') {
+          walk(row.Rows, String(row.Title ?? section ?? '').trim());
+          continue;
+        }
+        if (row.RowType !== 'Row') continue; // skip SummaryRow (totals)
+        const cells = row.Cells ?? [];
+        const accountName = String(cells[0]?.Value ?? '').trim();
+        if (!accountName) continue;
+        for (let i = 1; i < cells.length; i++) {
+          const period = periods[i];
+          if (!period) continue;
+          const amount = parseFloat(String(cells[i]?.Value ?? '0')) || 0;
+          upserts.push({
+            account_name: accountName,
+            year: period.year,
+            month: period.month,
+            amount,
+            section: section || null,
+            synced_at: new Date().toISOString(),
+          });
+        }
       }
-      if (row.RowType !== 'Row') continue; // skip SummaryRow (totals)
-      const cells = row.Cells ?? [];
-      const accountName = String(cells[0]?.Value ?? '').trim();
-      if (!accountName) continue;
-      for (let i = 1; i < cells.length; i++) {
-        const period = periods[i];
-        if (!period) continue;
-        const amount = parseFloat(String(cells[i]?.Value ?? '0')) || 0;
-        upserts.push({
-          account_name: accountName,
-          year: period.year,
-          month: period.month,
-          amount,
-          section: section || null,
-          synced_at: new Date().toISOString(),
-        });
-      }
-    }
+    };
+    walk(rep.Rows, '');
   };
-  walk(rep.Rows, '');
+
+  // Xero caps monthly P&L at 12 columns per call. Fetch two 12-month windows
+  // so the closed FY (Jul–Jun) has every month AND the current partial month
+  // is present: window A ends at the current month, window B ends at the last
+  // completed June (FY close). Each is best-effort — if one 400s (e.g. no data
+  // that far back) we keep the other rather than failing the whole sync.
+  const upserts: any[] = [];
+  const fyEndYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1; // FY ends 30 Jun
+  const windows = [
+    new Date(now.getFullYear(), now.getMonth() + 1, 0), // end of this month
+    new Date(fyEndYear, 6, 0),                          // 30 Jun of the last closed FY
+  ];
+  let ok = 0;
+  for (const toDate of windows) {
+    try {
+      const report = await xeroGet(
+        `Reports/ProfitAndLoss?toDate=${fmt(toDate)}&periods=11&timeframe=MONTH&standardLayout=true`,
+        accessToken,
+        tenantId,
+      );
+      const rep = report?.Reports?.[0];
+      if (rep) { collect(rep, upserts); ok++; }
+    } catch (e) {
+      console.warn(`P&L window ${fmt(toDate)} failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  if (ok === 0) throw new Error('All P&L windows failed');
 
   for (let i = 0; i < upserts.length; i += 500) {
     const { error } = await supabase
@@ -265,6 +278,7 @@ async function syncBankTransactions(supabase: any, accessToken: string, tenantId
           contact_name: contact,
           description: line.Description ?? null,
           net_amount: sign * Number(line.LineAmount ?? 0),
+          source: 'banktx',
         });
       }
     }
@@ -304,6 +318,86 @@ async function syncBankTransactions(supabase: any, accessToken: string, tenantId
   return { lines: stored, pages: page - startPage, done };
 }
 
+// ─── Step: Bills / ACCPAY invoices (watched accounts, line descriptions) ────
+// Freight & inbound costs are largely booked as supplier bills (Payable
+// Invoices), whose LINE DESCRIPTION carries the real category ("Diamond
+// Freight Services - freight", "DHL - International Freight", ...). Bank
+// transactions can't provide this (their lines are description-less), so we
+// pull ACCPAY invoices and keep the watched-account lines with their text.
+
+async function syncInvoices(supabase: any, accessToken: string, tenantId: string): Promise<{ lines: number; pages: number; done: boolean }> {
+  const accountsBody = await xeroGet('Accounts', accessToken, tenantId);
+  const codeToName = new Map<string, string>();
+  for (const a of accountsBody?.Accounts ?? []) {
+    if (a.Code) codeToName.set(String(a.Code), String(a.Name ?? '').trim());
+  }
+  const watchedCodes = new Set(
+    [...codeToName.entries()].filter(([, name]) => WATCHED_ACCOUNTS.includes(name)).map(([code]) => code),
+  );
+  if (watchedCodes.size === 0) return { lines: 0, pages: 0, done: true };
+
+  const { data: stateRow } = await supabase
+    .from('xero_sync_state')
+    .select('value')
+    .eq('key', 'invoices_since')
+    .maybeSingle();
+  const modifiedSince: string | null = stateRow?.value?.modifiedSince ?? null;
+  const startPage: number = stateRow?.value?.nextPage ?? 1;
+  const runStartedAt: string = stateRow?.value?.walkStartedAt ?? new Date().toISOString();
+
+  const headers: Record<string, string> = modifiedSince ? { 'If-Modified-Since': new Date(modifiedSince).toUTCString() } : {};
+  const where = `Type=="ACCPAY" AND Date>=DateTime(${TRANSACTIONS_SINCE.split('-').map(Number).join(',')})`;
+
+  let stored = 0;
+  let page = startPage;
+  let done = false;
+
+  for (; page < startPage + MAX_TX_PAGES_PER_RUN; page++) {
+    const body = await xeroGet(`Invoices?where=${encodeURIComponent(where)}&page=${page}`, accessToken, tenantId, headers);
+    const invoices: any[] = body?.Invoices ?? [];
+    if (invoices.length === 0) { done = true; break; }
+
+    const rows: any[] = [];
+    for (const inv of invoices) {
+      if (inv.Status === 'DELETED' || inv.Status === 'VOIDED') continue;
+      const invDate = parseXeroDate(inv.DateString ?? inv.Date);
+      const contact = String(inv.Contact?.Name ?? '').trim() || null;
+      // ACCPAY credit note comes back as Type=ACCPAYCREDIT via a different
+      // endpoint; standard ACCPAY line amounts are positive expenses.
+      for (const line of inv.LineItems ?? []) {
+        const code = String(line.AccountCode ?? '');
+        if (!watchedCodes.has(code)) continue;
+        rows.push({
+          journal_line_id: line.LineItemID,
+          journal_number: null,
+          journal_date: invDate,
+          account_name: codeToName.get(code),
+          contact_name: contact,
+          description: line.Description ?? null,
+          net_amount: Number(line.LineAmount ?? 0),
+          source: 'invoice',
+        });
+      }
+    }
+
+    if (rows.length > 0) {
+      const { error } = await supabase.from('xero_account_lines').upsert(rows, { onConflict: 'journal_line_id' });
+      if (error) throw new Error(`xero_account_lines (invoices) upsert failed: ${error.message}`);
+      stored += rows.length;
+    }
+
+    if (invoices.length < 100) { done = true; break; }
+  }
+
+  await supabase.from('xero_sync_state').upsert({
+    key: 'invoices_since',
+    value: done ? { modifiedSince: runStartedAt } : { modifiedSince, nextPage: page, walkStartedAt: runStartedAt },
+    updated_at: new Date().toISOString(),
+  });
+
+  return { lines: stored, pages: page - startPage, done };
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -329,6 +423,9 @@ Deno.serve(async (req: Request) => {
       }
       if (step === 'transactions' || step === 'all') {
         result.transactions = await syncBankTransactions(supabase, accessToken, tenantId);
+      }
+      if (step === 'invoices' || step === 'all') {
+        result.invoices = await syncInvoices(supabase, accessToken, tenantId);
       }
     } catch (e) {
       // Record the failure for the Connections panel, then rethrow.

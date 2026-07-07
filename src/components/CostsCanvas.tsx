@@ -1088,6 +1088,12 @@ function ItemCard({
 
   const dragProps = readOnly ? {} : { ...attributes, ...listeners };
 
+  // Virtual accounts produced by the transaction-level split (e.g.
+  // "Rates & Taxes — Property & Compliance", "Freight & Courier — Inbound —
+  // Container") carry a distinct violet tint so they're instantly told apart
+  // from raw Xero accounts.
+  const isComputed = item.name.includes(' — ');
+
   return (
     <motion.div
       ref={readOnly ? undefined : setNodeRef}
@@ -1098,10 +1104,11 @@ function ItemCard({
       animate={{ opacity: isDragging ? 0 : 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.9 }}
       transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-      className={`bg-white border-2 rounded-lg p-4 shadow-lg transition-all ${
+      className={`border-2 rounded-lg p-4 shadow-lg transition-all ${
         readOnly ? 'border-blue-400 shadow-2xl bg-blue-50 cursor-grabbing' :
         isDragging ? 'border-blue-400 shadow-2xl bg-blue-50 opacity-0' :
-        'border-gray-200 hover:shadow-xl cursor-move'
+        isComputed ? 'border-violet-300 bg-violet-50 hover:shadow-xl cursor-move' :
+        'bg-white border-gray-200 hover:shadow-xl cursor-move'
       }`}
       onDoubleClick={readOnly ? undefined : onDoubleClick}
       style={{ visibility: isDragging ? 'hidden' : 'visible' }}
@@ -1110,6 +1117,11 @@ function ItemCard({
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2 flex-1">
             <h4 className="font-medium text-sm leading-tight">{item.name}</h4>
+            {isComputed && (
+              <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700" title="Computed from a transaction-level split">
+                split
+              </span>
+            )}
             {item.adjustmentPercent !== 100 && (
               <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">
                 Adj: {item.adjustmentPercent}%
