@@ -9,18 +9,19 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, CalendarRange, Truck, Globe } from 'lucide-react';
+import { X, CalendarRange, Truck, Globe, Gauge } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { FYReportContent } from '@/components/fyreport/FYReportOverlay';
 import { FreightReportContent } from '@/components/fyreport/FreightReportContent';
 import { FreightMarketContent } from '@/components/fyreport/FreightMarketContent';
+import { ShippingPerformanceContent } from '@/components/fyreport/ShippingPerformanceContent';
 
 interface ReportsOverlayProps {
   open: boolean;
   onClose: () => void;
 }
 
-type ReportId = 'fy' | 'freight' | 'market';
+type ReportId = 'fy' | 'freight' | 'market' | 'performance';
 
 // Fiscal year the current reports cover (Jul–Jun).
 const FY = 'FY25-26';
@@ -29,6 +30,7 @@ const REPORTS: { id: ReportId; label: string; icon: any; render: () => JSX.Eleme
   { id: 'fy', label: `FY Report ${FY}`, icon: CalendarRange, render: () => <FYReportContent /> },
   { id: 'freight', label: `Freight by Category ${FY}`, icon: Truck, render: () => <FreightReportContent /> },
   { id: 'market', label: `Freight by Market ${FY}`, icon: Globe, render: () => <FreightMarketContent /> },
+  { id: 'performance', label: `Shipping Performance ${FY}`, icon: Gauge, render: () => <ShippingPerformanceContent /> },
 ];
 
 export function ReportsOverlay({ open, onClose }: ReportsOverlayProps) {
