@@ -25,9 +25,11 @@ import {
   FY_LABEL,
   FYMetrics,
   FYStockValuation,
+  FYOpsExtras,
   computeFYMetrics,
   loadFYSnapshotData,
   loadFYStockValuation,
+  loadFYOpsExtras,
 } from '@/lib/fyreport';
 
 type Role = 'ceo' | 'operations' | 'marketing';
@@ -47,6 +49,7 @@ export function FYReportContent() {
   const [role, setRole] = useState<Role>('ceo');
   const [metrics, setMetrics] = useState<FYMetrics | null>(null);
   const [stockValuation, setStockValuation] = useState<FYStockValuation | null>(null);
+  const [opsExtras, setOpsExtras] = useState<FYOpsExtras | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,10 +57,11 @@ export function FYReportContent() {
     if (metrics || loading) return;
     setLoading(true);
     setError(null);
-    Promise.all([loadFYSnapshotData(), loadFYStockValuation()])
-      .then(([data, valuation]) => {
+    Promise.all([loadFYSnapshotData(), loadFYStockValuation(), loadFYOpsExtras()])
+      .then(([data, valuation, extras]) => {
         setMetrics(computeFYMetrics(data));
         setStockValuation(valuation);
+        setOpsExtras(extras);
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load FY snapshot'))
       .finally(() => setLoading(false));
@@ -142,7 +146,7 @@ export function FYReportContent() {
           {metrics && !loading && (
             <>
               {role === 'ceo' && <CEOView m={metrics} />}
-              {role === 'operations' && <OperationsView m={metrics} valuation={stockValuation} />}
+              {role === 'operations' && <OperationsView m={metrics} valuation={stockValuation} extras={opsExtras} />}
               {role === 'marketing' && <MarketingView m={metrics} />}
             </>
           )}
@@ -427,7 +431,8 @@ function SkuTable({ rows }: { rows: FYMetrics['topSkusByRevenue'] }) {
 
 // --- Operations view --------------------------------------------------------------
 
-function OperationsView({ m, valuation }: { m: FYMetrics; valuation: FYStockValuation | null }) {
+function OperationsView({ m, valuation, extras }: { m: FYMetrics; valuation: FYStockValuation | null; extras: FYOpsExtras | null }) {
+  const n = (v: number) => Math.round(v).toLocaleString('en-AU');
   const totalUnits = m.unitsByChannel.reduce((s, u) => s + u.units, 0);
   const totalCOGS = m.shopifyCOGS + m.b2bCOGS;
   const avgInventory =
@@ -462,6 +467,53 @@ function OperationsView({ m, valuation }: { m: FYMetrics; valuation: FYStockValu
           sub={`sales ${fmtAUD(m.totalSales)} − landed COGS`}
         />
       </div>
+
+      {extras && (
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <KpiCard
+            label="Shopify orders (FY)"
+            value={n(extras.shopifyOrders.current.orders)}
+            sub={extras.shopifyOrders.ordersYoYPct !== null
+              ? `${extras.shopifyOrders.ordersYoYPct >= 0 ? '+' : ''}${extras.shopifyOrders.ordersYoYPct.toFixed(0)}% vs ${n(extras.shopifyOrders.prior.orders)} last FY`
+              : 'no prior-FY data'}
+          />
+          <KpiCard
+            label="Avg orders / day"
+            value={n(extras.shopifyOrders.currentDaily)}
+            sub={`vs ${n(extras.shopifyOrders.priorDaily)}/day last FY`}
+          />
+          <KpiCard
+            label="Orders to AU / International"
+            value={`${n(extras.marketSplit.au)} / ${n(extras.marketSplit.international)}`}
+            sub={`shipped parcels · US ${n(extras.marketSplit.us)} · RoW ${n(extras.marketSplit.other)}`}
+          />
+          {extras.b2bPayment && (
+            <KpiCard
+              label="B2B payment (DSO)"
+              value={`${extras.b2bPayment.dso_days.toFixed(0)} days`}
+              sub={`median ${extras.b2bPayment.median_days.toFixed(0)}d · ${extras.b2bPayment.ontime_pct.toFixed(0)}% on-time`}
+            />
+          )}
+        </div>
+      )}
+
+      {extras?.b2bPayment && (
+        <SectionCard
+          title="B2B receivables — payment behaviour"
+          description="Paid wholesale invoices (Xero, retail excluded). DSO is $-weighted days-to-pay."
+        >
+          <table className="w-full">
+            <tbody>
+              <tr className="border-b"><td className={td}>Paid invoices · customers</td><td className={tdNum}>{n(extras.b2bPayment.invoices)} · {n(extras.b2bPayment.customers)}</td></tr>
+              <tr className="border-b"><td className={td}>Value collected</td><td className={tdNum}>{fmtAUD(extras.b2bPayment.total)}</td></tr>
+              <tr className="border-b"><td className={td}>Avg days to pay</td><td className={tdNum}>{extras.b2bPayment.avg_days.toFixed(0)} days</td></tr>
+              <tr className="border-b"><td className={td}>Median days to pay</td><td className={tdNum}>{extras.b2bPayment.median_days.toFixed(0)} days</td></tr>
+              <tr className="border-b"><td className={td}>DSO ($-weighted)</td><td className={tdNum}>{extras.b2bPayment.dso_days.toFixed(0)} days</td></tr>
+              <tr><td className={td}>Paid on time / late</td><td className={tdNum}>{extras.b2bPayment.ontime_pct.toFixed(0)}% / {extras.b2bPayment.late_pct.toFixed(0)}%</td></tr>
+            </tbody>
+          </table>
+        </SectionCard>
+      )}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <SectionCard

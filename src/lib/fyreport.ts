@@ -594,3 +594,37 @@ export async function loadFYStockValuation(): Promise<FYStockValuation> {
     return { opening: null, closing: null };
   }
 }
+
+// --- Operations extras (order volume + B2B payment + market split) -------------
+
+export interface FYOpsExtras {
+  shopifyOrders: {
+    current: { orders: number; gross: number };
+    prior: { orders: number; gross: number };
+    ordersYoYPct: number | null;
+    currentDaily: number;
+    priorDaily: number;
+    monthly: { label: string; orders: number }[];
+  };
+  b2bPayment: {
+    invoices: number; customers: number; total: number;
+    avg_days: number; median_days: number; dso_days: number;
+    ontime_pct: number; late_pct: number;
+  } | null;
+  marketSplit: { au: number; international: number; us: number; other: number; total: number };
+}
+
+export async function loadFYOpsExtras(): Promise<FYOpsExtras | null> {
+  try {
+    const baseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    const res = await fetch(`${baseUrl}/functions/v1/fy-ops-extras`, {
+      headers: { Authorization: `Bearer ${anonKey}` },
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body.success ? (body as FYOpsExtras) : null;
+  } catch {
+    return null;
+  }
+}
