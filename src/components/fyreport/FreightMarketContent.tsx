@@ -80,7 +80,10 @@ export function FreightMarketContent() {
     const { dhl, auspost } = data.usComparison;
     if (!dhl.avgPerOrder || !auspost.avgPerOrder) return null;
     const diff = dhl.avgPerOrder - auspost.avgPerOrder;
-    return { dhl, auspost, diff, pct: dhl.avgPerOrder > 0 ? diff / dhl.avgPerOrder : 0 };
+    // Counterfactual: what the Australia Post-era US parcels would have cost had
+    // they shipped on DHL at its duty-paid rate.
+    const totalSaved = auspost.orders * diff;
+    return { dhl, auspost, diff, pct: dhl.avgPerOrder > 0 ? diff / dhl.avgPerOrder : 0, totalSaved };
   }, [data]);
 
   return (
@@ -175,8 +178,14 @@ export function FreightMarketContent() {
                     <div className="hidden items-center justify-center px-2 sm:flex"><span className="h-8 w-px bg-[#e8e8e3]" /></div>
                     <div className="flex flex-col justify-center gap-0.5 p-4">
                       <p className="text-xs text-muted-foreground">Saved per parcel</p>
-                      <p className="text-2xl font-bold tabular-nums text-emerald-700">{fmtAUD2(savings.diff)}</p>
+                      <p className="text-2xl font-bold tabular-nums text-emerald-700">
+                        {fmtAUD2(savings.diff)}{' '}
+                        <span className="text-base font-semibold">(≈{fmtAUD(savings.totalSaved)})</span>
+                      </p>
                       <p className="text-xs font-medium text-emerald-700">−{(savings.pct * 100).toFixed(0)}% cheaper</p>
+                      <p className="text-[11px] leading-tight text-muted-foreground">
+                        {fmtInt(savings.auspost.orders)} parcels × {fmtAUD2(savings.diff)} — vs having stayed on DHL
+                      </p>
                     </div>
                   </div>
                 </div>
