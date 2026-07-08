@@ -94,7 +94,7 @@ async function getAccessToken(supabase: any): Promise<{ accessToken: string; ten
   return { accessToken: tokens.access_token, tenantId: row.tenant_id };
 }
 
-async function xeroGet(path: string, accessToken: string, tenantId: string, extraHeaders: Record<string, string> = {}): Promise<any> {
+async function xeroGet(path: string, accessToken: string, tenantId: string, extraHeaders: Record<string, string> = {}, attempt = 0): Promise<any> {
   const res = await fetch(`${API_BASE}/${path}`, {
     headers: {
       'Authorization': `Bearer ${accessToken}`,
@@ -104,11 +104,18 @@ async function xeroGet(path: string, accessToken: string, tenantId: string, extr
     },
   });
   if (res.status === 429) {
-    // Basic backoff on rate limit, single retry.
-    const wait = Number(res.headers.get('Retry-After') ?? 2);
-    await new Promise((r) => setTimeout(r, Math.min(wait, 10) * 1000));
-    return xeroGet(path, accessToken, tenantId, extraHeaders);
+    // Rate limited. Back off and retry — but CAP the retries (the previous
+    // uncapped recursion looped forever when Xero's daily/minute quota was
+    // exhausted, killing the worker with a bogus RESOURCE_LIMIT).
+    if (attempt >= 3) {
+      const limit = res.headers.get('X-Rate-Limit-Problem') ?? 'unknown';
+      throw new Error(`Xero rate limit hit (429, ${limit} limit) after ${attempt} retries on ${path.split('?')[0]}`);
+    }
+    const wait = Number(res.headers.get('Retry-After') ?? 5);
+    await new Promise((r) => setTimeout(r, Math.min(wait, 15) * 1000));
+    return xeroGet(path, accessToken, tenantId, extraHeaders, attempt + 1);
   }
+  if (res.status === 304) return {}; // If-Modified-Since: nothing changed
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`Xero GET ${path.split('?')[0]} failed: HTTP ${res.status} ${body.slice(0, 300)}`);
@@ -487,6 +494,98 @@ async function syncInvoices(supabase: any, accessToken: string, tenantId: string
   return { lines: stored, contacts: `${startIdx}-${endIdx}/${contacts.length}`, done };
 }
 
+// ─── Step: incremental detail (forward-only append past the CSV boundary) ───
+// The closed FY (≤ boundary, default 2026-06-30) is owned by the uploaded
+// Account Transactions CSV. This step keeps the CURRENT FY current with tiny
+// daily deltas: it fetches only watched-account lines that (a) were MODIFIED
+// since the last run (If-Modified-Since watermark) AND (b) have a transaction
+// date AFTER the boundary — so it never touches the CSV's domain and can't
+// duplicate. Amounts converted to AUD (LineAmount / CurrencyRate). Upsert by
+// the real Xero LineItemID. Because the window is post-boundary + modified-
+// since, the volume stays small regardless of the org's full history — this is
+// what makes it safe where the 2-year backfill was not.
+async function syncDetailIncremental(supabase: any, accessToken: string, tenantId: string): Promise<any> {
+  const accountsBody = await xeroGet('Accounts', accessToken, tenantId);
+  const codeToName = new Map<string, string>();
+  for (const a of accountsBody?.Accounts ?? []) if (a.Code) codeToName.set(String(a.Code), String(a.Name ?? '').trim());
+  const watchedCodes = new Set([...codeToName.entries()].filter(([, n]) => WATCHED_ACCOUNTS.includes(n)).map(([c]) => c));
+  if (watchedCodes.size === 0) return { lines: 0, done: true };
+
+  const { data: st } = await supabase.from('xero_sync_state').select('value').eq('key', 'detail_incremental').maybeSingle();
+  const boundary: string = st?.value?.boundary ?? '2026-06-30';       // CSV covers through here
+  const since: string = st?.value?.since ?? `${boundary}T00:00:00Z`;   // modified-since watermark
+  const runStart = new Date().toISOString();
+  const boundaryDay = boundary; // 'YYYY-MM-DD' string compare is safe for dates
+  const fromArgs = boundary.split('-').map(Number); // [y,m,d]
+  const dateWhere = `Date>DateTime(${fromArgs[0]},${fromArgs[1]},${fromArgs[2]})`;
+  const modHeader = { 'If-Modified-Since': new Date(since).toUTCString() };
+
+  const rows: any[] = [];
+
+  // Bank transactions (Spend/Receive Money) modified since watermark, post-boundary.
+  for (let page = 1; page <= 2; page++) {
+    const body = await xeroGet(`BankTransactions?where=${encodeURIComponent(dateWhere)}&page=${page}`, accessToken, tenantId, modHeader);
+    const txs: any[] = body?.BankTransactions ?? [];
+    if (txs.length === 0) break;
+    for (const tx of txs) {
+      if (tx.Status === 'DELETED' || tx.Status === 'VOIDED') continue;
+      const d = parseXeroDate(tx.DateString ?? tx.Date);
+      if (!d || d <= boundaryDay) continue;
+      const contact = String(tx.Contact?.Name ?? '').trim() || null;
+      const sign = String(tx.Type ?? '').startsWith('RECEIVE') ? -1 : 1;
+      for (const line of tx.LineItems ?? []) {
+        const code = String(line.AccountCode ?? '');
+        if (!watchedCodes.has(code)) continue;
+        rows.push({
+          journal_line_id: line.LineItemID, journal_number: null, journal_date: d,
+          account_name: codeToName.get(code), contact_name: contact, description: line.Description ?? null,
+          reference: tx.Reference ?? null, net_amount: sign * toAUD(line.LineAmount, tx.CurrencyRate),
+          amount_source: sign * Number(line.LineAmount ?? 0), currency: String(tx.CurrencyCode ?? 'AUD'), source: 'api',
+        });
+      }
+    }
+    if (txs.length < 100) break;
+  }
+
+  // ACCPAY invoices (bills) modified since watermark, post-boundary.
+  for (let page = 1; page <= 2; page++) {
+    const body = await xeroGet(`Invoices?where=${encodeURIComponent(`Type=="ACCPAY" AND ${dateWhere}`)}&page=${page}`, accessToken, tenantId, modHeader);
+    const invs: any[] = body?.Invoices ?? [];
+    if (invs.length === 0) break;
+    for (const inv of invs) {
+      if (inv.Status === 'DELETED' || inv.Status === 'VOIDED') continue;
+      const d = parseXeroDate(inv.DateString ?? inv.Date);
+      if (!d || d <= boundaryDay) continue;
+      const contact = String(inv.Contact?.Name ?? '').trim() || null;
+      for (const line of inv.LineItems ?? []) {
+        const code = String(line.AccountCode ?? '');
+        if (!watchedCodes.has(code)) continue;
+        rows.push({
+          journal_line_id: line.LineItemID, journal_number: null, journal_date: d,
+          account_name: codeToName.get(code), contact_name: contact, description: line.Description ?? null,
+          reference: inv.InvoiceNumber ?? null, net_amount: toAUD(line.LineAmount, inv.CurrencyRate),
+          amount_source: Number(line.LineAmount ?? 0), currency: String(inv.CurrencyCode ?? 'AUD'), source: 'api',
+        });
+      }
+    }
+    if (invs.length < 100) break;
+  }
+
+  if (rows.length > 0) {
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await supabase.from('xero_account_lines').upsert(rows.slice(i, i + 500), { onConflict: 'journal_line_id' });
+      if (error) throw new Error(`incremental upsert failed: ${error.message}`);
+    }
+  }
+
+  await supabase.from('xero_sync_state').upsert({
+    key: 'detail_incremental',
+    value: { boundary, since: runStart },
+    updated_at: new Date().toISOString(),
+  });
+  return { lines: rows.length, boundary, since, done: true };
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -507,13 +606,19 @@ Deno.serve(async (req: Request) => {
     try {
       const { accessToken, tenantId } = await getAccessToken(supabase);
 
+      // 'all' (the daily cron) = P&L totals + incremental detail. The old
+      // full-history walks ('transactions'/'invoices') stay callable manually
+      // but are NOT in 'all' — the CSV owns the closed-FY backfill.
       if (step === 'pl' || step === 'all') {
         result.pl = await syncProfitAndLoss(supabase, accessToken, tenantId);
       }
-      if (step === 'transactions' || step === 'all') {
+      if (step === 'detail' || step === 'all') {
+        result.detail = await syncDetailIncremental(supabase, accessToken, tenantId);
+      }
+      if (step === 'transactions') {
         result.transactions = await syncBankTransactions(supabase, accessToken, tenantId);
       }
-      if (step === 'invoices' || step === 'all') {
+      if (step === 'invoices') {
         result.invoices = await syncInvoices(supabase, accessToken, tenantId, body?.contacts);
       }
     } catch (e) {
