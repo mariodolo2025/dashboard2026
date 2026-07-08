@@ -14,6 +14,13 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { classifyLine, SPLIT_RULES } from '../_shared/xeroSplitRules.ts';
+import { loadStarshipitRatios, auShare, carrierKeyForContact } from '../_shared/starshipitReallocation.ts';
+
+// The two freight buckets whose card total differs from the raw supplier lines,
+// because the Starshipit market reallocation moves the US share of Australia
+// Post + DHL eCommerce (booked under B2C AU by supplier) into B2C USA.
+const REALLOC_BUCKETS = new Set(['Outbound — B2C AU', 'Outbound — B2C USA']);
+const REALLOC_CARRIER_NAME: Record<string, string> = { auspost: 'Australia Post', dhl_ecommerce: 'DHL eCommerce', ups: 'UPS' };
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -95,7 +102,47 @@ Deno.serve(async (req: Request) => {
 
     const total = lines.reduce((s: number, l: any) => s + l.amount, 0);
 
-    return json({ success: true, account, bucket, total, count: lines.length, byContact, lines });
+    // Reconciliation bridge: when the drill-down is a reallocated freight bucket,
+    // the raw supplier lines shown here won't sum to the card total. Compute the
+    // Starshipit reallocation across BOTH B2C buckets (from the full row set, not
+    // the filtered lines) so the modal can explain the gap.
+    let reallocation: any = null;
+    if (account === 'Freight & Courier' && bucket && REALLOC_BUCKETS.has(bucket)) {
+      const ratios = await loadStarshipitRatios(supabase);
+      let auCard = 0, usaCard = 0, auBucketRaw = 0, usaBucketRaw = 0;
+      const carriers = new Map<string, { carrier: string; raw: number; au: number; us: number }>();
+      for (const r of rows) {
+        const b = classifyLine(account, r.contact_name);
+        if (b !== 'Outbound — B2C AU' && b !== 'Outbound — B2C USA') continue;
+        const amt = Number(r.net_amount) || 0;
+        if (b === 'Outbound — B2C AU') auBucketRaw += amt; else usaBucketRaw += amt;
+        const [y, mo] = String(r.journal_date).slice(0, 7).split('-').map(Number);
+        const ck = carrierKeyForContact(r.contact_name);
+        const share = ck ? auShare(ratios, ck, y, mo) : null;
+        if (ck && share !== null) {
+          const au = amt * share, us = amt * (1 - share);
+          auCard += au; usaCard += us;
+          // Only carriers booked under B2C AU actually cross into B2C USA (their
+          // US share). UPS is booked under USA natively and stays — don't list it
+          // as "moved".
+          if (b === 'Outbound — B2C AU') {
+            const cur = carriers.get(ck) ?? { carrier: REALLOC_CARRIER_NAME[ck] ?? ck, raw: 0, au: 0, us: 0 };
+            cur.raw += amt; cur.au += au; cur.us += us; carriers.set(ck, cur);
+          }
+        } else if (b === 'Outbound — B2C AU') { auCard += amt; } else { usaCard += amt; }
+      }
+      const isAU = bucket === 'Outbound — B2C AU';
+      reallocation = {
+        applies: true,
+        direction: isAU ? 'out' : 'in',       // AU loses its US share; USA gains it
+        rawShown: isAU ? auBucketRaw : usaBucketRaw,
+        cardTotal: isAU ? auCard : usaCard,
+        moved: Math.max(0, auBucketRaw - auCard), // US share transferred AU → USA
+        carriers: [...carriers.values()].sort((a, b) => b.raw - a.raw),
+      };
+    }
+
+    return json({ success: true, account, bucket, total, count: lines.length, byContact, lines, reallocation });
   } catch (e) {
     return json({ success: false, message: e instanceof Error ? e.message : 'Unknown error' }, 500);
   }

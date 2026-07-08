@@ -22,11 +22,24 @@ interface DetailLine {
   date: string; contact: string | null; description: string | null;
   reference: string | null; amount: number; currency: string; source: string; bucket: string;
 }
+interface Reallocation {
+  applies: boolean;
+  direction: 'out' | 'in';
+  rawShown: number;
+  cardTotal: number;
+  moved: number;
+  carriers: { carrier: string; raw: number; au: number; us: number }[];
+}
 interface DetailData {
   total: number; count: number;
   byContact: { contact: string; total: number; count: number }[];
   lines: DetailLine[];
+  reallocation?: Reallocation | null;
 }
+
+// Categories whose card total differs from the raw transactions because of the
+// Starshipit market reallocation (AusPost/DHL US share moves AU → USA).
+const REALLOCATED = new Set(['Outbound — B2C AU', 'Outbound — B2C USA']);
 
 const fmtAUD2 = (v: number) => `$${v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -189,10 +202,21 @@ export function FreightReportContent() {
                   </p>
                 </div>
                 <div>
-                  <h4 className="font-semibold text-foreground">Market split (AU vs US)</h4>
+                  <h4 className="font-semibold text-foreground">Market split (AU vs US) — why the card ≠ the transactions</h4>
                   <p className="text-muted-foreground">
-                    Not possible from Xero — US parcels also ship via Australia Post. That needs the
-                    Starshipit connector (planned).
+                    Xero books freight by <b>supplier</b>, so Australia Post (which ships to AU <i>and</i> US)
+                    and DHL eCommerce (100% US) all land under <b>Outbound — B2C AU</b>. Starshipit knows each
+                    parcel's country, so we reallocate each carrier's Xero spend by its real monthly AU/US split:
+                  </p>
+                  <ul className="mt-1 list-disc pl-4 text-muted-foreground space-y-0.5">
+                    <li><b>Outbound — B2C AU</b> keeps only Australia Post's <b>AU</b> share. Its US share + all of DHL eCommerce move out.</li>
+                    <li><b>Outbound — B2C USA</b> = its direct-US suppliers (UPS, ZONOS, Hoon Choi) <b>plus</b> the US share reallocated in from Australia Post &amp; DHL eCommerce.</li>
+                  </ul>
+                  <p className="mt-1 text-muted-foreground">
+                    So on those two cards the total is the <b>market-adjusted</b> figure, which won't match the
+                    raw supplier transactions in the drill-down. Open either card — the detail shows the full
+                    bridge (raw → reallocated). The <b>Freight by Market</b> report breaks the same money down by
+                    destination.
                   </p>
                 </div>
                 <p className="text-xs text-muted-foreground">Click a category card, a monthly cell, or a row to see the transactions behind it.</p>
@@ -239,6 +263,11 @@ export function FreightReportContent() {
                           {grandTotal > 0 ? ((c.total / grandTotal) * 100).toFixed(1) : 0}% of freight
                           {clickable && <span className="ml-1 text-blue-600">· view detail</span>}
                         </p>
+                        {REALLOCATED.has(c.name) && (
+                          <p className="mt-1 text-[10px] leading-tight text-amber-700">
+                            ⓘ Starshipit-adjusted — differs from the raw supplier transactions (see detail)
+                          </p>
+                        )}
                       </CardContent>
                     </Card>
                   );
@@ -249,8 +278,9 @@ export function FreightReportContent() {
               <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800">
                 <Info className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
-                  Split by carrier/channel from Xero. A true <b>market split (AU vs US)</b> isn't possible from
-                  Xero alone — US parcels also ship via Australia Post. That needs the Starshipit connector (planned).
+                  Split by supplier from Xero. The two <b>Outbound — B2C</b> cards are then <b>market-adjusted</b> with
+                  Starshipit: Australia Post's US share and all of DHL eCommerce move from AU to USA (open either card for
+                  the bridge). For the full destination breakdown see the <b>Freight by Market</b> report.
                 </span>
               </div>
 
@@ -345,6 +375,48 @@ export function FreightReportContent() {
   );
 }
 
+// --- Reallocation bridge banner ------------------------------------------------
+// Shown at the top of the drill-down for the two reallocated B2C buckets, so the
+// user understands why the card total isn't the sum of the transactions below.
+
+function ReallocationBanner({ bucket, r }: { bucket: string; r: Reallocation }) {
+  const out = r.direction === 'out'; // B2C AU loses its US share; B2C USA gains it
+  return (
+    <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-5 py-2.5 text-xs text-amber-900">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-semibold">Market-adjusted card total: {fmtAUD(r.cardTotal)}</span>
+        <span className="text-amber-700">
+          {out ? 'raw supplier transactions below' : 'direct-US suppliers below'}: {fmtAUD(r.rawShown)}
+        </span>
+      </div>
+      <p className="mt-1 leading-relaxed text-amber-800">
+        {out ? (
+          <>
+            Australia Post ships to AU <b>and</b> US and DHL eCommerce is 100% US, but Xero books both under
+            this category by supplier. Only Australia Post's AU share stays here — <b>{fmtAUD(r.moved)}</b> is
+            reallocated to <b>Outbound — B2C USA</b> using Starshipit's per-carrier market split:
+          </>
+        ) : (
+          <>
+            The transactions below are this category's direct-US suppliers (UPS, ZONOS, Hoon Choi). On top,
+            <b> {fmtAUD(r.moved)}</b> is reallocated <b>in</b> from <b>Outbound — B2C AU</b> — parcels booked
+            under Australia Post/DHL eCommerce by supplier but shipped to the US per Starshipit:
+          </>
+        )}
+      </p>
+      {r.carriers.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5">
+          {r.carriers.map((c) => (
+            <span key={c.carrier} className="tabular-nums">
+              <b>{c.carrier}</b> {fmtAUD(c.raw)} → AU {fmtAUD(c.au)} · US {fmtAUD(c.us)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- Drill-down modal ----------------------------------------------------------
 
 function DetailModal({
@@ -394,6 +466,10 @@ function DetailModal({
 
         {data && !loading && (
           <div className="flex min-h-0 flex-1 flex-col">
+            {/* Reallocation bridge — explains why the card total differs from the
+                raw supplier transactions listed below. */}
+            {data.reallocation?.applies && <ReallocationBanner bucket={bucket} r={data.reallocation} />}
+
             {/* Contact rollup */}
             <div className="shrink-0 border-b bg-[#faf9f7] px-5 py-2">
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
