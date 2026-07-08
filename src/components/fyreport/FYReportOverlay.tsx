@@ -438,9 +438,14 @@ function OperationsView({ m, valuation }: { m: FYMetrics; valuation: FYStockValu
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <KpiCard label="Units Sold" value={totalUnits.toLocaleString('en-AU')} sub="all channels" />
-        <KpiCard label="Total COGS" value={fmtAUD(totalCOGS)} sub={`Shopify ${fmtAUD(m.shopifyCOGS)} · B2B ${fmtAUD(m.b2bCOGS)}`} />
+        <KpiCard label="COGS (China FOB)" value={fmtAUD(totalCOGS)} sub={`Shopify ${fmtAUD(m.shopifyCOGS)} · B2B ${fmtAUD(m.b2bCOGS)}`} />
+        <KpiCard
+          label="Landed COGS"
+          value={fmtAUD(m.landedCOGS)}
+          sub={`+ ${fmtAUD(m.inboundFreight)} inbound freight · ${fmtPct(m.landedGrossMarginPct)} landed margin`}
+        />
         <KpiCard
           label="Stock Value at FY Close"
           value={valuation?.closing ? fmtAUD(valuation.closing.total) : '—'}
@@ -450,6 +455,11 @@ function OperationsView({ m, valuation }: { m: FYMetrics; valuation: FYStockValu
           label="Inventory Turnover (est.)"
           value={turnover !== null ? `${turnover.toFixed(2)}×` : '—'}
           sub="COGS / avg(opening, closing)"
+        />
+        <KpiCard
+          label="Landed margin"
+          value={fmtPct(m.landedGrossMarginPct)}
+          sub={`sales ${fmtAUD(m.totalSales)} − landed COGS`}
         />
       </div>
 

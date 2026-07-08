@@ -71,6 +71,9 @@ export interface FYSnapshotData {
   costs: Map<string, number>;
   xero: XeroData | null;
   costsConfig: CostsConfig | null;
+  // Inbound freight to AU (Container + DHL International + B2B related) summed
+  // over the FY. Unleashed costs are China FOB, so landed COGS = COGS + this.
+  inboundFreight: number;
 }
 
 // --- Loading ------------------------------------------------------------------
@@ -90,7 +93,7 @@ export async function loadFYSnapshotData(): Promise<FYSnapshotData> {
     'Content-Type': 'application/json',
   };
 
-  const [csvRes, xeroRes, configRes] = await Promise.all([
+  const [csvRes, xeroRes, configRes, freightRes] = await Promise.all([
     fetch(`${baseUrl}/functions/v1/parse-csv-data`, {
       method: 'POST',
       headers: authHeaders,
@@ -110,6 +113,14 @@ export async function loadFYSnapshotData(): Promise<FYSnapshotData> {
     // The frozen costs canvas config (fixed/variable/andrea boards) — the
     // bucket allows public read, so plain storage URL works.
     fetch(`${baseUrl}/storage/v1/object/public/csv-files/${FY_PREFIX}/costs-config-v1.json`),
+    // Live freight split (the frozen path only has aggregate "Freight &
+    // Courier"). We sum the FY months of the inbound buckets for landed COGS.
+    // Best-effort: landed COGS just falls back to plain COGS if this fails.
+    fetch(`${baseUrl}/functions/v1/parse-xero-costs`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({}),
+    }),
   ]);
 
   if (!csvRes.ok) throw new Error(`parse-csv-data failed: ${csvRes.status}`);
@@ -151,7 +162,30 @@ export async function loadFYSnapshotData(): Promise<FYSnapshotData> {
     }
   }
 
-  return { unleashed, shopify, oldShopify, meta, costs, xero, costsConfig };
+  // Inbound freight (to AU) for the FY — sum the FY months of the inbound
+  // freight buckets from the live split. Rolling window currently spans the FY;
+  // if a future rolling window drops an FY month, that month's inbound is
+  // omitted (a minor, closed-FY edge case).
+  let inboundFreight = 0;
+  if (freightRes.ok) {
+    try {
+      const fr = await freightRes.json();
+      const months: { year: number; month: number }[] = fr.months ?? [];
+      const fyIdx = months
+        .map((m, i) => ({ i, ym: m.year * 100 + m.month }))
+        .filter(({ ym }) => ym >= 202507 && ym <= 202606)
+        .map(({ i }) => i);
+      for (const it of fr.items ?? []) {
+        if (typeof it.name === 'string' && it.name.startsWith('Freight & Courier') && it.name.includes('Inbound')) {
+          for (const i of fyIdx) inboundFreight += Number(it.monthly?.[i]) || 0;
+        }
+      }
+    } catch {
+      inboundFreight = 0;
+    }
+  }
+
+  return { unleashed, shopify, oldShopify, meta, costs, xero, costsConfig, inboundFreight };
 }
 
 // --- Metric computation --------------------------------------------------------
@@ -213,6 +247,11 @@ export interface FYMetrics {
   b2bCOGS: number;
   grossMargin: number;          // totalSales − (shopifyCOGS + b2bCOGS)
   grossMarginPct: number | null;
+  // Landed: Unleashed costs are China FOB, so landed COGS adds inbound freight.
+  inboundFreight: number;
+  landedCOGS: number;           // shopifyCOGS + b2bCOGS + inboundFreight
+  landedGrossMargin: number;    // totalSales − landedCOGS
+  landedGrossMarginPct: number | null;
   costsSnapshot: CostsSnapshot; // Xero fixed/variable/andrea for the FY
   operatingResult: number;      // grossMargin − xero(fixed+variable+andrea)
   metaSpend: number;
@@ -270,11 +309,15 @@ export function computeFYMetrics(data: FYSnapshotData): FYMetrics {
     return c && c > 0 ? s + c * r.quantity : s;
   }, 0);
 
-  // --- Channels (Unleashed minus Shopify/Shop sale + Shopify gross) ---
+  // --- Channels (Unleashed minus Shopify/Shop sale/Web + Shopify gross) ---
+  // "Web" (Unleashed online-sale customers) is online DTC and belongs to the
+  // Shopify channel, so it's folded in rather than shown separately. Its value
+  // is still counted — the total doesn't change, only the grouping.
+  const webSales = unleashed.reduce((s, r) => r.channel === 'Web' ? s + r.subTotal : s, 0);
   const channelMap = new Map<string, number>();
-  channelMap.set('Shopify', shopifyGross);
+  channelMap.set('Shopify', shopifyGross + webSales);
   unleashed.forEach(r => {
-    if (r.channel === 'Shopify' || r.channel === 'Shop sale') return;
+    if (r.channel === 'Shopify' || r.channel === 'Shop sale' || r.channel === 'Web') return;
     channelMap.set(r.channel, (channelMap.get(r.channel) || 0) + r.subTotal);
   });
   const totalSales = Array.from(channelMap.values()).reduce((a, b) => a + b, 0);
@@ -285,9 +328,10 @@ export function computeFYMetrics(data: FYSnapshotData): FYMetrics {
     priorShopifyOld.reduce((s, r) => s + r.netSales, 0) +
     priorShopifyCur.reduce((s, r) => s + r.netSales, 0) +
     priorShopifyCur.reduce((s, r) => s + (r.taxes || 0) + (r.shipping || 0), 0);
-  if (priorShopifyNet > 0) priorChannelMap.set('Shopify', priorShopifyNet);
+  const priorWebSales = priorUnleashed.reduce((s, r) => r.channel === 'Web' ? s + r.subTotal : s, 0);
+  if (priorShopifyNet + priorWebSales > 0) priorChannelMap.set('Shopify', priorShopifyNet + priorWebSales);
   priorUnleashed.forEach(r => {
-    if (r.channel === 'Shopify' || r.channel === 'Shop sale') return;
+    if (r.channel === 'Shopify' || r.channel === 'Shop sale' || r.channel === 'Web') return;
     priorChannelMap.set(r.channel, (priorChannelMap.get(r.channel) || 0) + r.subTotal);
   });
   const priorTotal = Array.from(priorChannelMap.values()).reduce((a, b) => a + b, 0);
@@ -336,6 +380,13 @@ export function computeFYMetrics(data: FYSnapshotData): FYMetrics {
 
   const grossMargin = totalSales - shopifyCOGS - b2bCOGS;
   const grossMarginPct = totalSales > 0 ? (grossMargin / totalSales) * 100 : null;
+
+  // Landed COGS: Unleashed unit costs are China FOB, so add inbound freight to
+  // AU (Container + DHL International + B2B related) to get the true landed cost.
+  const inboundFreight = data.inboundFreight || 0;
+  const landedCOGS = shopifyCOGS + b2bCOGS + inboundFreight;
+  const landedGrossMargin = totalSales - landedCOGS;
+  const landedGrossMarginPct = totalSales > 0 ? (landedGrossMargin / totalSales) * 100 : null;
 
   // --- Xero costs for the FY (frozen canvas config) ---
   const costsSnapshot = computeCostsSnapshot(
@@ -451,9 +502,10 @@ export function computeFYMetrics(data: FYSnapshotData): FYMetrics {
 
   // --- Units by channel ---
   const unitsMap = new Map<string, number>();
-  unitsMap.set('Shopify', shopify.reduce((s, r) => s + r.quantity, 0));
+  const webUnits = unleashed.reduce((s, r) => r.channel === 'Web' ? s + r.quantity : s, 0);
+  unitsMap.set('Shopify', shopify.reduce((s, r) => s + r.quantity, 0) + webUnits);
   unleashed.forEach(r => {
-    if (r.channel === 'Shopify' || r.channel === 'Shop sale') return;
+    if (r.channel === 'Shopify' || r.channel === 'Shop sale' || r.channel === 'Web') return;
     unitsMap.set(r.channel, (unitsMap.get(r.channel) || 0) + r.quantity);
   });
   const unitsByChannel = Array.from(unitsMap.entries())
@@ -489,6 +541,10 @@ export function computeFYMetrics(data: FYSnapshotData): FYMetrics {
     b2bCOGS,
     grossMargin,
     grossMarginPct,
+    inboundFreight,
+    landedCOGS,
+    landedGrossMargin,
+    landedGrossMarginPct,
     costsSnapshot,
     operatingResult,
     metaSpend,
