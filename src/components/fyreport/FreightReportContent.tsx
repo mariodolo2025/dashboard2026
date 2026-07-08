@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  PieChart, Pie, Cell,
 } from 'recharts';
 import { RefreshCw, Download, Info, X, Search, HelpCircle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -40,6 +41,10 @@ interface DetailData {
 // Categories whose card total differs from the raw transactions because of the
 // Starshipit market reallocation (AusPost/DHL US share moves AU → USA).
 const REALLOCATED = new Set(['Outbound — B2C AU', 'Outbound — B2C USA']);
+
+// Not a useful spend channel — hidden from the summary cards + pie (still in the
+// table/chart for reconciliation).
+const HIDDEN_FROM_SUMMARY = new Set(['Review', 'Unclassified']);
 
 const fmtAUD2 = (v: number) => `$${v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -135,6 +140,13 @@ export function FreightReportContent() {
   }, [items]);
 
   const grandTotal = categories.reduce((s, c) => s + c.total, 0);
+
+  // The cards + pie show only the useful channels; Review and Unclassified are
+  // kept out (they aren't a spend category worth surfacing), but stay in the
+  // table + monthly chart so the grand total still reconciles to the P&L.
+  const mainCategories = categories.filter((c) => !HIDDEN_FROM_SUMMARY.has(c.name));
+  const mainTotal = mainCategories.reduce((s, c) => s + c.total, 0);
+  const hiddenTotal = grandTotal - mainTotal;
 
   const chartData = useMemo(() =>
     months.map((m, i) => {
@@ -243,9 +255,49 @@ export function FreightReportContent() {
 
           {!loading && !error && categories.length > 0 && (
             <>
+              {/* Total + composition */}
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+                <Card className="flex flex-col justify-center">
+                  <CardContent className="py-5">
+                    <p className="text-xs font-medium text-muted-foreground">Total freight</p>
+                    <p className="mt-1 text-3xl font-bold tabular-nums text-[#0f1115]">{fmtAUD(grandTotal)}</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      reconciled to the Xero P&amp;L · 6 channels shown below
+                      {hiddenTotal > 0 && <> · Review + Unclassified {fmtAUD(hiddenTotal)} excluded</>}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-5">
+                    <p className="mb-2 text-sm font-semibold">Freight by category</p>
+                    <div className="flex items-center gap-3">
+                      <ResponsiveContainer width="45%" height={170}>
+                        <PieChart>
+                          <Pie data={mainCategories} dataKey="total" nameKey="name" cx="50%" cy="50%" innerRadius={42} outerRadius={70} paddingAngle={2}>
+                            {mainCategories.map((c) => <Cell key={c.name} fill={COLORS[c.name]} />)}
+                          </Pie>
+                          <Tooltip formatter={(v: number, n: string) => [`${fmtAUD(v)} · ${mainTotal > 0 ? ((v / mainTotal) * 100).toFixed(1) : 0}%`, n]} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="flex-1 space-y-1">
+                        {mainCategories.map((c) => (
+                          <div key={c.name} className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: COLORS[c.name] }} />
+                              <span className="truncate">{c.name}</span>
+                            </span>
+                            <span className="shrink-0 tabular-nums text-muted-foreground">{mainTotal > 0 ? ((c.total / mainTotal) * 100).toFixed(1) : 0}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
               {/* KPI cards */}
-              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                {categories.map((c) => {
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                {mainCategories.map((c) => {
                   const clickable = c.name !== 'Unclassified';
                   return (
                     <Card
