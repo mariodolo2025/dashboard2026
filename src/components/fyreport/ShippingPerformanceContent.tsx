@@ -184,7 +184,7 @@ export function ShippingPerformanceContent() {
                     <div className="flex items-center gap-4">
                       <ResponsiveContainer width="48%" height={170}>
                         <PieChart>
-                          <Pie data={statusPie} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={44} outerRadius={72} paddingAngle={2}>
+                          <Pie isAnimationActive={false}data={statusPie} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={44} outerRadius={72} paddingAngle={2}>
                             {statusPie.map((s) => <Cell key={s.key} fill={s.color} />)}
                           </Pie>
                           <Tooltip formatter={(v: number, n: string) => [`${fmtInt(v)} (${pct(v / (o.est || 1))})`, n]} />
@@ -309,9 +309,9 @@ export function ShippingPerformanceContent() {
                       <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${Math.round(v * 100)}%`} />
                       <Tooltip formatter={(v: number) => `${v}%`} />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <Bar dataKey="Early" stackId="s" fill={STATUS.early} />
-                      <Bar dataKey="On time" stackId="s" fill={STATUS.ontime} />
-                      <Bar dataKey="Late" stackId="s" fill={STATUS.late} radius={[3, 3, 0, 0]} />
+                      <Bar isAnimationActive={false}dataKey="Early" stackId="s" fill={STATUS.early} />
+                      <Bar isAnimationActive={false}dataKey="On time" stackId="s" fill={STATUS.ontime} />
+                      <Bar isAnimationActive={false}dataKey="Late" stackId="s" fill={STATUS.late} radius={[3, 3, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -328,9 +328,9 @@ export function ShippingPerformanceContent() {
                       <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${v}d`} />
                       <Tooltip formatter={(v: number, n: string) => [days(v), (MARKET[n] ?? MARKET.Other).label]} />
                       <Legend wrapperStyle={{ fontSize: 11 }} formatter={(v: string) => (MARKET[v] ?? MARKET.Other).label} />
-                      <Line dataKey="AU" stroke={MARKET.AU.color} strokeWidth={2} dot={false} connectNulls />
-                      <Line dataKey="US" stroke={MARKET.US.color} strokeWidth={2} dot={false} connectNulls />
-                      <Line dataKey="Other" stroke={MARKET.Other.color} strokeWidth={2} dot={false} connectNulls />
+                      <Line isAnimationActive={false}dataKey="AU" stroke={MARKET.AU.color} strokeWidth={2} dot={false} connectNulls />
+                      <Line isAnimationActive={false}dataKey="US" stroke={MARKET.US.color} strokeWidth={2} dot={false} connectNulls />
+                      <Line isAnimationActive={false}dataKey="Other" stroke={MARKET.Other.color} strokeWidth={2} dot={false} connectNulls />
                     </LineChart>
                   </ResponsiveContainer>
                 </CardContent>

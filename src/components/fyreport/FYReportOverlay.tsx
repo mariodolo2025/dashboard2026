@@ -192,9 +192,9 @@ function MonthlySalesChart({ m }: { m: FYMetrics }) {
         <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
         <Tooltip formatter={(v: number) => fmtAUD(v)} />
         {hasPrior && <Legend wrapperStyle={{ fontSize: 12 }} />}
-        <Bar dataKey="sales" name="FY 2025–26" fill="#2563eb" radius={[3, 3, 0, 0]} />
+        <Bar dataKey="sales" name="FY 2025–26" fill="#2563eb" radius={[3, 3, 0, 0]} isAnimationActive={false} />
         {hasPrior && (
-          <Line dataKey="priorSales" name="FY 2024–25" stroke="#94a3b8" strokeWidth={2} dot={{ r: 2 }} connectNulls />
+          <Line dataKey="priorSales" name="FY 2024–25" stroke="#94a3b8" strokeWidth={2} dot={{ r: 2 }} connectNulls isAnimationActive={false} />
         )}
       </ComposedChart>
     </ResponsiveContainer>

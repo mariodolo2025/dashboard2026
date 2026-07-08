@@ -19,6 +19,7 @@ import { ShippingPerformanceContent } from '@/components/fyreport/ShippingPerfor
 interface ReportsOverlayProps {
   open: boolean;
   onClose: () => void;
+  initialReport?: ReportId;
 }
 
 type ReportId = 'fy' | 'freight' | 'market' | 'performance';
@@ -33,8 +34,8 @@ const REPORTS: { id: ReportId; label: string; icon: any; render: () => JSX.Eleme
   { id: 'performance', label: `Shipping Performance ${FY}`, icon: Gauge, render: () => <ShippingPerformanceContent /> },
 ];
 
-export function ReportsOverlay({ open, onClose }: ReportsOverlayProps) {
-  const [active, setActive] = useState<ReportId>('fy');
+export function ReportsOverlay({ open, onClose, initialReport = 'fy' }: ReportsOverlayProps) {
+  const [active, setActive] = useState<ReportId>(initialReport);
 
   useEffect(() => {
     if (!open) return;
@@ -61,32 +62,72 @@ export function ReportsOverlay({ open, onClose }: ReportsOverlayProps) {
       aria-label="Reports"
       className="pointer-events-auto fixed inset-0 z-[50] flex h-screen w-screen flex-col overflow-hidden bg-[#f7f7f5]"
     >
-      {/* Print stylesheet — shared by all reports. The on-screen app is a fixed,
-          scrolling overlay; for print we hide the chrome, lift only the active
-          report body to the page, let it flow (no clipping), keep colours
-          (charts / badges / table shading) and avoid splitting cards. */}
+      {/* Print stylesheet — turns the on-screen dashboard into a warm, editorial
+          annual-report document (paper background, Fraunces serif display,
+          flat blocks instead of cards, terracotta accent). Also: content flows
+          across pages (no absolute positioning → no clipping/repeat) and colours
+          are forced on (browsers drop them by default). Shared by all reports. */}
       <style>{`
         @media print {
-          @page { margin: 12mm; }
-          html, body { background: #fff !important; }
-          body * { visibility: hidden !important; }
-          #reports-print-root, #reports-print-root * { visibility: visible !important; }
-          #reports-print-root {
-            position: absolute !important; inset: 0 !important;
-            height: auto !important; overflow: visible !important;
-            background: #fff !important;
+          @page { margin: 16mm 15mm; }
+          html, body { background: #F6F1E9 !important; }
+          /* Show only the Reports overlay; let it flow normally so it paginates. */
+          body > * { display: none !important; }
+          body > [role="dialog"][aria-label="Reports"] {
+            display: block !important; position: static !important;
+            height: auto !important; overflow: visible !important; background: #F6F1E9 !important;
           }
-          #reports-print-root .overflow-y-auto,
-          #reports-print-root .overflow-y-auto * { overflow: visible !important; }
-          #reports-print-root .overflow-y-auto { height: auto !important; max-height: none !important; }
           .reports-no-print, .fy-no-print { display: none !important; }
           .reports-print-only { display: block !important; }
-          /* Keep every colour when printing (Chrome/Safari drop them otherwise). */
+          #reports-print-root {
+            display: block !important; position: static !important;
+            height: auto !important; overflow: visible !important; background: transparent !important;
+            color: #2A211B !important;
+          }
+          #reports-print-root .overflow-y-auto { overflow: visible !important; height: auto !important; max-height: none !important; }
+          #reports-print-root .flex.min-h-0, #reports-print-root .min-h-0 { min-height: 0 !important; }
+
+          /* Force colours (charts, table shading, accents). */
           * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-          /* Don't split a card / chart / table across pages. */
+
+          /* ── Editorial type ── */
+          #reports-print-root { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+          #reports-print-root h1, #reports-print-root h2, #reports-print-root h3,
+          #reports-print-root .text-3xl, #reports-print-root .text-2xl, #reports-print-root .text-xl,
+          #reports-print-root .reports-print-only h1 {
+            font-family: 'Fraunces', Georgia, 'Times New Roman', serif !important;
+            letter-spacing: -0.01em;
+          }
+          #reports-print-root .tabular-nums { font-variant-numeric: tabular-nums; }
+          #reports-print-root .text-muted-foreground { color: #8A7B6E !important; }
+
+          /* Paper everywhere (report bodies use their own off-white bg). */
+          #reports-print-root [class*="bg-[#f7f7f5]"], #reports-print-root [class*="bg-[#faf9f7]"] { background: transparent !important; }
+          /* ── Flat blocks: drop the card chrome, sit content on the paper ── */
+          #reports-print-root .bg-card, #reports-print-root .bg-white,
+          #reports-print-root .rounded-2xl, #reports-print-root .rounded-xl, #reports-print-root .rounded-lg,
+          #reports-print-root [class*="border-[#e8e8e3]"] {
+            border: 0 !important; box-shadow: none !important;
+            background: transparent !important; border-radius: 0 !important;
+          }
+          /* Editorial rhythm: a hairline above each stat / section block. */
+          #reports-print-root .grid > .bg-card, #reports-print-root .grid > div > .bg-card,
+          #reports-print-root .grid > .bg-white, #reports-print-root .grid > div > .bg-white {
+            border-top: 1px solid #DCCFBB !important; padding-top: 4px !important;
+          }
+          /* Tables: warm hairlines. */
+          #reports-print-root table td, #reports-print-root table th { border-color: #E4D9C8 !important; }
+          #reports-print-root .border-b { border-bottom-color: #E4D9C8 !important; }
+
+          /* ── Cover masthead ── */
+          .reports-print-only { padding: 0 0 10px !important; border-bottom: 2px solid #B0562F; margin-bottom: 14px; }
+          .reports-print-only h1 { font-size: 30px !important; font-weight: 500 !important; color: #2A211B !important; }
+          .reports-print-only p { color: #9A8B79 !important; letter-spacing: .04em; }
+
+          /* Don't split a stat / chart / table across pages. */
           .recharts-wrapper, .recharts-responsive-container, table,
           .fy-print-break, [class*="rounded-xl"], [class*="rounded-lg"] { break-inside: avoid; page-break-inside: avoid; }
-          h1, h2, h3, p { break-after: avoid; }
+          h1, h2, h3 { break-after: avoid; }
         }
       `}</style>
 

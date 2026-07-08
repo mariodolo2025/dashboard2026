@@ -262,7 +262,7 @@ export function FreightMarketContent() {
                     <div className="flex items-center gap-4">
                       <ResponsiveContainer width="55%" height={180}>
                         <PieChart>
-                          <Pie data={data.markets} dataKey="orders" nameKey="market" cx="50%" cy="50%" innerRadius={45} outerRadius={75} paddingAngle={2}>
+                          <Pie isAnimationActive={false}data={data.markets} dataKey="orders" nameKey="market" cx="50%" cy="50%" innerRadius={45} outerRadius={75} paddingAngle={2}>
                             {data.markets.map((m) => <Cell key={m.market} fill={(M[m.market] ?? M.Other).color} />)}
                           </Pie>
                           <Tooltip formatter={(v: number, n: string) => [`${fmtInt(v)} parcels`, (M[n] ?? M.Other).label]} />
@@ -295,7 +295,7 @@ export function FreightMarketContent() {
                         <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `$${v}`} />
                         <YAxis type="category" dataKey="market" tick={{ fontSize: 11 }} tickFormatter={(v: string) => (M[v] ?? M.Other).label} width={90} />
                         <Tooltip formatter={(v: number) => fmtAUD2(v)} />
-                        <Bar dataKey="avgPerOrder" radius={[0, 4, 4, 0]} barSize={22}>
+                        <Bar isAnimationActive={false}dataKey="avgPerOrder" radius={[0, 4, 4, 0]} barSize={22}>
                           {data.markets.map((m) => <Cell key={m.market} fill={(M[m.market] ?? M.Other).color} />)}
                         </Bar>
                       </BarChart>
@@ -318,9 +318,9 @@ export function FreightMarketContent() {
                       <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
                       <Tooltip formatter={(v: number) => fmtAUD(v)} />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <Bar dataKey="dhl_ecommerce" name="DHL eCommerce" stackId="c" fill="#6366f1" radius={[0, 0, 0, 0]} />
-                      <Bar dataKey="auspost" name="Australia Post" stackId="c" fill="#10b981" />
-                      <Bar dataKey="other" name="Other" stackId="c" fill="#cbd5e1" radius={[3, 3, 0, 0]} />
+                      <Bar isAnimationActive={false}dataKey="dhl_ecommerce" name="DHL eCommerce" stackId="c" fill="#6366f1" radius={[0, 0, 0, 0]} />
+                      <Bar isAnimationActive={false}dataKey="auspost" name="Australia Post" stackId="c" fill="#10b981" />
+                      <Bar isAnimationActive={false}dataKey="other" name="Other" stackId="c" fill="#cbd5e1" radius={[3, 3, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -337,9 +337,9 @@ export function FreightMarketContent() {
                       <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)} />
                       <Tooltip formatter={(v: number, n: string) => [fmtInt(v), (M[n] ?? M.Other).label]} />
                       <Legend wrapperStyle={{ fontSize: 11 }} formatter={(v: string) => (M[v] ?? M.Other).label} />
-                      <Bar dataKey="AU" stackId="v" fill={M.AU.color} />
-                      <Bar dataKey="US" stackId="v" fill={M.US.color} />
-                      <Bar dataKey="Other" stackId="v" fill={M.Other.color} radius={[3, 3, 0, 0]} />
+                      <Bar isAnimationActive={false}dataKey="AU" stackId="v" fill={M.AU.color} />
+                      <Bar isAnimationActive={false}dataKey="US" stackId="v" fill={M.US.color} />
+                      <Bar isAnimationActive={false}dataKey="Other" stackId="v" fill={M.Other.color} radius={[3, 3, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>

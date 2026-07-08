@@ -273,7 +273,7 @@ export function FreightReportContent() {
                     <div className="flex items-center gap-3">
                       <ResponsiveContainer width="45%" height={170}>
                         <PieChart>
-                          <Pie data={mainCategories} dataKey="total" nameKey="name" cx="50%" cy="50%" innerRadius={42} outerRadius={70} paddingAngle={2}>
+                          <Pie isAnimationActive={false}data={mainCategories} dataKey="total" nameKey="name" cx="50%" cy="50%" innerRadius={42} outerRadius={70} paddingAngle={2}>
                             {mainCategories.map((c) => <Cell key={c.name} fill={COLORS[c.name]} />)}
                           </Pie>
                           <Tooltip formatter={(v: number, n: string) => [`${fmtAUD(v)} · ${mainTotal > 0 ? ((v / mainTotal) * 100).toFixed(1) : 0}%`, n]} />
@@ -348,7 +348,7 @@ export function FreightReportContent() {
                       <Tooltip formatter={(v: number) => fmtAUD(v)} />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
                       {categories.map((c) => (
-                        <Bar key={c.name} dataKey={c.name} stackId="f" fill={COLORS[c.name]} />
+                        <Bar isAnimationActive={false}key={c.name} dataKey={c.name} stackId="f" fill={COLORS[c.name]} />
                       ))}
                     </BarChart>
                   </ResponsiveContainer>
