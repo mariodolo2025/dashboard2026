@@ -177,6 +177,53 @@ async function fetchAllLines(supabase: any, account: string): Promise<any[]> {
   return all;
 }
 
+// ─── Starshipit market reallocation ─────────────────────────────────────────
+// Xero classifies freight by supplier contact, so Australia Post (which ships
+// to AU AND US) lands entirely in "Outbound — B2C AU". Starshipit knows each
+// carrier's real AU/US split. We reallocate the outbound B2C carrier lines
+// (Australia Post, DHL eCommerce, UPS) by that carrier's monthly market ratio:
+// the AU share stays in B2C AU, the rest goes to B2C USA. ZONOS/Hoon Choi
+// aren't carriers with a market → they stay in B2C USA unchanged.
+
+interface StarshipitRatios { monthly: Map<string, Map<string, { au: number; total: number }>>; fy: Map<string, { au: number; total: number }>; }
+
+async function loadStarshipitRatios(supabase: any): Promise<StarshipitRatios> {
+  const monthly = new Map<string, Map<string, { au: number; total: number }>>();
+  const fy = new Map<string, { au: number; total: number }>();
+  const { data } = await supabase.from('starshipit_market_monthly').select('year, month, carrier_key, market, freight_charge');
+  for (const r of data ?? []) {
+    const ck = String(r.carrier_key);
+    const fc = Number(r.freight_charge) || 0;
+    const isAU = r.market === 'AU';
+    const mkKey = `${r.year}-${r.month}`;
+    if (!monthly.has(ck)) monthly.set(ck, new Map());
+    const mm = monthly.get(ck)!;
+    if (!mm.has(mkKey)) mm.set(mkKey, { au: 0, total: 0 });
+    const cell = mm.get(mkKey)!; cell.total += fc; if (isAU) cell.au += fc;
+    if (!fy.has(ck)) fy.set(ck, { au: 0, total: 0 });
+    const f = fy.get(ck)!; f.total += fc; if (isAU) f.au += fc;
+  }
+  return { monthly, fy };
+}
+
+/** AU share for a carrier in a month; falls back to the FY-blended share, or
+ *  null when there's no Starshipit data (→ don't reallocate). */
+function auShare(ratios: StarshipitRatios, ck: string, year: number, month: number): number | null {
+  const cell = ratios.monthly.get(ck)?.get(`${year}-${month}`);
+  if (cell && cell.total > 0) return cell.au / cell.total;
+  const f = ratios.fy.get(ck);
+  if (f && f.total > 0) return f.au / f.total;
+  return null;
+}
+
+function carrierKeyForContact(contact: string | null): string | null {
+  const n = (contact ?? '').toLowerCase();
+  if (/australia\s*post/.test(n)) return 'auspost';
+  if (/dhl\s*e-?commerce/.test(n)) return 'dhl_ecommerce';
+  if (/\bups\b/.test(n)) return 'ups';
+  return null;
+}
+
 /** Build the CostsResponse from the xero_pl_monthly / xero_account_lines
  *  tables (populated daily by xero-sync). Returns null when the tables are
  *  empty (Xero not synced yet) so the caller can fall back to the xlsx. */
@@ -220,6 +267,9 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
     if (idx !== undefined) byAccount.get(name)![idx] = Number(r.amount) || 0;
   }
 
+  // Starshipit per-carrier market ratios (for the outbound B2C reallocation).
+  const ratios = await loadStarshipitRatios(supabase);
+
   // Split watched accounts into virtual accounts by transaction lines.
   for (const account of Object.keys(SPLIT_RULES)) {
     if (!byAccount.has(account)) continue;
@@ -245,8 +295,22 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
       const idx = monthIndex.get(`${d.getFullYear()}-${d.getMonth() + 1}`);
       if (idx === undefined) continue; // line outside the P&L window
       const bucket = classifyLine(account, line.contact_name) ?? 'Review';
-      ensure(bucket)[idx] += Number(line.net_amount) || 0;
-      coveredByLines[idx] += Number(line.net_amount) || 0;
+      const amt = Number(line.net_amount) || 0;
+
+      // Starshipit market reallocation for outbound B2C carrier lines.
+      if (account === 'Freight & Courier' && (bucket === 'Outbound — B2C AU' || bucket === 'Outbound — B2C USA')) {
+        const ck = carrierKeyForContact(line.contact_name);
+        const share = ck ? auShare(ratios, ck, d.getFullYear(), d.getMonth() + 1) : null;
+        if (share !== null) {
+          ensure('Outbound — B2C AU')[idx] += amt * share;
+          ensure('Outbound — B2C USA')[idx] += amt * (1 - share);
+          coveredByLines[idx] += amt;
+          continue;
+        }
+      }
+
+      ensure(bucket)[idx] += amt;
+      coveredByLines[idx] += amt;
     }
 
     // Reconcile each month to the authoritative P&L total.
