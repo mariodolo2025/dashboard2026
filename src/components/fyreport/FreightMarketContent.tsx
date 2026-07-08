@@ -19,17 +19,22 @@ import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn, downloadCSV } from '@/lib/utils';
 
-interface MarketRow { market: string; orders: number; shipping: number; avgPerOrder: number; pctShipping: number; zonos: number; }
+interface MarketRow {
+  market: string; orders: number; shipping: number; avgPerOrder: number; pctShipping: number; zonos: number;
+  revenue: number; revenueOrders: number; netShipping: number; recovery: number;
+}
 interface CarrierRow { carrier: string; carrier_key: string; orders: number; paid: number | null; avgPerOrder: number | null; }
-interface UsLeg { orders: number; paid: number; avgPerOrder: number; }
 interface Data {
   fy: string;
   months: { year: number; month: number; label: string }[];
-  totals: { orders: number; shipping: number; zonos: number; avgPerOrder: number };
+  totals: { orders: number; shipping: number; zonos: number; avgPerOrder: number; revenue: number; netShipping: number; recovery: number };
   markets: MarketRow[];
   monthlyVolume: { label: string; AU: number; US: number; Other: number }[];
   usByCarrier: { label: string; dhl_ecommerce: number; auspost: number; other: number }[];
-  usComparison: { dhl: UsLeg; auspost: UsLeg };
+  usComparison: {
+    dhl: { orders: number; paid: number; avgPerOrder: number };
+    auspost: { orders: number; shipping: number; duties: number; paid: number; avgPerOrder: number; avgShippingOnly: number };
+  };
   carriers: CarrierRow[];
   zonosPaid: number;
 }
@@ -70,7 +75,6 @@ export function FreightMarketContent() {
     ]);
   };
 
-  const us = data?.markets.find((m) => m.market === 'US');
   const savings = useMemo(() => {
     if (!data) return null;
     const { dhl, auspost } = data.usComparison;
@@ -153,12 +157,21 @@ export function FreightMarketContent() {
                 <div className="overflow-hidden rounded-xl border border-emerald-200 bg-white">
                   <div className="border-b border-emerald-100 bg-emerald-50/60 px-5 py-2.5">
                     <p className="text-sm font-semibold text-emerald-900">US carrier switch — cost per parcel</p>
-                    <p className="text-xs text-emerald-700">Moving US shipments off DHL eCommerce onto Australia Post.</p>
+                    <p className="text-xs text-emerald-700">
+                      Moving US shipments off DHL eCommerce onto Australia Post. DHL billed duty-paid, so the
+                      Australia Post side adds ZONOS import taxes for a like-for-like comparison.
+                    </p>
                   </div>
                   <div className="grid grid-cols-1 items-stretch gap-0 sm:grid-cols-[1fr_auto_1fr_auto_1fr]">
-                    <SwitchLeg title="DHL eCommerce" tag="was" value={fmtAUD2(savings.dhl.avgPerOrder)} sub={`${fmtInt(savings.dhl.orders)} parcels · ${fmtAUD(savings.dhl.paid)}`} />
+                    <SwitchLeg title="DHL eCommerce" tag="was" value={fmtAUD2(savings.dhl.avgPerOrder)} sub={`${fmtInt(savings.dhl.orders)} parcels · ${fmtAUD(savings.dhl.paid)} incl. duties`} />
                     <div className="hidden items-center justify-center px-2 sm:flex"><ArrowRight className="h-5 w-5 text-muted-foreground" /></div>
-                    <SwitchLeg title="Australia Post" tag="now" value={fmtAUD2(savings.auspost.avgPerOrder)} sub={`${fmtInt(savings.auspost.orders)} parcels · ${fmtAUD(savings.auspost.paid)}`} highlight />
+                    <SwitchLeg
+                      title="Australia Post"
+                      tag="now"
+                      value={fmtAUD2(savings.auspost.avgPerOrder)}
+                      sub={`${fmtInt(savings.auspost.orders)} parcels · ${fmtAUD(savings.auspost.shipping)} ship + ${fmtAUD(savings.auspost.duties)} ZONOS`}
+                      highlight
+                    />
                     <div className="hidden items-center justify-center px-2 sm:flex"><span className="h-8 w-px bg-[#e8e8e3]" /></div>
                     <div className="flex flex-col justify-center gap-0.5 p-4">
                       <p className="text-xs text-muted-foreground">Saved per parcel</p>
@@ -168,6 +181,69 @@ export function FreightMarketContent() {
                   </div>
                 </div>
               )}
+
+              {/* Net shipping cost — what we paid carriers vs what customers covered */}
+              <Card>
+                <CardContent className="pt-5">
+                  <div className="mb-3 flex items-baseline justify-between">
+                    <p className="text-sm font-semibold">What shipping actually cost us</p>
+                    <p className="text-xs text-muted-foreground">
+                      Paid to carriers (Xero) vs charged to customers (Shopify, ex-GST) · {(data.totals.recovery * 100).toFixed(0)}% recovered overall
+                    </p>
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                        <th className="py-2 pr-3">Market</th>
+                        <th className="py-2 pr-3 text-right">We paid</th>
+                        <th className="py-2 pr-3 text-right">Customers paid</th>
+                        <th className="py-2 pr-3 text-right">Net cost</th>
+                        <th className="py-2 pl-2 text-right">Recovery</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.markets.map((m) => {
+                        const meta = M[m.market] ?? M.Other;
+                        const profit = m.netShipping < 0;
+                        return (
+                          <tr key={m.market} className="border-b last:border-0">
+                            <td className="py-2 pr-3">
+                              <span className="inline-flex items-center gap-1.5">
+                                <span className="h-2 w-2 rounded-sm" style={{ background: meta.color }} />{meta.label}
+                              </span>
+                            </td>
+                            <td className="py-2 pr-3 text-right tabular-nums">{fmtAUD(m.shipping)}</td>
+                            <td className="py-2 pr-3 text-right tabular-nums text-muted-foreground">{fmtAUD(m.revenue)}</td>
+                            <td className={cn('py-2 pr-3 text-right tabular-nums font-semibold', profit ? 'text-emerald-600' : 'text-[#0f1115]')}>
+                              {profit ? `+${fmtAUD(-m.netShipping)}` : fmtAUD(m.netShipping)}
+                            </td>
+                            <td className="py-2 pl-2 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <div className="h-1.5 w-16 overflow-hidden rounded-full bg-[#f0efec]">
+                                  <div className="h-full rounded-full" style={{ width: `${Math.min(100, m.recovery * 100)}%`, background: profit ? '#10b981' : meta.color }} />
+                                </div>
+                                <span className="w-10 tabular-nums text-xs">{(m.recovery * 100).toFixed(0)}%</span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="border-t-2">
+                        <td className="py-2 pr-3 font-semibold">Total shipping</td>
+                        <td className="py-2 pr-3 text-right font-semibold tabular-nums">{fmtAUD(data.totals.shipping)}</td>
+                        <td className="py-2 pr-3 text-right font-semibold tabular-nums">{fmtAUD(data.totals.revenue)}</td>
+                        <td className="py-2 pr-3 text-right font-bold tabular-nums">{fmtAUD(data.totals.netShipping)}</td>
+                        <td className="py-2 pl-2 text-right font-semibold tabular-nums">{(data.totals.recovery * 100).toFixed(0)}%</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800">
+                    On top of shipping, the US absorbed <b>{fmtAUD(data.zonosPaid)}</b> of ZONOS import taxes (no customer
+                    revenue) → total US cost absorbed ≈ <b>{fmtAUD((data.markets.find((m) => m.market === 'US')?.netShipping ?? 0) + data.zonosPaid)}</b>.
+                    Rest of World shipping runs a surplus — customers are over-charged relative to what we pay.
+                  </p>
+                </CardContent>
+              </Card>
 
               {/* Shipments by market (donut) + cost per parcel (bars) */}
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

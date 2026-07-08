@@ -154,28 +154,61 @@ Deno.serve(async (req: Request) => {
     const totalShipping = marketShipping.AU + marketShipping.US + marketShipping.Other;
     const totalOrders = marketOrders.AU + marketOrders.US + marketOrders.Other;
 
+    // ── Shopify: shipping revenue (what the customer paid us) per market ───────
+    // ex-GST, to net cleanly against the ex-GST Xero carrier cost.
+    const { data: revRows } = await supabase
+      .from('shopify_shipping_revenue_monthly')
+      .select('market, orders, revenue_ex_gst');
+    const revenue: Record<Market, number> = { AU: 0, US: 0, Other: 0 };
+    const revenueOrders: Record<Market, number> = { AU: 0, US: 0, Other: 0 };
+    for (const r of revRows ?? []) {
+      const mk = (MARKETS.includes(r.market) ? r.market : 'Other') as Market;
+      revenue[mk] += Number(r.revenue_ex_gst) || 0;
+      revenueOrders[mk] += Number(r.orders) || 0;
+    }
+    const totalRevenue = revenue.AU + revenue.US + revenue.Other;
+
     // US shipping cost per order: the DHL eCommerce era vs the Australia Post
-    // era — "how much did switching carriers save us per US parcel?".
+    // era — "how much did switching carriers save us per US parcel?". DHL
+    // eCommerce billed DDP (import duties included), so for a fair per-parcel
+    // comparison the Australia Post leg adds ZONOS (the duties now paid
+    // separately on the AusPost-era US parcels).
     const usOrdersByCarrier = new Map<string, number>();
     for (const r of ss) if (r.market === 'US') usOrdersByCarrier.set(r.carrier_key, (usOrdersByCarrier.get(r.carrier_key) || 0) + (Number(r.orders) || 0));
     let usDhlPaid = 0, usAusPaid = 0;
     for (const u of usByCarrierMap.values()) { usDhlPaid += u.dhl_ecommerce; usAusPaid += u.auspost; }
     const usDhlOrders = usOrdersByCarrier.get('dhl_ecommerce') || 0;
     const usAusOrders = usOrdersByCarrier.get('auspost') || 0;
+    const usAusTotal = usAusPaid + zonosPaid; // shipping + import duties (DDP-equivalent)
     const usComparison = {
       dhl: { orders: usDhlOrders, paid: usDhlPaid, avgPerOrder: usDhlOrders > 0 ? usDhlPaid / usDhlOrders : 0 },
-      auspost: { orders: usAusOrders, paid: usAusPaid, avgPerOrder: usAusOrders > 0 ? usAusPaid / usAusOrders : 0 },
+      auspost: {
+        orders: usAusOrders,
+        shipping: usAusPaid,
+        duties: zonosPaid,
+        paid: usAusTotal,
+        avgPerOrder: usAusOrders > 0 ? usAusTotal / usAusOrders : 0,
+        avgShippingOnly: usAusOrders > 0 ? usAusPaid / usAusOrders : 0,
+      },
     };
 
     // ── Assemble response ─────────────────────────────────────────────────────
-    const markets = MARKETS.map((m) => ({
-      market: m,
-      orders: marketOrders[m],
-      shipping: marketShipping[m],
-      avgPerOrder: marketOrders[m] > 0 ? marketShipping[m] / marketOrders[m] : 0,
-      pctShipping: totalShipping > 0 ? marketShipping[m] / totalShipping : 0,
-      zonos: m === 'US' ? zonosPaid : 0,
-    }));
+    const markets = MARKETS.map((m) => {
+      const shipping = marketShipping[m];
+      const rev = revenue[m];
+      return {
+        market: m,
+        orders: marketOrders[m],
+        shipping,
+        avgPerOrder: marketOrders[m] > 0 ? shipping / marketOrders[m] : 0,
+        pctShipping: totalShipping > 0 ? shipping / totalShipping : 0,
+        zonos: m === 'US' ? zonosPaid : 0,
+        revenue: rev,                         // customer-paid shipping (Shopify, ex-GST)
+        revenueOrders: revenueOrders[m],
+        netShipping: shipping - rev,          // what we absorbed on shipping alone
+        recovery: shipping > 0 ? rev / shipping : 0,
+      };
+    });
 
     const monthlyVolume = months.map((m) => {
       const o = ordersByMonth.get(`${m.year}-${m.month}`) ?? { AU: 0, US: 0, Other: 0 };
@@ -216,6 +249,9 @@ Deno.serve(async (req: Request) => {
         shipping: totalShipping,
         zonos: zonosPaid,
         avgPerOrder: totalOrders > 0 ? totalShipping / totalOrders : 0,
+        revenue: totalRevenue,
+        netShipping: totalShipping - totalRevenue,
+        recovery: totalShipping > 0 ? totalRevenue / totalShipping : 0,
       },
       markets,
       monthlyVolume,
