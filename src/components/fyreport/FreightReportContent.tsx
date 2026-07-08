@@ -172,7 +172,7 @@ export function FreightReportContent() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
+      <div className="reports-no-print flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold text-[#0f1115]">Freight by Category</h3>
           <Popover>
@@ -273,7 +273,7 @@ export function FreightReportContent() {
                     <div className="flex items-center gap-3">
                       <ResponsiveContainer width="45%" height={170}>
                         <PieChart>
-                          <Pie data={mainCategories} dataKey="total" nameKey="name" cx="50%" cy="50%" innerRadius={42} outerRadius={70} paddingAngle={2}>
+                          <Pie isAnimationActive={false}data={mainCategories} dataKey="total" nameKey="name" cx="50%" cy="50%" innerRadius={42} outerRadius={70} paddingAngle={2}>
                             {mainCategories.map((c) => <Cell key={c.name} fill={COLORS[c.name]} />)}
                           </Pie>
                           <Tooltip formatter={(v: number, n: string) => [`${fmtAUD(v)} · ${mainTotal > 0 ? ((v / mainTotal) * 100).toFixed(1) : 0}%`, n]} />
@@ -348,7 +348,7 @@ export function FreightReportContent() {
                       <Tooltip formatter={(v: number) => fmtAUD(v)} />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
                       {categories.map((c) => (
-                        <Bar key={c.name} dataKey={c.name} stackId="f" fill={COLORS[c.name]} />
+                        <Bar isAnimationActive={false}key={c.name} dataKey={c.name} stackId="f" fill={COLORS[c.name]} />
                       ))}
                     </BarChart>
                   </ResponsiveContainer>

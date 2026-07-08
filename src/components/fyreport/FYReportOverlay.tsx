@@ -13,7 +13,7 @@
 // =============================================================================
 
 import { useEffect, useState } from 'react';
-import { Printer, Download, RefreshCw } from 'lucide-react';
+import { Download, RefreshCw } from 'lucide-react';
 import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
@@ -25,9 +25,11 @@ import {
   FY_LABEL,
   FYMetrics,
   FYStockValuation,
+  FYOpsExtras,
   computeFYMetrics,
   loadFYSnapshotData,
   loadFYStockValuation,
+  loadFYOpsExtras,
 } from '@/lib/fyreport';
 
 type Role = 'ceo' | 'operations' | 'marketing';
@@ -47,6 +49,7 @@ export function FYReportContent() {
   const [role, setRole] = useState<Role>('ceo');
   const [metrics, setMetrics] = useState<FYMetrics | null>(null);
   const [stockValuation, setStockValuation] = useState<FYStockValuation | null>(null);
+  const [opsExtras, setOpsExtras] = useState<FYOpsExtras | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,43 +57,20 @@ export function FYReportContent() {
     if (metrics || loading) return;
     setLoading(true);
     setError(null);
-    Promise.all([loadFYSnapshotData(), loadFYStockValuation()])
-      .then(([data, valuation]) => {
+    Promise.all([loadFYSnapshotData(), loadFYStockValuation(), loadFYOpsExtras()])
+      .then(([data, valuation, extras]) => {
         setMetrics(computeFYMetrics(data));
         setStockValuation(valuation);
+        setOpsExtras(extras);
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load FY snapshot'))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const roleTitle: Record<Role, string> = {
-    ceo: 'CEO view',
-    operations: 'Operations view',
-    marketing: 'Marketing view',
-  };
-
   return (
     <div className="flex h-full flex-col">
-      {/* Scoped print stylesheet: only the report body prints */}
-      <style>{`
-        @media print {
-          body * { visibility: hidden !important; }
-          #fy-report-print, #fy-report-print * { visibility: visible !important; }
-          #fy-report-print {
-            position: absolute !important;
-            inset: 0 !important;
-            overflow: visible !important;
-            height: auto !important;
-            background: white !important;
-            padding: 0 !important;
-          }
-          .fy-no-print { display: none !important; }
-          .fy-print-break { break-inside: avoid; }
-        }
-      `}</style>
-
-      {/* Report sub-header: role selector + print */}
+      {/* Report sub-header: role selector (print handled centrally by ReportsOverlay) */}
       <div className="fy-no-print flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
         <div className="flex items-center gap-4">
           <h3 className="text-sm font-semibold text-[#0f1115]">FY Report {FY_LABEL}</h3>
@@ -111,22 +91,11 @@ export function FYReportContent() {
             ))}
           </div>
         </div>
-        <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => window.print()}>
-          <Printer className="h-3.5 w-3.5" />
-          Print / PDF
-        </Button>
       </div>
 
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-y-auto" id="fy-report-print">
         <div className="mx-auto max-w-6xl p-6">
-          <div className="hidden print:block mb-6">
-            <h1 className="text-2xl font-bold">Dolo Ent PTY Ltd — FY Report {FY_LABEL}</h1>
-            <p className="text-sm text-muted-foreground">
-              {roleTitle[role]} · Jul 1, 2025 – Jun 30, 2026 · frozen snapshot
-            </p>
-          </div>
-
           {loading && (
             <div className="flex items-center justify-center gap-2 py-24 text-muted-foreground">
               <RefreshCw className="h-4 w-4 animate-spin" />
@@ -142,7 +111,7 @@ export function FYReportContent() {
           {metrics && !loading && (
             <>
               {role === 'ceo' && <CEOView m={metrics} />}
-              {role === 'operations' && <OperationsView m={metrics} valuation={stockValuation} />}
+              {role === 'operations' && <OperationsView m={metrics} valuation={stockValuation} extras={opsExtras} />}
               {role === 'marketing' && <MarketingView m={metrics} />}
             </>
           )}
@@ -154,11 +123,23 @@ export function FYReportContent() {
 
 // --- Shared building blocks ----------------------------------------------------
 
-function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string | null }) {
+function KpiCard({ label, value, sub, tip }: { label: string; value: string; sub?: string | null; tip?: string }) {
   return (
     <Card className="fy-print-break">
       <CardContent className="pt-5 pb-4">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+        <p className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {label}
+          {tip && (
+            <span
+              tabIndex={0}
+              title={tip}
+              aria-label={tip}
+              className="fy-no-print inline-flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-muted-foreground/40 text-[9px] font-semibold not-italic text-muted-foreground"
+            >
+              i
+            </span>
+          )}
+        </p>
         <p className="mt-1 text-2xl font-bold tabular-nums">{value}</p>
         {sub && <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p>}
       </CardContent>
@@ -211,9 +192,9 @@ function MonthlySalesChart({ m }: { m: FYMetrics }) {
         <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
         <Tooltip formatter={(v: number) => fmtAUD(v)} />
         {hasPrior && <Legend wrapperStyle={{ fontSize: 12 }} />}
-        <Bar dataKey="sales" name="FY 2025–26" fill="#2563eb" radius={[3, 3, 0, 0]} />
+        <Bar dataKey="sales" name="FY 2025–26" fill="#2563eb" radius={[3, 3, 0, 0]} isAnimationActive={false} />
         {hasPrior && (
-          <Line dataKey="priorSales" name="FY 2024–25" stroke="#94a3b8" strokeWidth={2} dot={{ r: 2 }} connectNulls />
+          <Line dataKey="priorSales" name="FY 2024–25" stroke="#94a3b8" strokeWidth={2} dot={{ r: 2 }} connectNulls isAnimationActive={false} />
         )}
       </ComposedChart>
     </ResponsiveContainer>
@@ -427,7 +408,8 @@ function SkuTable({ rows }: { rows: FYMetrics['topSkusByRevenue'] }) {
 
 // --- Operations view --------------------------------------------------------------
 
-function OperationsView({ m, valuation }: { m: FYMetrics; valuation: FYStockValuation | null }) {
+function OperationsView({ m, valuation, extras }: { m: FYMetrics; valuation: FYStockValuation | null; extras: FYOpsExtras | null }) {
+  const n = (v: number) => Math.round(v).toLocaleString('en-AU');
   const totalUnits = m.unitsByChannel.reduce((s, u) => s + u.units, 0);
   const totalCOGS = m.shopifyCOGS + m.b2bCOGS;
   const avgInventory =
@@ -438,9 +420,14 @@ function OperationsView({ m, valuation }: { m: FYMetrics; valuation: FYStockValu
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <KpiCard label="Units Sold" value={totalUnits.toLocaleString('en-AU')} sub="all channels" />
-        <KpiCard label="Total COGS" value={fmtAUD(totalCOGS)} sub={`Shopify ${fmtAUD(m.shopifyCOGS)} · B2B ${fmtAUD(m.b2bCOGS)}`} />
+        <KpiCard label="COGS (China FOB)" value={fmtAUD(totalCOGS)} sub={`Shopify ${fmtAUD(m.shopifyCOGS)} · B2B ${fmtAUD(m.b2bCOGS)}`} />
+        <KpiCard
+          label="Landed COGS"
+          value={fmtAUD(m.landedCOGS)}
+          sub={`+ ${fmtAUD(m.inboundFreight)} inbound freight · ${fmtPct(m.landedGrossMarginPct)} landed margin`}
+        />
         <KpiCard
           label="Stock Value at FY Close"
           value={valuation?.closing ? fmtAUD(valuation.closing.total) : '—'}
@@ -451,7 +438,60 @@ function OperationsView({ m, valuation }: { m: FYMetrics; valuation: FYStockValu
           value={turnover !== null ? `${turnover.toFixed(2)}×` : '—'}
           sub="COGS / avg(opening, closing)"
         />
+        <KpiCard
+          label="Landed margin"
+          value={fmtPct(m.landedGrossMarginPct)}
+          sub={`sales ${fmtAUD(m.totalSales)} − landed COGS`}
+        />
       </div>
+
+      {extras && (
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <KpiCard
+            label="Shopify orders (FY)"
+            value={n(extras.shopifyOrders.current.orders)}
+            sub={extras.shopifyOrders.ordersYoYPct !== null
+              ? `${extras.shopifyOrders.ordersYoYPct >= 0 ? '+' : ''}${extras.shopifyOrders.ordersYoYPct.toFixed(0)}% vs ${n(extras.shopifyOrders.prior.orders)} last FY`
+              : 'no prior-FY data'}
+          />
+          <KpiCard
+            label="Avg orders / day"
+            value={n(extras.shopifyOrders.currentDaily)}
+            sub={`vs ${n(extras.shopifyOrders.priorDaily)}/day last FY`}
+          />
+          <KpiCard
+            label="Orders to AU / International"
+            value={`${n(extras.marketSplit.au)} / ${n(extras.marketSplit.international)}`}
+            sub={`shipped parcels · US ${n(extras.marketSplit.us)} · RoW ${n(extras.marketSplit.other)}`}
+          />
+          {extras.b2bPayment && (
+            <KpiCard
+              label="B2B payment (DSO)"
+              value={`${extras.b2bPayment.dso_days.toFixed(0)} days`}
+              sub={`median ${extras.b2bPayment.median_days.toFixed(0)}d · ${extras.b2bPayment.ontime_pct.toFixed(0)}% on-time`}
+              tip="DSO (Days Sales Outstanding), weighted by invoice value: sum(amount × days-to-pay) / sum(amount). Large invoices count more than small ones, so it reflects how long the actual cash takes to arrive — here ~50 days — even though the typical (median) invoice is paid in 15 days."
+            />
+          )}
+        </div>
+      )}
+
+      {extras?.b2bPayment && (
+        <SectionCard
+          title="B2B receivables — payment behaviour"
+          description="Paid wholesale invoices (Xero, retail excluded). DSO is $-weighted days-to-pay."
+        >
+          <table className="w-full">
+            <tbody>
+              <tr className="border-b"><td className={td}>Paid invoices · customers</td><td className={tdNum}>{n(extras.b2bPayment.invoices)} · {n(extras.b2bPayment.customers)}</td></tr>
+              <tr className="border-b"><td className={td}>Value collected</td><td className={tdNum}>{fmtAUD(extras.b2bPayment.total)}</td></tr>
+              <tr className="border-b"><td className={td}>Avg days to pay</td><td className={tdNum}>{extras.b2bPayment.avg_days.toFixed(0)} days</td></tr>
+              <tr className="border-b"><td className={td}>Median days to pay</td><td className={tdNum}>{extras.b2bPayment.median_days.toFixed(0)} days</td></tr>
+              <tr className="border-b"><td className={td}>DSO ($-weighted)</td><td className={tdNum}>{extras.b2bPayment.dso_days.toFixed(0)} days</td></tr>
+              <tr><td className={td}>Paid on time / late</td><td className={tdNum}>{extras.b2bPayment.ontime_pct.toFixed(0)}% / {extras.b2bPayment.late_pct.toFixed(0)}%</td></tr>
+            </tbody>
+          </table>
+        </SectionCard>
+      )}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <SectionCard
