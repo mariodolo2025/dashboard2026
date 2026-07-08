@@ -65,9 +65,10 @@ const COMMON_EXCLUDED: Record<string, boolean> = {
 const FREIGHT_VARIABLE: Record<string, number> = {
   'Freight & Courier — Inbound — Container': 25,
   'Freight & Courier — Inbound — DHL International': 25,
+  'Freight & Courier — Inbound — B2B related': 100,   // B2B channel
   'Freight & Courier — Outbound — B2C AU': 0,
   'Freight & Courier — Outbound — B2B': 100,
-  'Freight & Courier — Outbound — US': 0,
+  'Freight & Courier — Outbound — B2C USA': 0,
   'Freight & Courier — Review': 25,
   'Freight & Courier — Unclassified': 25,
 };

@@ -1,5 +1,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import * as XLSX from 'npm:xlsx@0.18.5';
+import { SPLIT_RULES, classifyLine } from '../_shared/xeroSplitRules.ts';
+import { loadStarshipitRatios, auShare, carrierKeyForContact } from '../_shared/starshipitReallocation.ts';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -155,40 +157,31 @@ function shouldSkipPlAccountRow(name: string): boolean {
   return false;
 }
 
-// ─── Virtual account split rules ─────────────────────────────────────────────
-// Accounts that mix non-operating and operating spend get split into virtual
-// accounts using the transaction lines synced by xero-sync (matched by
-// contact). Anything the rules don't recognize lands in "— Review"; any P&L
-// remainder not covered by transaction lines lands in "— Unclassified" (e.g.
-// accountant manual journals) — never silently estimated.
-const SPLIT_RULES: Record<string, { bucket: string; pattern: RegExp }[]> = {
-  'Rates & Taxes': [
-    { bucket: 'Tax remittances', pattern: /taxation office|(^|\W)ato(\W|$)/i },
-    { bucket: 'Property & Compliance', pattern: /gold coast|body corporate|asic|land tax|council/i },
-  ],
-  // Freight matches on the supplier CONTACT (line descriptions are generic
-  // "freight"). Order matters — first match wins:
-  //   Inbound — Container            = Diamond (sea freight bills)
-  //   Inbound — DHL International     = the "DHL"/"DHL EXPRESS" contact (import
-  //                                    air freight for goods that missed the
-  //                                    container). NOT "DHL e-commerce".
-  //   Outbound — B2C AU              = Australia Post + DHL e-commerce (old B2C courier)
-  //   Outbound — B2B                 = One Freight, Star Track, Interparcel, TFM,
-  //                                    Regional Express, Interflow
-  //   Outbound — US                  = UPS + ZONOS (US import taxes we pay)
-  //   Subscription                   = Starshipit (software sub, not shipping)
-  // NOTE (2026-07): market-level split (AU vs US) can't come from Xero because
-  // US parcels also ship via Australia Post — that needs the Starshipit
-  // connector (planned).
-  'Freight & Courier': [
-    { bucket: 'Subscription (Starshipit)', pattern: /starshipit|starship/i },
-    { bucket: 'Inbound — Container', pattern: /diamond/i },
-    { bucket: 'Inbound — DHL International', pattern: /^dhl(\s+express)?$/i },
-    { bucket: 'Outbound — B2C AU', pattern: /australia\s*post|dhl\s*e-?commerce/i },
-    { bucket: 'Outbound — B2B', pattern: /one\s*freight|star\s*track|interparcel|tfm|regional\s*express|interflow/i },
-    { bucket: 'Outbound — US', pattern: /\bups\b|zonos/i },
-  ],
-};
+// Split rules live in ../_shared/xeroSplitRules.ts (single source of truth,
+// shared with the drill-down function xero-account-detail).
+
+/** Fetch every line for an account. PostgREST caps a single response at 1000
+ *  rows (max-rows) regardless of .limit(), so we page with .range(). */
+async function fetchAllLines(supabase: any, account: string): Promise<any[]> {
+  const all: any[] = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from('xero_account_lines')
+      .select('journal_date, contact_name, net_amount')
+      .eq('account_name', account)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    all.push(...(data ?? []));
+    if (!data || data.length < pageSize) break;
+  }
+  return all;
+}
+
+// Starshipit market reallocation helpers (loadStarshipitRatios, auShare,
+// carrierKeyForContact) live in ../_shared/starshipitReallocation.ts so the
+// category totals here, the drill-down bridge, and the Freight by Market report
+// all reallocate with one implementation.
 
 /** Build the CostsResponse from the xero_pl_monthly / xero_account_lines
  *  tables (populated daily by xero-sync). Returns null when the tables are
@@ -233,16 +226,20 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
     if (idx !== undefined) byAccount.get(name)![idx] = Number(r.amount) || 0;
   }
 
+  // Starshipit per-carrier market ratios (for the outbound B2C reallocation).
+  const ratios = await loadStarshipitRatios(supabase);
+
   // Split watched accounts into virtual accounts by transaction lines.
-  for (const [account, rules] of Object.entries(SPLIT_RULES)) {
+  for (const account of Object.keys(SPLIT_RULES)) {
     if (!byAccount.has(account)) continue;
     const plMonthly = byAccount.get(account)!;
 
-    const { data: lines, error: linesErr } = await supabase
-      .from('xero_account_lines')
-      .select('journal_date, contact_name, net_amount')
-      .eq('account_name', account);
-    if (linesErr || !lines) continue; // keep the raw account if detail is unavailable
+    let lines: any[];
+    try {
+      lines = await fetchAllLines(supabase, account);
+    } catch {
+      continue; // keep the raw account if detail is unavailable
+    }
 
     const buckets = new Map<string, number[]>();
     const ensure = (bucket: string) => {
@@ -256,11 +253,23 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
       const d = new Date(line.journal_date);
       const idx = monthIndex.get(`${d.getFullYear()}-${d.getMonth() + 1}`);
       if (idx === undefined) continue; // line outside the P&L window
-      const contact = String(line.contact_name ?? '');
-      const rule = rules.find((r) => r.pattern.test(contact));
-      const bucket = rule ? rule.bucket : 'Review';
-      ensure(bucket)[idx] += Number(line.net_amount) || 0;
-      coveredByLines[idx] += Number(line.net_amount) || 0;
+      const bucket = classifyLine(account, line.contact_name) ?? 'Review';
+      const amt = Number(line.net_amount) || 0;
+
+      // Starshipit market reallocation for outbound B2C carrier lines.
+      if (account === 'Freight & Courier' && (bucket === 'Outbound — B2C AU' || bucket === 'Outbound — B2C USA')) {
+        const ck = carrierKeyForContact(line.contact_name);
+        const share = ck ? auShare(ratios, ck, d.getFullYear(), d.getMonth() + 1) : null;
+        if (share !== null) {
+          ensure('Outbound — B2C AU')[idx] += amt * share;
+          ensure('Outbound — B2C USA')[idx] += amt * (1 - share);
+          coveredByLines[idx] += amt;
+          continue;
+        }
+      }
+
+      ensure(bucket)[idx] += amt;
+      coveredByLines[idx] += amt;
     }
 
     // Reconcile each month to the authoritative P&L total.

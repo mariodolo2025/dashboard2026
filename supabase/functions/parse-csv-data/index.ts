@@ -56,7 +56,22 @@ interface RequestBody {
   // Optional storage folder to read the source files from, e.g. "fy2025-26".
   // Empty/absent = live files at the bucket root (default behavior).
   prefix?: string;
+  // Snapshot folders are immutable, so their parsed result is cached as
+  // <prefix>/parsed-snapshot.json. Set materialize=true to (re)build that cache
+  // — the only path that re-parses the CSVs. See SNAPSHOT_CACHE below.
+  materialize?: boolean;
 }
+
+// Re-parsing a snapshot on every request means reading ~23MB of CSV and
+// serialising ~9MB of JSON inside one worker — that intermittently trips
+// Supabase's WORKER_RESOURCE_LIMIT (HTTP 546), which is what broke the FY
+// Report. A fiscal-year snapshot never changes, so parse it once and serve the
+// stored JSON afterwards (streamed straight through, near-zero CPU).
+//
+// Note: the cached payload freezes fxRates for the range it was built with.
+// That's correct for a closed FY, and the FY Report always asks for the same
+// range. The live path (no prefix) is untouched.
+const SNAPSHOT_CACHE = 'parsed-snapshot.json';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -610,6 +625,23 @@ Deno.serve(async (req: Request) => {
     // are accepted; anything else falls back to the live bucket root.
     const folder = /^fy\d{4}-\d{2}$/.test(requestBody.prefix ?? '') ? requestBody.prefix as string : '';
     const pathPrefix = folder ? `${folder}/` : '';
+    const materialize = requestBody.materialize === true;
+
+    // Snapshot fast path: serve the pre-parsed JSON without touching the CSVs.
+    // Streaming the Blob straight into the Response keeps the worker well under
+    // its resource limit (the 546 this replaces).
+    if (folder && !materialize) {
+      const { data: cached } = await supabase.storage
+        .from('csv-files')
+        .download(`${folder}/${SNAPSHOT_CACHE}`);
+      if (cached) {
+        console.log(`Snapshot cache hit: ${folder}/${SNAPSHOT_CACHE}`);
+        return new Response(cached, {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Snapshot-Cache': 'hit' },
+        });
+      }
+      console.log(`Snapshot cache miss for ${folder} — parsing CSVs`);
+    }
 
     // Get dynamic exchange rates for the date range
     const fxRates = await getExchangeRatesForDateRange(supabase, startDate, endDate);
@@ -740,10 +772,25 @@ Deno.serve(async (req: Request) => {
       lastOrderDate: lastOrderDate ? lastOrderDate.toISOString() : null
     };
 
-    return new Response(JSON.stringify(response), {
+    const body = JSON.stringify(response);
+
+    // Materialise the snapshot cache so every later read skips the parse.
+    if (folder && materialize) {
+      const { error: upErr } = await supabase.storage
+        .from('csv-files')
+        .upload(`${folder}/${SNAPSHOT_CACHE}`, new Blob([body], { type: 'application/json' }), {
+          upsert: true,
+          contentType: 'application/json',
+        });
+      if (upErr) console.error(`Failed to write snapshot cache: ${upErr.message}`);
+      else console.log(`Snapshot cache written: ${folder}/${SNAPSHOT_CACHE} (${body.length} bytes)`);
+    }
+
+    return new Response(body, {
       headers: {
         'Content-Type': 'application/json',
         ...corsHeaders,
+        ...(folder ? { 'X-Snapshot-Cache': materialize ? 'written' : 'miss' } : {}),
       },
     });
 
