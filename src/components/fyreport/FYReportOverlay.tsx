@@ -13,7 +13,7 @@
 // =============================================================================
 
 import { useEffect, useState } from 'react';
-import { Printer, Download, RefreshCw } from 'lucide-react';
+import { Download, RefreshCw } from 'lucide-react';
 import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
@@ -68,33 +68,9 @@ export function FYReportContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const roleTitle: Record<Role, string> = {
-    ceo: 'CEO view',
-    operations: 'Operations view',
-    marketing: 'Marketing view',
-  };
-
   return (
     <div className="flex h-full flex-col">
-      {/* Scoped print stylesheet: only the report body prints */}
-      <style>{`
-        @media print {
-          body * { visibility: hidden !important; }
-          #fy-report-print, #fy-report-print * { visibility: visible !important; }
-          #fy-report-print {
-            position: absolute !important;
-            inset: 0 !important;
-            overflow: visible !important;
-            height: auto !important;
-            background: white !important;
-            padding: 0 !important;
-          }
-          .fy-no-print { display: none !important; }
-          .fy-print-break { break-inside: avoid; }
-        }
-      `}</style>
-
-      {/* Report sub-header: role selector + print */}
+      {/* Report sub-header: role selector (print handled centrally by ReportsOverlay) */}
       <div className="fy-no-print flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
         <div className="flex items-center gap-4">
           <h3 className="text-sm font-semibold text-[#0f1115]">FY Report {FY_LABEL}</h3>
@@ -115,22 +91,11 @@ export function FYReportContent() {
             ))}
           </div>
         </div>
-        <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => window.print()}>
-          <Printer className="h-3.5 w-3.5" />
-          Print / PDF
-        </Button>
       </div>
 
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-y-auto" id="fy-report-print">
         <div className="mx-auto max-w-6xl p-6">
-          <div className="hidden print:block mb-6">
-            <h1 className="text-2xl font-bold">Dolo Ent PTY Ltd — FY Report {FY_LABEL}</h1>
-            <p className="text-sm text-muted-foreground">
-              {roleTitle[role]} · Jul 1, 2025 – Jun 30, 2026 · frozen snapshot
-            </p>
-          </div>
-
           {loading && (
             <div className="flex items-center justify-center gap-2 py-24 text-muted-foreground">
               <RefreshCw className="h-4 w-4 animate-spin" />
@@ -158,11 +123,23 @@ export function FYReportContent() {
 
 // --- Shared building blocks ----------------------------------------------------
 
-function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string | null }) {
+function KpiCard({ label, value, sub, tip }: { label: string; value: string; sub?: string | null; tip?: string }) {
   return (
     <Card className="fy-print-break">
       <CardContent className="pt-5 pb-4">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+        <p className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {label}
+          {tip && (
+            <span
+              tabIndex={0}
+              title={tip}
+              aria-label={tip}
+              className="fy-no-print inline-flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-muted-foreground/40 text-[9px] font-semibold not-italic text-muted-foreground"
+            >
+              i
+            </span>
+          )}
+        </p>
         <p className="mt-1 text-2xl font-bold tabular-nums">{value}</p>
         {sub && <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p>}
       </CardContent>
@@ -492,6 +469,7 @@ function OperationsView({ m, valuation, extras }: { m: FYMetrics; valuation: FYS
               label="B2B payment (DSO)"
               value={`${extras.b2bPayment.dso_days.toFixed(0)} days`}
               sub={`median ${extras.b2bPayment.median_days.toFixed(0)}d · ${extras.b2bPayment.ontime_pct.toFixed(0)}% on-time`}
+              tip="DSO (Days Sales Outstanding), weighted by invoice value: sum(amount × days-to-pay) / sum(amount). Large invoices count more than small ones, so it reflects how long the actual cash takes to arrive — here ~50 days — even though the typical (median) invoice is paid in 15 days."
             />
           )}
         </div>

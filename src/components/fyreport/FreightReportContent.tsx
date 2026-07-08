@@ -172,7 +172,7 @@ export function FreightReportContent() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
+      <div className="reports-no-print flex shrink-0 items-center justify-between gap-3 border-b border-[#e8e8e3] bg-white px-5 py-2.5">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold text-[#0f1115]">Freight by Category</h3>
           <Popover>
