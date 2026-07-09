@@ -29,6 +29,10 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   { name: 'Inventory · sales/demand', fn: 'aim2026-sync-unleashed', body: { step: 'sales' } },
   { name: 'Inventory · purchase orders', fn: 'aim2026-sync-unleashed', body: { step: 'purchase' } },
   { name: 'Inventory · assemblies', fn: 'aim2026-sync-unleashed', body: { step: 'assemblies' } },
+  // Rebuild the dashboard's pre-parsed snapshot so the main load serves it
+  // instead of re-parsing ~23 MB of CSVs (which intermittently hit the edge
+  // resource limit / HTTP 546). endDate defaults to now inside parse-csv-data.
+  { name: 'Dashboard snapshot', fn: 'parse-csv-data', body: { materialize: true, startDate: '2023-01-01T00:00:00.000Z' } },
 ];
 // A step lock older than this is treated as dead and reclaimed. MUST exceed the
 // edge wall-clock ceiling (~400s = 6.7 min) so a reclaim NEVER races a live

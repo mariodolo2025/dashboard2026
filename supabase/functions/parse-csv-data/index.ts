@@ -629,18 +629,21 @@ Deno.serve(async (req: Request) => {
 
     // Snapshot fast path: serve the pre-parsed JSON without touching the CSVs.
     // Streaming the Blob straight into the Response keeps the worker well under
-    // its resource limit (the 546 this replaces).
-    if (folder && !materialize) {
+    // its resource limit (the 546 this replaces). Applies to BOTH the frozen
+    // fiscal-year folders AND the live root: the auto-sync re-materialises the
+    // root snapshot at the end of every run, so the dashboard never re-parses the
+    // ~23 MB of CSVs on load.
+    if (!materialize) {
       const { data: cached } = await supabase.storage
         .from('csv-files')
-        .download(`${folder}/${SNAPSHOT_CACHE}`);
+        .download(`${pathPrefix}${SNAPSHOT_CACHE}`);
       if (cached) {
-        console.log(`Snapshot cache hit: ${folder}/${SNAPSHOT_CACHE}`);
+        console.log(`Snapshot cache hit: ${pathPrefix}${SNAPSHOT_CACHE}`);
         return new Response(cached, {
           headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Snapshot-Cache': 'hit' },
         });
       }
-      console.log(`Snapshot cache miss for ${folder} — parsing CSVs`);
+      console.log(`Snapshot cache miss for ${pathPrefix || 'root'} — parsing CSVs`);
     }
 
     // Get dynamic exchange rates for the date range
@@ -774,23 +777,24 @@ Deno.serve(async (req: Request) => {
 
     const body = JSON.stringify(response);
 
-    // Materialise the snapshot cache so every later read skips the parse.
-    if (folder && materialize) {
+    // Materialise the snapshot cache (root or folder) so every later read skips
+    // the parse. For the live root this is called at the end of each auto-sync run.
+    if (materialize) {
       const { error: upErr } = await supabase.storage
         .from('csv-files')
-        .upload(`${folder}/${SNAPSHOT_CACHE}`, new Blob([body], { type: 'application/json' }), {
+        .upload(`${pathPrefix}${SNAPSHOT_CACHE}`, new Blob([body], { type: 'application/json' }), {
           upsert: true,
           contentType: 'application/json',
         });
       if (upErr) console.error(`Failed to write snapshot cache: ${upErr.message}`);
-      else console.log(`Snapshot cache written: ${folder}/${SNAPSHOT_CACHE} (${body.length} bytes)`);
+      else console.log(`Snapshot cache written: ${pathPrefix}${SNAPSHOT_CACHE} (${body.length} bytes)`);
     }
 
     return new Response(body, {
       headers: {
         'Content-Type': 'application/json',
         ...corsHeaders,
-        ...(folder ? { 'X-Snapshot-Cache': materialize ? 'written' : 'miss' } : {}),
+        'X-Snapshot-Cache': materialize ? 'written' : 'miss',
       },
     });
 
