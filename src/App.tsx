@@ -112,6 +112,7 @@ function App() {
   const [manualFxRate, setManualFxRate] = useState<string>('');
   const [blendedRoasTarget, setBlendedRoasTarget] = useState<number>(2.1);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [syncRunning, setSyncRunning] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [selectedChannels, setSelectedChannels] = useState<string[]>(['Shopify', 'B2B', 'Korea']);
   const [sortBy, setSortBy] = useState<string>('revenue');
@@ -316,6 +317,72 @@ function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Full refresh — same as the auto-sync cron: pull every source from its API and
+  // rebuild what the dashboard reads. The refresh advances step-by-step in the
+  // background (~minutes, driven by the every-minute driver), so we kick it off,
+  // show whatever is already in the DB, then poll until the run finishes and
+  // reload the fresh data. Progress/errors per step are visible in Config →
+  // Connections.
+  const handleFullRefresh = async () => {
+    const base = import.meta.env.VITE_SUPABASE_URL;
+    const headers = {
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    };
+    setSyncRunning(true);
+
+    // Kick off a run and capture WHICH run to wait for. If the kickoff itself
+    // fails, surface it and stop — never leave the spinner up or report success
+    // on stale data.
+    let runId: number | null = null;
+    try {
+      const res = await fetch(`${base}/functions/v1/sync-orchestrate`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ kickoff: true, trigger: 'button' }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body?.success === false) throw new Error(body?.message ?? `HTTP ${res.status}`);
+      runId = typeof body?.runId === 'number' ? body.runId : null;
+    } catch (e) {
+      setSyncRunning(false);
+      alert(`No se pudo iniciar la actualización: ${(e as Error).message}`);
+      return;
+    }
+
+    // Show whatever is already in the DB (fire-and-forget so a slow reload can't
+    // hang the button).
+    loadDataFromSupabase().catch(() => {});
+
+    // Poll until THAT run finishes (not just the newest run), then reload. Always
+    // clear the spinner before the final reload so it can never stick on.
+    const startedAt = Date.now();
+    const finish = () => { setSyncRunning(false); loadDataFromSupabase().catch(() => {}); };
+    const poll = async () => {
+      if (Date.now() - startedAt > 15 * 60_000) { finish(); return; } // safety cap
+      try {
+        // Abort a hung request so the cap is always re-evaluated on the next tick.
+        const ctrl = new AbortController();
+        const t = window.setTimeout(() => ctrl.abort(), 10_000);
+        let body: any;
+        try {
+          const res = await fetch(`${base}/functions/v1/connection-status`, { headers, signal: ctrl.signal });
+          body = await res.json();
+        } finally {
+          window.clearTimeout(t);
+        }
+        const master = (body?.connections ?? []).find((c: any) => c.master);
+        const runs = master?.runs ?? [];
+        const run = runId != null ? runs.find((r: any) => r.id === runId) : runs[0];
+        if (run && run.status !== 'running') { finish(); return; }
+      } catch {
+        /* transient; keep polling */
+      }
+      window.setTimeout(poll, 15_000);
+    };
+    window.setTimeout(poll, 15_000);
   };
 
   // Utility functions
@@ -1979,14 +2046,15 @@ function App() {
             </Popover>
 
             <Button
-              onClick={loadDataFromSupabase}
-              disabled={isLoading}
+              onClick={handleFullRefresh}
+              disabled={isLoading || syncRunning}
               size="sm"
               variant="outline"
               className="h-8 gap-1.5 text-xs"
+              title="Pull every source from its API and rebuild the dashboard (same as the auto-sync)"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              {isLoading ? 'Updating...' : 'Update'}
+              <RefreshCw className={`h-3.5 w-3.5 ${(isLoading || syncRunning) ? 'animate-spin' : ''}`} />
+              {syncRunning ? 'Syncing…' : isLoading ? 'Updating...' : 'Update'}
             </Button>
 
             <Button
