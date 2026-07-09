@@ -171,6 +171,21 @@ Deno.serve(async (req: Request) => {
       rows_live: liveCount ?? 0,
     });
 
+    // Regenerate the served SalesEnquiryList.csv from the DB (frozen + live), so
+    // the dashboard picks up the new sales without a manual upload. Best-effort:
+    // the table is already updated even if this step fails.
+    let csvExport: any = null;
+    try {
+      const r = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/unleashed-export-csv`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dest: 'SalesEnquiryList.csv' }),
+      });
+      csvExport = await r.json();
+    } catch (e) {
+      csvExport = { success: false, message: e instanceof Error ? e.message : 'export failed' };
+    }
+
     return json({
       success: true,
       mode: backfill || !state?.last_modified_watermark ? 'backfill' : 'incremental',
@@ -180,6 +195,7 @@ Deno.serve(async (req: Request) => {
       liveRowsTotal: liveCount ?? 0,
       products: groupByCode.size,
       customers: typeByCustomer.size,
+      csvExport,
     });
   } catch (e) {
     return json({ success: false, message: e instanceof Error ? e.message : 'Unknown error' }, 500);

@@ -34,6 +34,7 @@ interface ConnectionInfo {
 /** Which function to invoke for "Sync now", per connection id. */
 const SYNC_FUNCTIONS: Record<string, { fn: string; body: unknown }> = {
   xero: { fn: 'xero-sync', body: { step: 'all' } },
+  'unleashed-sales': { fn: 'unleashed-sales-sync', body: {} },
 };
 
 const DAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];

@@ -62,6 +62,21 @@ const CONNECTIONS: ConnectionDef[] = [
       };
     },
   },
+  {
+    id: 'unleashed-sales',
+    name: 'Unleashed sales',
+    cronJobName: 'unleashed-sales-sync-daily',
+    readStatus: async (supabase) => {
+      const { data: creds } = await supabase.from('unleashed_credentials').select('api_id').limit(1).maybeSingle();
+      const { data: st } = await supabase.from('unleashed_sales_sync_state').select('*').eq('id', 1).maybeSingle();
+      return {
+        connected: !!creds?.api_id,
+        detail: st?.rows_live != null ? `${st.rows_live} live rows since Jul 2026` : 'Sales API',
+        tokenUpdatedAt: null,
+        lastSync: st?.last_run_at ? { at: st.last_run_at, ok: st.last_run_status === 'ok' } : null,
+      };
+    },
+  },
 ];
 
 function json(body: unknown, status = 200): Response {
