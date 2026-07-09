@@ -26,7 +26,15 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   { name: 'Unleashed sales', fn: 'unleashed-sales-sync', body: {} },
   { name: 'Inventory · products', fn: 'aim2026-sync-unleashed', body: { step: 'products' } },
   { name: 'Inventory · stock on hand', fn: 'aim2026-sync-unleashed', body: { step: 'soh' } },
-  { name: 'Inventory · sales/demand', fn: 'aim2026-sync-unleashed', body: { step: 'sales' } },
+  // Sales/demand runs once PER STATUS, exactly like the manual sync. The first
+  // (Completed, isFirstSalesStatus) ZEROES the re-aggregation window before refilling,
+  // which makes the whole sales sync idempotent — re-running (or a reclaim retry)
+  // recomputes the window from scratch instead of adding on top. Calling it as a
+  // single non-first step (the previous bug) double-counted demand every run.
+  { name: 'Inventory · sales (Completed)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Completed', isFirstSalesStatus: true } },
+  { name: 'Inventory · sales (Placed)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Placed' } },
+  { name: 'Inventory · sales (Backordered)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Backordered' } },
+  { name: 'Inventory · sales (Parked)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Parked' } },
   { name: 'Inventory · purchase orders', fn: 'aim2026-sync-unleashed', body: { step: 'purchase' } },
   { name: 'Inventory · assemblies', fn: 'aim2026-sync-unleashed', body: { step: 'assemblies' } },
   // Rebuild the dashboard's pre-parsed snapshot so the main load serves it
