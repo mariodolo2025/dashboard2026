@@ -112,6 +112,7 @@ function App() {
   const [manualFxRate, setManualFxRate] = useState<string>('');
   const [blendedRoasTarget, setBlendedRoasTarget] = useState<number>(2.1);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [syncRunning, setSyncRunning] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [selectedChannels, setSelectedChannels] = useState<string[]>(['Shopify', 'B2B', 'Korea']);
   const [sortBy, setSortBy] = useState<string>('revenue');
@@ -316,6 +317,51 @@ function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Full refresh — same as the auto-sync cron: pull every source from its API and
+  // rebuild what the dashboard reads. The refresh advances step-by-step in the
+  // background (~minutes, driven by the every-minute driver), so we kick it off,
+  // show whatever is already in the DB, then poll until the run finishes and
+  // reload the fresh data. Progress/errors per step are visible in Config →
+  // Connections.
+  const handleFullRefresh = async () => {
+    const base = import.meta.env.VITE_SUPABASE_URL;
+    const headers = {
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    };
+    setSyncRunning(true);
+    try {
+      await fetch(`${base}/functions/v1/sync-orchestrate`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ kickoff: true, trigger: 'button' }),
+      });
+    } catch {
+      /* a run may already be in progress; the driver will carry it */
+    }
+    await loadDataFromSupabase();
+
+    const startedAt = Date.now();
+    const poll = async () => {
+      if (Date.now() - startedAt > 12 * 60_000) { setSyncRunning(false); return; } // safety cap
+      try {
+        const res = await fetch(`${base}/functions/v1/connection-status`, { headers });
+        const body = await res.json();
+        const master = (body.connections ?? []).find((c: any) => c.master);
+        const latest = master?.runs?.[0];
+        if (latest && latest.status !== 'running') {
+          await loadDataFromSupabase();
+          setSyncRunning(false);
+          return;
+        }
+      } catch {
+        /* transient; keep polling */
+      }
+      window.setTimeout(poll, 15_000);
+    };
+    window.setTimeout(poll, 15_000);
   };
 
   // Utility functions
@@ -1979,14 +2025,15 @@ function App() {
             </Popover>
 
             <Button
-              onClick={loadDataFromSupabase}
-              disabled={isLoading}
+              onClick={handleFullRefresh}
+              disabled={isLoading || syncRunning}
               size="sm"
               variant="outline"
               className="h-8 gap-1.5 text-xs"
+              title="Pull every source from its API and rebuild the dashboard (same as the auto-sync)"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              {isLoading ? 'Updating...' : 'Update'}
+              <RefreshCw className={`h-3.5 w-3.5 ${(isLoading || syncRunning) ? 'animate-spin' : ''}`} />
+              {syncRunning ? 'Syncing…' : isLoading ? 'Updating...' : 'Update'}
             </Button>
 
             <Button
