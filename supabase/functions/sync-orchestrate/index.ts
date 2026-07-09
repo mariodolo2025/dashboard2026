@@ -30,8 +30,18 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   { name: 'Inventory · purchase orders', fn: 'aim2026-sync-unleashed', body: { step: 'purchase' } },
   { name: 'Inventory · assemblies', fn: 'aim2026-sync-unleashed', body: { step: 'assemblies' } },
 ];
-const STALE_MINUTES = 12;   // a run with no progress this long is abandoned so a new one can start
-const LOCK_MINUTES = 4;     // a step lock older than this is considered dead and can be reclaimed
+// A step lock older than this is treated as dead and reclaimed. MUST exceed the
+// edge wall-clock ceiling (~400s = 6.7 min) so a reclaim NEVER races a live
+// background task — that guarantees a step never runs twice concurrently.
+const LOCK_MINUTES = 10;
+// Retries for a step whose worker keeps dying before it can complete. After this
+// many claims the run is failed (in the claim RPC) so a fresh kickoff can start
+// instead of the subsystem wedging forever.
+const MAX_ATTEMPTS = 3;
+// Backstop: a run still 'running' this long after it started is considered wedged
+// (e.g. the driver cron died mid-run) and is failed so a new run can be created.
+// Well above a healthy run (~8-12 min) and above the give-up ceiling.
+const STUCK_MINUTES = 40;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -55,23 +65,37 @@ Deno.serve(async (req: Request) => {
     const kickoff = body?.kickoff === true;
     const trigger = typeof body?.trigger === 'string' ? body.trigger : (kickoff ? 'cron' : 'driver');
 
-    // Current active run (+ stale guard).
+    // Current active run. Backstop: if it's been 'running' far longer than any
+    // healthy run (started_at is immutable — unlike updated_at it can't be refreshed
+    // by lock reclaims), the driver likely died mid-run, so fail it and free the
+    // single-running slot. A genuinely stuck step is already capped by MAX_ATTEMPTS
+    // in the claim RPC; this only catches a dead driver.
     const { data: active } = await supabase
       .from('sync_runs').select('*').eq('status', 'running').order('started_at', { ascending: false }).limit(1).maybeSingle();
     let run = active;
-    if (run && (Date.now() - new Date(run.updated_at).getTime()) > STALE_MINUTES * 60_000) {
-      const steps = [...(run.steps ?? []), { name: 'stalled', status: 'error', message: `no progress > ${STALE_MINUTES}m`, at: new Date().toISOString() }];
-      await supabase.from('sync_runs').update({ status: 'error', steps, finished_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', run.id);
+    const lockAgeMs = run?.locked_at ? Date.now() - new Date(run.locked_at).getTime() : Infinity;
+    if (
+      run &&
+      Date.now() - new Date(run.started_at).getTime() > STUCK_MINUTES * 60_000 &&
+      lockAgeMs > LOCK_MINUTES * 60_000 // only if no live worker holds the lock — never abandon a run mid-step
+    ) {
+      const steps = [...(run.steps ?? []), { name: 'run abandoned', status: 'error', message: `no completion after ${STUCK_MINUTES}m`, at: new Date().toISOString() }];
+      await supabase.from('sync_runs').update({ status: 'error', steps, locked_at: null, finished_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', run.id);
       run = null;
     }
 
-    // Kickoff: create a run if none active. (Kickoff only creates it — the driver
-    // ticks run the steps — so the caller returns instantly and no cron/browser
-    // connection needs to stay open for a whole step.)
+    // Kickoff: create a run if none active. The partial unique index
+    // (status='running') makes this atomic — if a concurrent kickoff already
+    // inserted, our insert fails and we just report the run that won.
     if (!run) {
       if (!kickoff) return json({ success: true, idle: true });
-      const { data: created } = await supabase
+      const { data: created, error: insErr } = await supabase
         .from('sync_runs').insert({ status: 'running', cursor: 0, total_steps: STEPS.length, trigger }).select().maybeSingle();
+      if (insErr) {
+        const { data: cur } = await supabase
+          .from('sync_runs').select('id').eq('status', 'running').order('started_at', { ascending: false }).limit(1).maybeSingle();
+        return json({ success: true, runId: cur?.id, status: 'running', alreadyRunning: true });
+      }
       return json({ success: true, runId: created?.id, status: 'running', cursor: 0, total: STEPS.length, created: true });
     }
 
@@ -86,11 +110,12 @@ Deno.serve(async (req: Request) => {
     // interval). The claim succeeds only if the lock is free or dead; otherwise
     // another tick owns it → no-op. (Done in raw SQL because a supabase-js
     // update+select re-filters on the just-set locked_at and returns no row.)
-    const { data: claimedRows } = await supabase.rpc('sync_claim_step', { p_run_id: run.id, p_lock_minutes: LOCK_MINUTES });
+    const { data: claimedRows } = await supabase.rpc('sync_claim_step', { p_run_id: run.id, p_lock_minutes: LOCK_MINUTES, p_max_attempts: MAX_ATTEMPTS });
     const claimed = Array.isArray(claimedRows) ? claimedRows[0] : claimedRows;
     if (!claimed) return json({ success: true, busy: true, runId: run.id });
-    run = claimed; // authoritative cursor at claim time
+    run = claimed; // authoritative cursor + lock token at claim time
     const cursor = run.cursor;
+    const lockToken = run.locked_at; // used to prove we still own the lock at completion
     const step = STEPS[cursor];
 
     // Execute the step as a BACKGROUND task and return immediately. pg_net (the
@@ -116,14 +141,18 @@ Deno.serve(async (req: Request) => {
       const nextCursor = cursor + 1;
       const steps = [...(run!.steps ?? []), entry];
       const done = nextCursor >= STEPS.length;
+      // Only advance if we still own the lock (defense-in-depth: if a reclaim ran
+      // this step in another worker, our stale write must not clobber it). Reset
+      // attempts to 0 so the next step starts with a full retry budget.
       await supabase.from('sync_runs').update({
         cursor: nextCursor,
         steps,
+        attempts: 0,
         status: done ? (steps.some((s: any) => s.status === 'error') ? 'error' : 'done') : 'running',
         locked_at: null, // release for the next tick
         finished_at: done ? new Date().toISOString() : null,
         updated_at: new Date().toISOString(),
-      }).eq('id', run!.id);
+      }).eq('id', run!.id).eq('locked_at', lockToken);
     })();
 
     const er = (globalThis as any).EdgeRuntime;

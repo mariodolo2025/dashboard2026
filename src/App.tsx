@@ -332,30 +332,51 @@ function App() {
       'Content-Type': 'application/json',
     };
     setSyncRunning(true);
+
+    // Kick off a run and capture WHICH run to wait for. If the kickoff itself
+    // fails, surface it and stop — never leave the spinner up or report success
+    // on stale data.
+    let runId: number | null = null;
     try {
-      await fetch(`${base}/functions/v1/sync-orchestrate`, {
+      const res = await fetch(`${base}/functions/v1/sync-orchestrate`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ kickoff: true, trigger: 'button' }),
       });
-    } catch {
-      /* a run may already be in progress; the driver will carry it */
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body?.success === false) throw new Error(body?.message ?? `HTTP ${res.status}`);
+      runId = typeof body?.runId === 'number' ? body.runId : null;
+    } catch (e) {
+      setSyncRunning(false);
+      alert(`No se pudo iniciar la actualización: ${(e as Error).message}`);
+      return;
     }
-    await loadDataFromSupabase();
 
+    // Show whatever is already in the DB (fire-and-forget so a slow reload can't
+    // hang the button).
+    loadDataFromSupabase().catch(() => {});
+
+    // Poll until THAT run finishes (not just the newest run), then reload. Always
+    // clear the spinner before the final reload so it can never stick on.
     const startedAt = Date.now();
+    const finish = () => { setSyncRunning(false); loadDataFromSupabase().catch(() => {}); };
     const poll = async () => {
-      if (Date.now() - startedAt > 12 * 60_000) { setSyncRunning(false); return; } // safety cap
+      if (Date.now() - startedAt > 15 * 60_000) { finish(); return; } // safety cap
       try {
-        const res = await fetch(`${base}/functions/v1/connection-status`, { headers });
-        const body = await res.json();
-        const master = (body.connections ?? []).find((c: any) => c.master);
-        const latest = master?.runs?.[0];
-        if (latest && latest.status !== 'running') {
-          await loadDataFromSupabase();
-          setSyncRunning(false);
-          return;
+        // Abort a hung request so the cap is always re-evaluated on the next tick.
+        const ctrl = new AbortController();
+        const t = window.setTimeout(() => ctrl.abort(), 10_000);
+        let body: any;
+        try {
+          const res = await fetch(`${base}/functions/v1/connection-status`, { headers, signal: ctrl.signal });
+          body = await res.json();
+        } finally {
+          window.clearTimeout(t);
         }
+        const master = (body?.connections ?? []).find((c: any) => c.master);
+        const runs = master?.runs ?? [];
+        const run = runId != null ? runs.find((r: any) => r.id === runId) : runs[0];
+        if (run && run.status !== 'running') { finish(); return; }
       } catch {
         /* transient; keep polling */
       }
