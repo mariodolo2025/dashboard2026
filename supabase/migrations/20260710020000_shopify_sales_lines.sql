@@ -38,21 +38,25 @@ create table shopify_sales_lines (
 create index if not exists shopify_sales_lines_agg_idx on shopify_sales_lines (order_date, sku, country);
 alter table shopify_sales_lines enable row level security;
 
--- Aggregated (day, SKU, country) view the CSV export reads.
+-- Aggregated (day, SKU, country) view the CSV export reads, in AUD. Native for AUD
+-- orders (rate-independent, exactly what customers paid); USD/other converted at the
+-- month's market rate from currency_exchange_rates — no USD round-trip / double FX.
 create view shopify_sales_by_variant as
-select order_date, sku, country,
-  max(product_title)  as product_title,
-  max(variant_title)  as variant_title,
-  sum(quantity)       as quantity,
-  sum(gross_usd)      as gross_usd,
-  sum(discounts_usd)  as discounts_usd,
-  sum(returns_usd)    as returns_usd,
-  sum(net_usd)        as net_usd,
-  sum(taxes_usd)      as taxes_usd,
-  sum(shipping_usd)   as shipping_usd
-from shopify_sales_lines
-where source = 'api'
-group by order_date, sku, country;
+select l.order_date, l.sku, l.country,
+  max(l.product_title) as product_title,
+  max(l.variant_title) as variant_title,
+  sum(l.quantity)      as quantity,
+  sum(case when l.currency = 'AUD' then l.net_native else l.net_usd * coalesce(r.rate, 1.54) end) as net_aud,
+  sum(l.gross_usd     * coalesce(r.rate, 1.54)) as gross_aud,
+  sum(l.discounts_usd * coalesce(r.rate, 1.54)) as discounts_aud,
+  sum(l.returns_usd   * coalesce(r.rate, 1.54)) as returns_aud,
+  sum(l.taxes_usd     * coalesce(r.rate, 1.54)) as taxes_aud,
+  sum(l.shipping_usd  * coalesce(r.rate, 1.54)) as shipping_aud
+from shopify_sales_lines l
+left join currency_exchange_rates r
+  on r.year = extract(year from l.order_date)::int and r.month = extract(month from l.order_date)::int
+where l.source = 'api'
+group by l.order_date, l.sku, l.country;
 
 create table if not exists shopify_sales_sync_state (
   id int primary key default 1,

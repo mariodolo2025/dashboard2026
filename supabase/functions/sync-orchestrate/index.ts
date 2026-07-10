@@ -23,6 +23,9 @@ const corsHeaders = {
 
 // Ordered steps of a full refresh. Each underlying call finishes under 150s.
 const STEPS: { name: string; fn: string; body: unknown }[] = [
+  // Refresh USD→AUD market rates first. Safe now that Shopify is native AUD: AU is
+  // rate-independent, US/other convert via the view at the current rate.
+  { name: 'FX rates', fn: 'fx-rates-sync', body: {} },
   { name: 'Unleashed sales', fn: 'unleashed-sales-sync', body: {} },
   { name: 'Inventory · products', fn: 'aim2026-sync-unleashed', body: { step: 'products' } },
   { name: 'Inventory · stock on hand', fn: 'aim2026-sync-unleashed', body: { step: 'soh' } },

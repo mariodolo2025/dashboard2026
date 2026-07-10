@@ -416,14 +416,13 @@ const parseShopifyData = (csvText: string, rateMap: Record<string, number>): Sho
       const shippingCountry = row[4]; // Column E - Shipping country
 
       const date = parseDate(dateStr);
-      const fxRate = getRateForDate(date, rateMap);
 
-      const netSalesUSD = cleanNumber(netSalesStr);
-      const netSales = netSalesUSD * fxRate; // Convert USD to AUD using month-specific rate
-      const taxesUSD = cleanNumber(taxesStr);
-      const taxes = taxesUSD * fxRate; // Convert USD to AUD using month-specific rate
-      const shippingUSD = cleanNumber(shippingStr);
-      const shipping = shippingUSD * fxRate; // Convert USD to AUD using month-specific rate
+      // The Shopify CSV is now regenerated from the DB in AUD (native amounts,
+      // US/other converted at market FX), so read these columns directly — no
+      // USD→AUD conversion here (that double-converted foreign sales).
+      const netSales = cleanNumber(netSalesStr);
+      const taxes = cleanNumber(taxesStr);
+      const shipping = cleanNumber(shippingStr);
 
       // Determine region based on shipping country
       let region = 'Other';
