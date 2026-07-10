@@ -37,6 +37,10 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   { name: 'Inventory · sales (Parked)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Parked' } },
   { name: 'Inventory · purchase orders', fn: 'aim2026-sync-unleashed', body: { step: 'purchase' } },
   { name: 'Inventory · assemblies', fn: 'aim2026-sync-unleashed', body: { step: 'assemblies' } },
+  // Shopify sales: pull from the API into shopify_sales_lines, then regenerate the
+  // "Total sales by product variant" CSV the dashboard reads (frozen history + live).
+  { name: 'Shopify sales', fn: 'shopify-sales-sync', body: {} },
+  { name: 'Shopify CSV', fn: 'shopify-export-csv', body: { dest: 'MARIO Total sales by product variant.csv' } },
   // Rebuild the dashboard's pre-parsed snapshot so the main load serves it
   // instead of re-parsing ~23 MB of CSVs (which intermittently hit the edge
   // resource limit / HTTP 546). endDate defaults to now inside parse-csv-data.

@@ -662,10 +662,12 @@ Deno.serve(async (req: Request) => {
       if (listError) {
         console.error('Error listing files:', listError);
       } else {
-        const shopifyFile = fileList?.find(file => 
-          file.name.startsWith('MARIO Total sales by product variant')
-        );
-        
+        // Prefer the DB-regenerated canonical file; fall back to the manual dated
+        // export (kept as a backup) so nothing breaks during the switch.
+        const CANON = 'MARIO Total sales by product variant.csv';
+        const shopifyFile = fileList?.find(file => file.name === CANON)
+          ?? fileList?.find(file => file.name.startsWith('MARIO Total sales by product variant'));
+
         if (shopifyFile) {
           shopifySalesFileName = shopifyFile.name;
           console.log(`Found Shopify file: ${shopifySalesFileName}`);
