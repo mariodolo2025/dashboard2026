@@ -61,6 +61,7 @@ const SYNC_FUNCTIONS: Record<string, { fn: string; body: unknown }> = {
   'auto-refresh': { fn: 'sync-orchestrate', body: { kickoff: true, trigger: 'button' } },
   xero: { fn: 'xero-sync', body: { step: 'all' } },
   'unleashed-sales': { fn: 'unleashed-sales-sync', body: {} },
+  'shopify-sales': { fn: 'shopify-sales-sync', body: {} },
 };
 
 const DAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];

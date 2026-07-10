@@ -105,6 +105,21 @@ const CONNECTIONS: ConnectionDef[] = [
       };
     },
   },
+  {
+    id: 'shopify-sales',
+    name: 'Shopify sales',
+    cronJobName: null, // driven by the master auto-refresh, not its own cron
+    readStatus: async (supabase) => {
+      const { data: creds } = await supabase.from('api_credentials').select('store_url').eq('provider', 'shopify').maybeSingle();
+      const { data: st } = await supabase.from('shopify_sales_sync_state').select('*').eq('id', 1).maybeSingle();
+      return {
+        connected: !!creds?.store_url,
+        detail: st?.rows_live != null ? `${st.rows_live} live rows since Jul 2026` : (creds?.store_url ?? 'Sales API'),
+        tokenUpdatedAt: null,
+        lastSync: st?.last_run_at ? { at: st.last_run_at, ok: st.last_run_status === 'ok' } : null,
+      };
+    },
+  },
 ];
 
 function json(body: unknown, status = 200): Response {
