@@ -46,8 +46,11 @@ Deno.serve(async (req: Request) => {
     const { data: existing } = await supabase.from('currency_exchange_rates').select('year, month');
     const have = new Set((existing ?? []).map((r: any) => `${r.year}-${r.month}`));
 
-    // Targets: current month (always refresh) + missing months within the window.
-    const targets: { y: number; m: number; latest: boolean }[] = [{ y: curY, m: curM, latest: true }];
+    // Targets: ONLY months not already stored (current + missing past). A month's
+    // rate is IMMUTABLE once set — the Shopify sync bakes *_usd at that rate, so
+    // overwriting it later would desync stored amounts from the view's conversion.
+    const targets: { y: number; m: number; latest: boolean }[] = [];
+    if (!have.has(`${curY}-${curM}`)) targets.push({ y: curY, m: curM, latest: true });
     for (let i = 1; i <= backfillMonths; i++) {
       const d = new Date(Date.UTC(curY, curM - 1 - i, 1));
       const y = d.getUTCFullYear(), m = d.getUTCMonth() + 1;
@@ -59,7 +62,8 @@ Deno.serve(async (req: Request) => {
     for (const t of targets) {
       const rate = await fetchRate(t.latest ? 'latest' : `${t.y}-${pad(t.m)}-15`);
       if (rate == null) { failed.push(`${t.y}-${pad(t.m)}`); continue; }
-      const { error } = await supabase.from('currency_exchange_rates').upsert({ year: t.y, month: t.m, rate }, { onConflict: 'year,month' });
+      // insert-only: never overwrite an existing month.
+      const { error } = await supabase.from('currency_exchange_rates').upsert({ year: t.y, month: t.m, rate }, { onConflict: 'year,month', ignoreDuplicates: true });
       if (error) { failed.push(`${t.y}-${pad(t.m)}:${error.message}`); continue; }
       updated.push({ month: `${t.y}-${pad(t.m)}`, rate });
     }

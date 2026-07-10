@@ -71,6 +71,11 @@ Deno.serve(async (req: Request) => {
       if (!data || data.length < pageSize) break;
     }
 
+    // Never overwrite the good CSV with an empty/degenerate one.
+    if (lines.length - 1 < 1 && body?.force !== true) {
+      return json({ success: false, skipped: true, reason: 'view returned no rows', dest });
+    }
+
     const csv = lines.join('\r\n') + '\r\n';
     const { error: upErr } = await supabase.storage.from(BUCKET).upload(dest, new Blob([csv], { type: 'text/csv' }), { upsert: true, contentType: 'text/csv' });
     if (upErr) throw new Error(`upload ${dest}: ${upErr.message}`);

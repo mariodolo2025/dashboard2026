@@ -95,8 +95,12 @@ Deno.serve(async (req: Request) => {
 
     // ── Pull orders by updated_at ─────────────────────────────────────────
     const base = `https://${store}/admin/api/2024-01/orders.json`;
+    // Backfill: widen the UTC window ±1 day so shop-local month-boundary orders
+    // (whose UTC instant falls in the adjacent day) are fetched; the shop-local
+    // `day` filter below still keeps only [from, to].
+    const dShift = (iso: string, days: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86400e3).toISOString().slice(0, 10);
     let nextUrl: string | null = backfill
-      ? `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'created_at asc', created_at_min: `${backfill.from}T00:00:00Z`, created_at_max: `${backfill.to}T23:59:59Z` })}`
+      ? `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'created_at asc', created_at_min: `${dShift(backfill.from, -1)}T00:00:00Z`, created_at_max: `${dShift(backfill.to, 1)}T23:59:59Z` })}`
       : `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'updated_at asc', updated_at_min: updatedSince })}`;
 
     const rows: any[] = [];

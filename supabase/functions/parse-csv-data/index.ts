@@ -216,14 +216,11 @@ const findHeaderRow = (rows: string[][]): { headerIndex: number; headers: string
 
 const getFxRate = async (): Promise<number> => {
   try {
-    const response = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=AUD');
+    // frankfurter.dev (ECB, free, no key); exchangerate.host now requires an API key.
+    const response = await fetch('https://api.frankfurter.dev/v1/latest?base=USD&symbols=AUD');
     const data = await response.json();
-
-    if (data.success && data.rates?.AUD) {
-      return data.rates.AUD;
-    } else {
-      throw new Error('Invalid response');
-    }
+    if (data?.rates?.AUD) return data.rates.AUD;
+    throw new Error('Invalid response');
   } catch (error) {
     console.warn('Failed to fetch FX rate, using fallback:', error);
     return 1.44; // Fallback rate
