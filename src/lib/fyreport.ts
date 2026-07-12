@@ -207,6 +207,7 @@ export interface FYMonthPoint {
   key: string;       // "2025-07"
   label: string;     // "Jul 25"
   sales: number;
+  b2cSales: number;  // B2C = Shopify net sales (to compare against Meta spend)
   metaSpend: number;
   roas: number | null;
   priorSales: number | null;
@@ -449,6 +450,7 @@ export function computeFYMetrics(data: FYSnapshotData): FYMetrics {
       key: m.key,
       label: m.label,
       sales,
+      b2cSales: net,
       metaSpend: spend,
       roas: spend > 0 ? net / spend : null,
       priorSales: priorSalesByMonth.has(m.key) ? priorSalesByMonth.get(m.key)! : null,
