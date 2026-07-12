@@ -216,14 +216,11 @@ const findHeaderRow = (rows: string[][]): { headerIndex: number; headers: string
 
 const getFxRate = async (): Promise<number> => {
   try {
-    const response = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=AUD');
+    // frankfurter.dev (ECB, free, no key); exchangerate.host now requires an API key.
+    const response = await fetch('https://api.frankfurter.dev/v1/latest?base=USD&symbols=AUD');
     const data = await response.json();
-
-    if (data.success && data.rates?.AUD) {
-      return data.rates.AUD;
-    } else {
-      throw new Error('Invalid response');
-    }
+    if (data?.rates?.AUD) return data.rates.AUD;
+    throw new Error('Invalid response');
   } catch (error) {
     console.warn('Failed to fetch FX rate, using fallback:', error);
     return 1.44; // Fallback rate
@@ -416,14 +413,13 @@ const parseShopifyData = (csvText: string, rateMap: Record<string, number>): Sho
       const shippingCountry = row[4]; // Column E - Shipping country
 
       const date = parseDate(dateStr);
-      const fxRate = getRateForDate(date, rateMap);
 
-      const netSalesUSD = cleanNumber(netSalesStr);
-      const netSales = netSalesUSD * fxRate; // Convert USD to AUD using month-specific rate
-      const taxesUSD = cleanNumber(taxesStr);
-      const taxes = taxesUSD * fxRate; // Convert USD to AUD using month-specific rate
-      const shippingUSD = cleanNumber(shippingStr);
-      const shipping = shippingUSD * fxRate; // Convert USD to AUD using month-specific rate
+      // The Shopify CSV is now regenerated from the DB in AUD (native amounts,
+      // US/other converted at market FX), so read these columns directly — no
+      // USD→AUD conversion here (that double-converted foreign sales).
+      const netSales = cleanNumber(netSalesStr);
+      const taxes = cleanNumber(taxesStr);
+      const shipping = cleanNumber(shippingStr);
 
       // Determine region based on shipping country
       let region = 'Other';

@@ -570,13 +570,13 @@ function MarketingView({ m }: { m: FYMetrics }) {
       </div>
 
       <SectionCard
-        title="Monthly Meta Spend & ROAS"
+        title="Monthly Meta Spend, B2C Sales & ROAS"
         onExport={() =>
           downloadCSV(m.months, `fy2025-26-monthly-marketing.csv`, [
             { header: 'Month', key: 'label' },
             { header: 'Meta Spend (AUD)', key: 'metaSpend', formatter: (v) => v.toFixed(2) },
+            { header: 'B2C Sales (AUD)', key: 'b2cSales', formatter: (v) => v.toFixed(2) },
             { header: 'Blended ROAS', key: 'roas', formatter: (v) => (v == null ? '' : v.toFixed(2)) },
-            { header: 'Sales (AUD)', key: 'sales', formatter: (v) => v.toFixed(2) },
           ])
         }
       >
@@ -586,12 +586,15 @@ function MarketingView({ m }: { m: FYMetrics }) {
             <XAxis dataKey="label" tick={{ fontSize: 11 }} />
             <YAxis yAxisId="spend" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
             <YAxis yAxisId="roas" orientation="right" tick={{ fontSize: 11 }} />
+            {/* B2C sales on its own hidden axis so it overlays without dwarfing the spend bars */}
+            <YAxis yAxisId="b2c" orientation="right" hide domain={[0, (max: number) => max * 1.15]} />
             <Tooltip
               formatter={(v: number, name: string) => (name === 'Blended ROAS' ? v.toFixed(2) : fmtAUD(v))}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar yAxisId="spend" dataKey="metaSpend" name="Meta Spend" fill="#16a34a" radius={[3, 3, 0, 0]} />
-            <Line yAxisId="roas" dataKey="roas" name="Blended ROAS" stroke="#2563eb" strokeWidth={2} dot={{ r: 2 }} connectNulls />
+            <Bar yAxisId="spend" dataKey="metaSpend" name="Meta Spend" fill="#16a34a" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+            <Line yAxisId="b2c" dataKey="b2cSales" name="B2C Sales" stroke="#f59e0b" strokeWidth={2} dot={{ r: 2 }} isAnimationActive={false} />
+            <Line yAxisId="roas" dataKey="roas" name="Blended ROAS" stroke="#2563eb" strokeWidth={2} dot={{ r: 2 }} connectNulls isAnimationActive={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </SectionCard>

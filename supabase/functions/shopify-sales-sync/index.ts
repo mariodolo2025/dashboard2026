@@ -73,7 +73,12 @@ Deno.serve(async (req: Request) => {
     store = store.replace(/^https?:\/\//, '').split('/')[0];
     const token = creds.access_token as string;
 
-    // ── updated_at cursor (incremental) ───────────────────────────────────
+    // ── Mode: incremental by updated_at, or a historical backfill chunk by created_at ──
+    // backfill { from, to } re-pulls a created_at window (e.g. one month) with native
+    // amounts so the whole history is on the same market basis — the dashboard then
+    // shows native AUD with no USD round-trip. It does NOT advance the watermark.
+    const backfill: { from: string; to: string } | null =
+      body?.backfill?.from && body?.backfill?.to ? { from: body.backfill.from, to: body.backfill.to } : null;
     const { data: st } = await supabase.from('shopify_sales_sync_state').select('*').eq('id', 1).maybeSingle();
     let updatedSince: string = body.updatedSince ?? st?.last_updated_at ?? `${LIVE_BOUNDARY}T00:00:00Z`;
 
@@ -90,8 +95,13 @@ Deno.serve(async (req: Request) => {
 
     // ── Pull orders by updated_at ─────────────────────────────────────────
     const base = `https://${store}/admin/api/2024-01/orders.json`;
-    let nextUrl: string | null =
-      `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'updated_at asc', updated_at_min: updatedSince })}`;
+    // Backfill: widen the UTC window ±1 day so shop-local month-boundary orders
+    // (whose UTC instant falls in the adjacent day) are fetched; the shop-local
+    // `day` filter below still keeps only [from, to].
+    const dShift = (iso: string, days: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86400e3).toISOString().slice(0, 10);
+    let nextUrl: string | null = backfill
+      ? `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'created_at asc', created_at_min: `${dShift(backfill.from, -1)}T00:00:00Z`, created_at_max: `${dShift(backfill.to, 1)}T23:59:59Z` })}`
+      : `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'updated_at asc', updated_at_min: updatedSince })}`;
 
     const rows: any[] = [];
     const orderIds = new Set<string>();
@@ -109,7 +119,9 @@ Deno.serve(async (req: Request) => {
         const upd = String(o.updated_at || '');
         if (upd > maxUpdated) maxUpdated = upd;
         const day = String(o.created_at || '').slice(0, 10);
-        if (day < LIVE_BOUNDARY) { skippedFrozen++; continue; } // its history is frozen
+        if (backfill && (day < backfill.from || day > backfill.to)) continue;
+        // Incremental (updated_at) maintains ALL synced history — a refund/edit on
+        // any past order bumps its updated_at, so it's re-pulled and its row replaced.
         orderCount++;
         const oid = String(o.id);
         orderIds.add(oid);
@@ -185,12 +197,14 @@ Deno.serve(async (req: Request) => {
     }
 
     const { count: liveRows } = await supabase.from('shopify_sales_lines').select('*', { count: 'exact', head: true }).eq('source', 'api');
+    // A backfill chunk must not move the live updated_at cursor.
     await supabase.from('shopify_sales_sync_state').upsert({
-      id: 1, last_updated_at: maxUpdated, last_run_at: new Date().toISOString(),
+      id: 1, last_run_at: new Date().toISOString(),
       last_run_status: capped ? 'partial-capped' : 'ok', rows_live: liveRows ?? null,
+      ...(backfill ? {} : { last_updated_at: maxUpdated }),
     });
 
-    return json({ success: !capped, ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, cursorTo: maxUpdated });
+    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
   } catch (e) {
     // Mark the run failed so shopify-export-csv won't publish a partial CSV.
     try {
