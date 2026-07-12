@@ -1041,43 +1041,6 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
           </Button>
 
           <Button
-            onClick={() => handleSync()}
-            disabled={syncStatus === 'syncing' || poBuilderMode}
-            size="sm"
-            className="h-8 gap-1.5 text-xs font-medium relative overflow-hidden min-w-[160px]"
-          >
-            <RefreshCw
-              size={14}
-              className={syncStatus === 'syncing' ? 'animate-spin' : ''}
-            />
-            {syncStatus === 'syncing'
-              ? (syncStep || 'Syncing...')
-              : syncStatus === 'success'
-              ? 'Synced!'
-              : syncStatus === 'error'
-              ? 'Sync Failed'
-              : 'Sync with Unleashed'}
-
-            {/* Progress fill */}
-            {syncStatus === 'syncing' && syncProgress > 0 && (
-              <span
-                className="absolute bottom-0 left-0 h-0.5 bg-white/40 transition-all duration-300"
-                style={{ width: `${syncProgress}%` }}
-              />
-            )}
-
-            {/* Success flash */}
-            {syncStatus === 'success' && (
-              <motion.div
-                initial={{ opacity: 0.5 }}
-                animate={{ opacity: 0 }}
-                transition={{ duration: 1.5 }}
-                className="absolute inset-0 bg-emerald-400/20"
-              />
-            )}
-          </Button>
-
-          <Button
             variant="ghost"
             size="sm"
             className="h-8 w-8 p-0"
@@ -1181,19 +1144,10 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
           <div className="text-center space-y-1.5">
             <h3 className="text-sm font-semibold">No Data Yet</h3>
             <p className="text-xs text-muted-foreground max-w-sm">
-              Click <strong>Sync with Unleashed</strong> to pull your real inventory data from Unleashed Software. 
-              Make sure your API credentials are configured.
+              Inventory syncs automatically from Unleashed 3× a day. Use <strong>Update</strong> on the main
+              dashboard to refresh now, or check that your Unleashed API credentials are configured.
             </p>
           </div>
-          <Button
-            onClick={() => handleSync()}
-            disabled={syncStatus === 'syncing'}
-            size="sm"
-            className="gap-1.5"
-          >
-            <RefreshCw size={14} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />
-            {syncStatus === 'syncing' ? 'Syncing...' : 'Sync Now'}
-          </Button>
         </motion.div>
       ) : (
         <>
