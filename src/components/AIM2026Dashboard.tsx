@@ -6,6 +6,7 @@ import { RefreshCw, Settings, Clock, Zap, AlertTriangle, Database, ShoppingCart,
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
+import { DateRangePresets } from '@/components/DateRangePresets';
 import { KPISummaryCards } from './aim2026/KPISummaryCards';
 import { FilterBar } from './aim2026/FilterBar';
 import { InventoryTable } from './aim2026/InventoryTable';
@@ -926,19 +927,24 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-auto p-0" align="start" side="bottom">
-                    <Calendar
-                      initialFocus
-                      mode="range"
-                      defaultMonth={dateRange?.from}
-                      selected={dateRange as never}
-                      onSelect={(range) => setDateRange(range || {})}
-                      numberOfMonths={2}
-                      weekStartsOn={1}
-                    />
-                    <div className="p-2 border-t flex justify-end">
-                      <Button size="sm" onClick={() => setDatePickerOpen(false)}>
-                        Apply
-                      </Button>
+                    <div className="flex">
+                      <DateRangePresets onSelect={(r) => { setDateRange(r); setDatePickerOpen(false); }} />
+                      <div>
+                        <Calendar
+                          initialFocus
+                          mode="range"
+                          defaultMonth={dateRange?.from}
+                          selected={dateRange as never}
+                          onSelect={(range) => setDateRange(range || {})}
+                          numberOfMonths={2}
+                          weekStartsOn={1}
+                        />
+                        <div className="p-2 border-t flex justify-end">
+                          <Button size="sm" onClick={() => setDatePickerOpen(false)}>
+                            Apply
+                          </Button>
+                        </div>
+                      </div>
                     </div>
                   </PopoverContent>
                 </Popover>
@@ -1381,19 +1387,24 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                         align="start"
                         side="bottom"
                       >
-                        <Calendar
-                          initialFocus
-                          mode="range"
-                          defaultMonth={dateRange?.from}
-                          selected={dateRange as never}
-                          onSelect={(range) => setDateRange(range || {})}
-                          numberOfMonths={2}
-                          weekStartsOn={1}
-                        />
-                        <div className="p-2 border-t flex justify-end">
-                          <Button size="sm" onClick={() => setDatePickerOpen(false)}>
-                            Apply
-                          </Button>
+                        <div className="flex">
+                          <DateRangePresets onSelect={(r) => { setDateRange(r); setDatePickerOpen(false); }} />
+                          <div>
+                            <Calendar
+                              initialFocus
+                              mode="range"
+                              defaultMonth={dateRange?.from}
+                              selected={dateRange as never}
+                              onSelect={(range) => setDateRange(range || {})}
+                              numberOfMonths={2}
+                              weekStartsOn={1}
+                            />
+                            <div className="p-2 border-t flex justify-end">
+                              <Button size="sm" onClick={() => setDatePickerOpen(false)}>
+                                Apply
+                              </Button>
+                            </div>
+                          </div>
                         </div>
                       </PopoverContent>
                     </Popover>
