@@ -4,6 +4,7 @@ import { Calendar as CalendarIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
+import { DateRangePresets } from '@/components/DateRangePresets';
 import { cn } from '@/lib/utils';
 
 interface DateRange {
@@ -47,19 +48,24 @@ export default function ModalDateRangePicker({ dateRange, setDateRange, classNam
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0" align="start" side="bottom">
-        <Calendar
-          initialFocus
-          mode="range"
-          defaultMonth={dateRange?.from}
-          selected={dateRange as never}
-          onSelect={(range) => setDateRange(range || {})}
-          numberOfMonths={2}
-          weekStartsOn={1}
-        />
-        <div className="p-2 border-t flex justify-end">
-          <Button size="sm" onClick={() => setOpen(false)}>
-            Apply
-          </Button>
+        <div className="flex">
+          <DateRangePresets onSelect={(r) => { setDateRange(r); setOpen(false); }} />
+          <div>
+            <Calendar
+              initialFocus
+              mode="range"
+              defaultMonth={dateRange?.from}
+              selected={dateRange as never}
+              onSelect={(range) => setDateRange(range || {})}
+              numberOfMonths={2}
+              weekStartsOn={1}
+            />
+            <div className="p-2 border-t flex justify-end">
+              <Button size="sm" onClick={() => setOpen(false)}>
+                Apply
+              </Button>
+            </div>
+          </div>
         </div>
       </PopoverContent>
     </Popover>
