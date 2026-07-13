@@ -18,7 +18,7 @@ const CHART_POS = '#4FB98C';
 const CHART_AXIS = '#93826A';
 
 interface DateRange { from?: Date; to?: Date; }
-interface EcommerceTabProps { dateRange?: DateRange; setDateRange?: (r: DateRange) => void; fxRate?: number; }
+interface EcommerceTabProps { dateRange?: DateRange; setDateRange?: (r: DateRange) => void; fxRate?: number; mode?: 'tab' | 'report'; }
 
 type Market = 'all' | 'usa' | 'australia';
 
@@ -118,14 +118,23 @@ function TrendTip({ active, payload, label }: { active?: boolean; payload?: Arra
   );
 }
 
-export default function EcommerceTab({ dateRange, setDateRange }: EcommerceTabProps) {
+export default function EcommerceTab({ dateRange, setDateRange, mode = 'tab' }: EcommerceTabProps) {
+  const report = mode === 'report';
   const [market, setMarket] = useState<Market>('all');
   const [data, setData] = useState<Dash | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // The report is a self-contained FY snapshot, so it owns its date state instead
+  // of sharing the app-wide range that the interactive tab drives.
+  const [localRange, setLocalRange] = useState<DateRange>(currentFY());
+  const controlled = !!setDateRange && !report;
+  const applyRange = controlled ? setDateRange! : setLocalRange;
 
-  const range = useMemo<DateRange>(() => (dateRange?.from && dateRange?.to ? dateRange : currentFY()), [dateRange]);
+  const range = useMemo<DateRange>(() => {
+    if (controlled) return dateRange?.from && dateRange?.to ? dateRange : currentFY();
+    return localRange.from && localRange.to ? localRange : currentFY();
+  }, [controlled, dateRange, localRange]);
 
   const fetchData = useCallback(async () => {
     if (!range.from || !range.to) return;
@@ -157,14 +166,16 @@ export default function EcommerceTab({ dateRange, setDateRange }: EcommerceTabPr
   return (
     <TooltipProvider delayDuration={120}>
       <style>{ECOM_CSS}</style>
-      <div className="ecom">
+      <div className={cn('ecom', report && 'ecom-report')}>
         {/* Header */}
         <div className="ecom-head">
           <div>
             <div className="ecom-eyebrow">Dolo Coffee Supplies · Marketing</div>
-            <h1 className="ecom-title">E-commerce <em>Performance</em></h1>
+            <h1 className="ecom-title">E-commerce <em>{report ? 'EOFY Report' : 'Performance'}</em></h1>
           </div>
-          <span className="ecom-pill"><span className="ecom-live" />Live from DB · auto-synced 3×/day</span>
+          <span className="ecom-pill">
+            {report ? <>FY 2025–26 · {range.from && format(range.from, 'MMM yyyy')} – {range.to && format(range.to, 'MMM yyyy')}</> : <><span className="ecom-live" />Live from DB · auto-synced 3×/day</>}
+          </span>
         </div>
 
         {/* Controls */}
@@ -176,41 +187,41 @@ export default function EcommerceTab({ dateRange, setDateRange }: EcommerceTabPr
               </button>
             ))}
           </div>
-          {setDateRange && (
-            <>
-              {/* Quick presets */}
-              <div className="ecom-seg" role="group" aria-label="Quick date ranges">
-                {presetList().map((p) => {
-                  const active = !!range.from && !!range.to && toYMD(range.from) === toYMD(p.range.from!) && toYMD(range.to) === toYMD(p.range.to!);
-                  return (
-                    <button key={p.key} aria-pressed={active} onClick={() => setDateRange(p.range)}>{p.label}</button>
-                  );
-                })}
-              </div>
-              {/* Manual calendar */}
-              <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs font-medium">
-                    <CalendarIcon className="h-3.5 w-3.5" />
-                    {range.from && range.to ? `${format(range.from, 'MMM d')} – ${format(range.to, 'MMM d, yyyy')}` : 'Custom range'}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0" align="start">
-                  <div className="flex">
-                    <DateRangePresets onSelect={(r) => { setDateRange(r); setPickerOpen(false); }} />
-                    <div>
-                      <Calendar initialFocus mode="range" defaultMonth={range.from} selected={range as never}
-                        onSelect={(r) => setDateRange((r as DateRange) || {})} numberOfMonths={2} weekStartsOn={1} />
-                      <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => setPickerOpen(false)}>Apply</Button></div>
-                    </div>
+          {/* Quick presets (both tab and report) */}
+          <div className="ecom-seg" role="group" aria-label="Quick date ranges">
+            {presetList().map((p) => {
+              const active = !!range.from && !!range.to && toYMD(range.from) === toYMD(p.range.from!) && toYMD(range.to) === toYMD(p.range.to!);
+              return (
+                <button key={p.key} aria-pressed={active} onClick={() => applyRange(p.range)}>{p.label}</button>
+              );
+            })}
+          </div>
+          {/* Manual calendar — interactive tab only */}
+          {!report && (
+            <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs font-medium">
+                  <CalendarIcon className="h-3.5 w-3.5" />
+                  {range.from && range.to ? `${format(range.from, 'MMM d')} – ${format(range.to, 'MMM d, yyyy')}` : 'Custom range'}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <div className="flex">
+                  <DateRangePresets onSelect={(r) => { applyRange(r); setPickerOpen(false); }} />
+                  <div>
+                    <Calendar initialFocus mode="range" defaultMonth={range.from} selected={range as never}
+                      onSelect={(r) => applyRange((r as DateRange) || {})} numberOfMonths={2} weekStartsOn={1} />
+                    <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => setPickerOpen(false)}>Apply</Button></div>
                   </div>
-                </PopoverContent>
-              </Popover>
-            </>
+                </div>
+              </PopoverContent>
+            </Popover>
           )}
-          <Button variant="ghost" size="sm" className="h-8" onClick={fetchData} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          </Button>
+          {!report && (
+            <Button variant="ghost" size="sm" className="h-8" onClick={fetchData} disabled={loading}>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            </Button>
+          )}
           {loading && <span className="text-xs ecom-faint">updating…</span>}
         </div>
 
@@ -469,6 +480,8 @@ const ECOM_CSS = `
 .ecom{--ecom-ground:#F4EEE3;--ecom-card:#FFFFFF;--ecom-card2:#FBF6EC;--ecom-line:#E8DFCC;--ecom-hair:rgba(160,120,40,.14);--ecom-text:#241B12;--ecom-dim:#786A53;--ecom-faint:#A2937C;--ecom-crema:#B9812A;--ecom-crema2:#D19B34;--ecom-crema-soft:rgba(201,138,41,.10);--ecom-pos:#2E9E6E;--ecom-neg:#C6513A;--ecom-shadow:0 1px 2px rgba(60,40,10,.06),0 10px 34px rgba(60,40,10,.07);
   font-family:'Inter',system-ui,sans-serif;color:var(--ecom-text);background:radial-gradient(1200px 500px at 12% -10%,var(--ecom-crema-soft),transparent 60%),var(--ecom-ground);padding:clamp(14px,2vw,22px);border-radius:16px}
 .dark .ecom{--ecom-ground:#17120E;--ecom-card:#221B15;--ecom-card2:#2A2119;--ecom-line:#33291E;--ecom-hair:rgba(233,178,82,.10);--ecom-text:#F2EADF;--ecom-dim:#B7A991;--ecom-faint:#87795F;--ecom-crema:#E9B252;--ecom-crema2:#F0C877;--ecom-crema-soft:rgba(233,178,82,.13);--ecom-pos:#5BC08E;--ecom-neg:#E0725A;--ecom-shadow:0 1px 2px rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.28)}
+.ecom-report,.dark .ecom-report{--ecom-ground:#F7F2E9;--ecom-card:#FFFFFF;--ecom-card2:#FBF6EC;--ecom-line:#E8DFCC;--ecom-hair:rgba(160,120,40,.14);--ecom-text:#241B12;--ecom-dim:#786A53;--ecom-faint:#A2937C;--ecom-crema:#B9812A;--ecom-crema2:#D19B34;--ecom-crema-soft:rgba(201,138,41,.10);--ecom-pos:#2E9E6E;--ecom-neg:#C6513A;--ecom-shadow:0 1px 2px rgba(60,40,10,.05)}
+@media print{.ecom{background:#F7F2E9 !important;padding:0 !important}.ecom-card{box-shadow:none !important;border-color:#E4D9C8 !important;break-inside:avoid;page-break-inside:avoid}.ecom-info,.ecom-seg,.ecom-pill,.ecom-head .ecom-pill{display:none !important}.ecom-section-h{break-after:avoid}.ecom-charttip{display:none}}
 .ecom h1,.ecom h2{font-family:'Fraunces',Georgia,serif}
 .ecom .tnum{font-variant-numeric:tabular-nums}
 .ecom-eyebrow{font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--ecom-crema)}
