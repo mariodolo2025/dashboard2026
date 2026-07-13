@@ -118,23 +118,18 @@ function TrendTip({ active, payload, label }: { active?: boolean; payload?: Arra
   );
 }
 
-export default function EcommerceTab({ dateRange, setDateRange, mode = 'tab' }: EcommerceTabProps) {
+export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
   const report = mode === 'report';
   const [market, setMarket] = useState<Market>('all');
   const [data, setData] = useState<Dash | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  // The report is a self-contained FY snapshot, so it owns its date state instead
-  // of sharing the app-wide range that the interactive tab drives.
+  // Self-contained date state — defaults to the fiscal year (matching the report
+  // and the concept), independent of the app-wide range the other tabs share.
   const [localRange, setLocalRange] = useState<DateRange>(currentFY());
-  const controlled = !!setDateRange && !report;
-  const applyRange = controlled ? setDateRange! : setLocalRange;
-
-  const range = useMemo<DateRange>(() => {
-    if (controlled) return dateRange?.from && dateRange?.to ? dateRange : currentFY();
-    return localRange.from && localRange.to ? localRange : currentFY();
-  }, [controlled, dateRange, localRange]);
+  const applyRange = setLocalRange;
+  const range = useMemo<DateRange>(() => (localRange.from && localRange.to ? localRange : currentFY()), [localRange]);
 
   const fetchData = useCallback(async () => {
     if (!range.from || !range.to) return;
@@ -187,15 +182,17 @@ export default function EcommerceTab({ dateRange, setDateRange, mode = 'tab' }: 
               </button>
             ))}
           </div>
-          {/* Quick presets (both tab and report) */}
-          <div className="ecom-seg" role="group" aria-label="Quick date ranges">
-            {presetList().map((p) => {
-              const active = !!range.from && !!range.to && toYMD(range.from) === toYMD(p.range.from!) && toYMD(range.to) === toYMD(p.range.to!);
-              return (
-                <button key={p.key} aria-pressed={active} onClick={() => applyRange(p.range)}>{p.label}</button>
-              );
-            })}
-          </div>
+          {/* Quick presets — interactive tab only; the report is a fixed FY snapshot */}
+          {!report && (
+            <div className="ecom-seg" role="group" aria-label="Quick date ranges">
+              {presetList().map((p) => {
+                const active = !!range.from && !!range.to && toYMD(range.from) === toYMD(p.range.from!) && toYMD(range.to) === toYMD(p.range.to!);
+                return (
+                  <button key={p.key} aria-pressed={active} onClick={() => applyRange(p.range)}>{p.label}</button>
+                );
+              })}
+            </div>
+          )}
           {/* Manual calendar — interactive tab only */}
           {!report && (
             <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
