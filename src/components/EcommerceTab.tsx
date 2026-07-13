@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
-import { format } from 'date-fns';
+import { format, subMonths, subDays, startOfMonth, endOfMonth } from 'date-fns';
 import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
 import {
   ResponsiveContainer, ComposedChart, Area, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
@@ -71,6 +71,15 @@ function currentFY(): DateRange {
   const now = new Date();
   const y = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
   return { from: new Date(y, 6, 1), to: now };
+}
+function presetList(): Array<{ key: string; label: string; range: DateRange }> {
+  const now = new Date();
+  return [
+    { key: 'fy', label: 'This FY', range: currentFY() },
+    { key: '3m', label: 'Last 3 mo', range: { from: subMonths(now, 3), to: now } },
+    { key: '30d', label: 'Last 30 days', range: { from: subDays(now, 29), to: now } },
+    { key: '1m', label: 'Last month', range: { from: startOfMonth(subMonths(now, 1)), to: endOfMonth(subMonths(now, 1)) } },
+  ];
 }
 
 // ── small building blocks ──
@@ -168,24 +177,36 @@ export default function EcommerceTab({ dateRange, setDateRange }: EcommerceTabPr
             ))}
           </div>
           {setDateRange && (
-            <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
-              <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs font-medium">
-                  <CalendarIcon className="h-3.5 w-3.5" />
-                  {range.from && range.to ? `${format(range.from, 'MMM d, yyyy')} – ${format(range.to, 'MMM d, yyyy')}` : 'Date range'}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0" align="start">
-                <div className="flex">
-                  <DateRangePresets onSelect={(r) => { setDateRange(r); setPickerOpen(false); }} />
-                  <div>
-                    <Calendar initialFocus mode="range" defaultMonth={range.from} selected={range as never}
-                      onSelect={(r) => setDateRange((r as DateRange) || {})} numberOfMonths={2} weekStartsOn={1} />
-                    <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => setPickerOpen(false)}>Apply</Button></div>
+            <>
+              {/* Quick presets */}
+              <div className="ecom-seg" role="group" aria-label="Quick date ranges">
+                {presetList().map((p) => {
+                  const active = !!range.from && !!range.to && toYMD(range.from) === toYMD(p.range.from!) && toYMD(range.to) === toYMD(p.range.to!);
+                  return (
+                    <button key={p.key} aria-pressed={active} onClick={() => setDateRange(p.range)}>{p.label}</button>
+                  );
+                })}
+              </div>
+              {/* Manual calendar */}
+              <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs font-medium">
+                    <CalendarIcon className="h-3.5 w-3.5" />
+                    {range.from && range.to ? `${format(range.from, 'MMM d')} – ${format(range.to, 'MMM d, yyyy')}` : 'Custom range'}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <div className="flex">
+                    <DateRangePresets onSelect={(r) => { setDateRange(r); setPickerOpen(false); }} />
+                    <div>
+                      <Calendar initialFocus mode="range" defaultMonth={range.from} selected={range as never}
+                        onSelect={(r) => setDateRange((r as DateRange) || {})} numberOfMonths={2} weekStartsOn={1} />
+                      <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => setPickerOpen(false)}>Apply</Button></div>
+                    </div>
                   </div>
-                </div>
-              </PopoverContent>
-            </Popover>
+                </PopoverContent>
+              </Popover>
+            </>
           )}
           <Button variant="ghost" size="sm" className="h-8" onClick={fetchData} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
