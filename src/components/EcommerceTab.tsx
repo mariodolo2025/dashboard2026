@@ -67,10 +67,25 @@ const money = (v: number | null | undefined) => {
 };
 const int = (v: number | null | undefined) => (Number(v) || 0).toLocaleString('en-US');
 const toYMD = (d: Date) => format(d, 'yyyy-MM-dd');
+// Dolo fiscal year runs Jul 1 – Jun 30. The whole app currently reports on FY25-26
+// (the reports are hardcoded to it). In the FIRST month of a new FY the calendar has
+// ticked over but that FY has almost no data, so we anchor to the FY that just
+// completed — e.g. on 13 Jul 2026 the reporting FY is still FY25-26 (from Jul 2025).
+function reportingFYStartYear(now: Date): number {
+  const m = now.getMonth(); // 0-11, Jul = 6
+  let sy = m >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  if (m === 6) sy -= 1; // first month of a new FY → keep the completed one
+  return sy;
+}
+// FY-to-date (used by the tab default + "This FY" preset).
 function currentFY(): DateRange {
   const now = new Date();
-  const y = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
-  return { from: new Date(y, 6, 1), to: now };
+  return { from: new Date(reportingFYStartYear(now), 6, 1), to: now };
+}
+// The EOFY report is the completed fiscal year the app publishes (FY25-26),
+// hardcoded to match the FY label in ReportsOverlay. Update both on rollover.
+function frozenFY(): DateRange {
+  return { from: new Date(2025, 6, 1), to: new Date(2026, 5, 30) };
 }
 function presetList(): Array<{ key: string; label: string; range: DateRange }> {
   const now = new Date();
@@ -127,7 +142,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   // Self-contained date state — defaults to the fiscal year (matching the report
   // and the concept), independent of the app-wide range the other tabs share.
-  const [localRange, setLocalRange] = useState<DateRange>(currentFY());
+  const [localRange, setLocalRange] = useState<DateRange>(() => (mode === 'report' ? frozenFY() : currentFY()));
   const applyRange = setLocalRange;
   const range = useMemo<DateRange>(() => (localRange.from && localRange.to ? localRange : currentFY()), [localRange]);
 
@@ -199,7 +214,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs font-medium">
                   <CalendarIcon className="h-3.5 w-3.5" />
-                  {range.from && range.to ? `${format(range.from, 'MMM d')} – ${format(range.to, 'MMM d, yyyy')}` : 'Custom range'}
+                  {range.from && range.to ? `${format(range.from, 'MMM d, yyyy')} – ${format(range.to, 'MMM d, yyyy')}` : 'Custom range'}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0" align="start">
