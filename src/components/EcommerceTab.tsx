@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 
 // ── design tokens (coffee "espresso terminal": cream/gold in light, espresso in dark) ──
 const CHART_GOLD = '#E9B252';
-const CHART_POS = '#4FB98C';
+const CHART_MER = '#3B82F6'; // MER line — blue reads strongly over the gold area (light) and espresso (dark)
 const CHART_AXIS = '#93826A';
 
 interface DateRange { from?: Date; to?: Date; }
@@ -128,7 +128,7 @@ function TrendTip({ active, payload, label }: { active?: boolean; payload?: Arra
       <div className="tt">{label}</div>
       <div className="tr"><span>Net revenue</span><b>{money(d.revenue)}</b></div>
       <div className="tr"><span>Ad spend</span><b>{money(d.spend)}</b></div>
-      <div className="tr"><span>MER</span><b style={{ color: CHART_POS }}>{d.mer != null ? `${d.mer.toFixed(2)}×` : '–'}</b></div>
+      <div className="tr"><span>MER</span><b style={{ color: CHART_MER }}>{d.mer != null ? `${d.mer.toFixed(2)}×` : '–'}</b></div>
     </div>
   );
 }
@@ -299,7 +299,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
               <div className="ecom-legend">
                 <span><i style={{ background: CHART_GOLD }} />Net revenue</span>
                 <span><i style={{ background: CHART_AXIS }} />Ad spend</span>
-                <span><i style={{ background: CHART_POS }} />MER (right)</span>
+                <span><i style={{ background: CHART_MER }} />MER (right)</span>
               </div>
               <ResponsiveContainer width="100%" height={280}>
                 <ComposedChart data={trend} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -312,11 +312,11 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(147,130,106,.22)" />
                   <XAxis dataKey="label" tick={{ fontSize: 11, fill: CHART_AXIS }} tickLine={false} axisLine={false} />
                   <YAxis yAxisId="l" tick={{ fontSize: 10, fill: CHART_AXIS }} tickLine={false} axisLine={false} tickFormatter={(v) => `$${Math.round(v / 1000)}k`} width={46} />
-                  <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10, fill: CHART_AXIS }} tickLine={false} axisLine={false} width={30} />
+                  <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10, fill: CHART_MER }} tickLine={false} axisLine={false} width={36} tickFormatter={(v) => `${v}×`} domain={[0, (max: number) => Math.ceil(max * 1.15)]} />
                   <RTooltip content={<TrendTip />} cursor={{ stroke: CHART_GOLD, strokeOpacity: 0.4 }} />
-                  <Bar yAxisId="l" dataKey="spend" fill={CHART_AXIS} fillOpacity={0.5} radius={[3, 3, 0, 0]} maxBarSize={34} isAnimationActive={false} />
+                  <Bar yAxisId="l" dataKey="spend" fill={CHART_AXIS} fillOpacity={0.45} radius={[3, 3, 0, 0]} maxBarSize={34} isAnimationActive={false} />
                   <Area yAxisId="l" dataKey="revenue" stroke={CHART_GOLD} strokeWidth={2.5} fill="url(#ecomRev)" isAnimationActive={false} />
-                  <Line yAxisId="r" dataKey="mer" stroke={CHART_POS} strokeWidth={2} dot={{ r: 2 }} isAnimationActive={false} connectNulls />
+                  <Line yAxisId="r" dataKey="mer" stroke={CHART_MER} strokeWidth={2.75} dot={{ r: 2.5, fill: CHART_MER }} isAnimationActive={false} connectNulls />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
