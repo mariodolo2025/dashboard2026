@@ -21,6 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Slider } from '@/components/ui/slider';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
+import { DateRangePresets } from '@/components/DateRangePresets';
 import { Textarea } from '@/components/ui/textarea';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
@@ -863,19 +864,24 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
               onPointerDownOutside={(e) => e.preventDefault()}
               onInteractOutside={(e) => e.preventDefault()}
             >
-              <Calendar
-                initialFocus
-                mode="range"
-                defaultMonth={dateRange?.from}
-                selected={dateRange as any}
-                onSelect={(range) => {
-                  setDateRange(range || {});
-                  if (range && range.from && range.to) {
-                    setIsCalendarOpen(false);
-                  }
-                }}
-                numberOfMonths={2}
-              />
+              <div className="flex">
+                <DateRangePresets onSelect={(r) => { setDateRange(r); setIsCalendarOpen(false); }} />
+                <div>
+                  <Calendar
+                    initialFocus
+                    mode="range"
+                    defaultMonth={dateRange?.from}
+                    selected={dateRange as any}
+                    onSelect={(range) => {
+                      setDateRange(range || {});
+                      if (range && range.from && range.to) {
+                        setIsCalendarOpen(false);
+                      }
+                    }}
+                    numberOfMonths={2}
+                  />
+                </div>
+              </div>
             </PopoverContent>
           </Popover>
 

@@ -31,6 +31,7 @@ import { fetchDashboardData, recalcKPIsForDateRange } from '@/lib/aim2026/api';
 import type { SKURow } from '@/lib/aim2026/types';
 import { TrendIndicator } from '@/components/aim2026/TrendIndicator';
 import ModalDateRangePicker from '@/components/ModalDateRangePicker';
+import { DateRangePresets } from '@/components/DateRangePresets';
 
 // Utility function to validate dates
 const isValidDate = (date: any): date is Date => {
@@ -2028,19 +2029,24 @@ function App() {
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0" align="end" side="bottom">
-                <Calendar
-                  initialFocus
-                  mode="range"
-                  defaultMonth={dateRange?.from}
-                  selected={dateRange as any}
-                  onSelect={(range) => setDateRange(range || {})}
-                  numberOfMonths={2}
-                  weekStartsOn={1}
-                />
-                <div className="p-2 border-t flex justify-end">
-                  <Button size="sm" onClick={() => setIsCalendarOpen(false)}>
-                    Apply
-                  </Button>
+                <div className="flex">
+                  <DateRangePresets onSelect={(r) => { setDateRange(r); setIsCalendarOpen(false); }} />
+                  <div>
+                    <Calendar
+                      initialFocus
+                      mode="range"
+                      defaultMonth={dateRange?.from}
+                      selected={dateRange as any}
+                      onSelect={(range) => setDateRange(range || {})}
+                      numberOfMonths={2}
+                      weekStartsOn={1}
+                    />
+                    <div className="p-2 border-t flex justify-end">
+                      <Button size="sm" onClick={() => setIsCalendarOpen(false)}>
+                        Apply
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </PopoverContent>
             </Popover>

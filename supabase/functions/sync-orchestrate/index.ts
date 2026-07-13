@@ -44,6 +44,11 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   // "Total sales by product variant" CSV the dashboard reads (frozen history + live).
   { name: 'Shopify sales', fn: 'shopify-sales-sync', body: {} },
   { name: 'Shopify CSV', fn: 'shopify-export-csv', body: { dest: 'MARIO Total sales by product variant.csv' } },
+  // Meta ads: pull daily spend + purchase conversion value into meta_ads_daily
+  // (trailing 30d re-pull for attribution revisions), then regenerate the
+  // "2-Mario-for-Danshboard.csv" the dashboard reads (native currency per row).
+  { name: 'Meta ads', fn: 'meta-ads-sync', body: {} },
+  { name: 'Meta CSV', fn: 'meta-export-csv', body: {} },
   // Rebuild the dashboard's pre-parsed snapshot so the main load serves it
   // instead of re-parsing ~23 MB of CSVs (which intermittently hit the edge
   // resource limit / HTTP 546). endDate defaults to now inside parse-csv-data.
