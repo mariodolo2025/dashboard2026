@@ -2708,7 +2708,12 @@ function App() {
                     {pesadoCriticalStock.map((r) => (
                       <TableRow key={r.sku}>
                         <TableCell className="font-medium">{r.sku}</TableCell>
-                        <TableCell className="text-right">{r.sohMainWH + r.sohChina}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {r.sohMainWH}
+                          {r.sohChina > 0 && (
+                            <span className="ml-1 text-[10px] text-muted-foreground">+{r.sohChina} CN</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right">{r.projectedDemand.toFixed(1)}</TableCell>
                         <TableCell className="text-right">
                           <TrendIndicator direction={r.demandTrend} percent={r.demandTrendPercent} showPercent />
