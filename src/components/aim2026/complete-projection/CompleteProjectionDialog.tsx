@@ -41,7 +41,7 @@ interface CompleteProjectionDialogProps {
   onPORemove?: (sku: string, poType: POType) => void;
   onPOUpdateQty?: (sku: string, poType: POType, qty: number) => void;
   onPOClear?: () => void;
-  onCreatePO?: () => Promise<void>;
+  onCreatePO?: (productionAsDHL: boolean) => Promise<void>;
   poCreating?: boolean;
 }
 

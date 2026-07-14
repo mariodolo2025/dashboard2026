@@ -773,7 +773,10 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [tableMaximized]);
 
-  const handleCreatePO = useCallback(async () => {
+  // productionAsDHL: at confirm the user can send the non-container (Production)
+  // bucket as a DHL express order instead — warehouse MAIN + status 'DHL-Inbounds'
+  // + a 7-day delivery, matching how the Unleashed sync reads DHL POs.
+  const handleCreatePO = useCallback(async (productionAsDHL: boolean = false) => {
     if (poItems.length === 0) return;
     setPOCreating(true);
     try {
@@ -805,10 +808,11 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
         containerDeliveryISO = toISO(eta);
       }
 
+      const DHL_LEAD_DAYS = 7;
       const productionLineDates = new Map<string, string>(); // sku → ISO
       for (const it of productionItems) {
-        const row = skuData.find((r) => r.sku === it.sku);
-        const lt = row?.leadTimeDays ?? 45;
+        // DHL express: fixed 7-day ETA. Production: per-SKU lead time.
+        const lt = productionAsDHL ? DHL_LEAD_DAYS : (skuData.find((r) => r.sku === it.sku)?.leadTimeDays ?? 45);
         const eta = new Date(today.getTime() + lt * DAY_MS);
         productionLineDates.set(it.sku, toISO(eta));
       }
@@ -828,7 +832,9 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
         headerDeliveryDate: containerDeliveryISO, perLine: false,
       });
       if (productionItems.length > 0) buckets.push({
-        status: 'Production', warehouseCode: 'China', items: productionItems,
+        status: productionAsDHL ? 'DHL-Inbounds' : 'Production',
+        warehouseCode: productionAsDHL ? 'MAIN' : 'China',
+        items: productionItems,
         headerDeliveryDate: productionHeaderISO, perLine: true,
       });
 
