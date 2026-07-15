@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2, GripVertical, Container as ContainerIcon, Factory, PanelRightOpen, Pin, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, Trash2, ShoppingCart, Loader2, CheckCircle2, AlertTriangle, Package, Maximize2, Minimize2, GripVertical, Container as ContainerIcon, Factory, Plane, PanelRightOpen, Pin, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { POBuilderItem, POType } from '@/lib/aim2026/types';
 
@@ -14,8 +14,10 @@ interface POBuilderPanelProps {
   onUpdateQty: (sku: string, poType: POType, qty: number) => void;
   onClear: () => void;
   /** Auto-split por poType: si hay items en ambos buckets crea 2 POs (Container
-   *  → MAIN, Production → China-W); si hay uno solo crea 1 PO. */
-  onCreatePO: () => Promise<void>;
+   *  → MAIN, Production → China-W); si hay uno solo crea 1 PO. El flag
+   *  productionAsDHL manda el bucket Production como DHL express (MAIN,
+   *  'DHL-Inbounds', +7d) en vez de Production (China-W). */
+  onCreatePO: (productionAsDHL: boolean) => Promise<void>;
   creating: boolean;
   /** Si true, render inline (no portal, no fixed) — el padre lo ubica como
    *  columna anclada a la derecha del modal. Si false (default), flotante
@@ -49,6 +51,7 @@ export function POBuilderPanel({
   onExpandFromRail,
 }: POBuilderPanelProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [prodAsDHL, setProdAsDHL] = useState(false); // send the Production bucket as DHL express
   const [minimized, setMinimized] = useState(false);
   const [pos, setPos] = useState(getDefaultPos);
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
@@ -245,15 +248,26 @@ export function POBuilderPanel({
                       </div>
                     )}
                     {productionItems.length > 0 && (
-                      <div className="mt-1 rounded bg-orange-50/80 dark:bg-orange-950/40 px-2 py-1 border border-orange-200/60 dark:border-orange-800/40">
+                      <div className={`mt-1 rounded px-2 py-1 border ${prodAsDHL ? 'bg-sky-50/80 dark:bg-sky-950/40 border-sky-200/60 dark:border-sky-800/40' : 'bg-orange-50/80 dark:bg-orange-950/40 border-orange-200/60 dark:border-orange-800/40'}`}>
                         <div className="flex items-center justify-between gap-2">
-                          <span className="inline-flex items-center gap-1 text-orange-700 dark:text-orange-300 font-semibold">
-                            <Factory size={10} /> Production → China-W
+                          <span className={`inline-flex items-center gap-1 font-semibold ${prodAsDHL ? 'text-sky-700 dark:text-sky-300' : 'text-orange-700 dark:text-orange-300'}`}>
+                            {prodAsDHL ? <><Plane size={10} /> DHL → MAIN</> : <><Factory size={10} /> Production → China-W</>}
                           </span>
                           <span className="tabular-nums">{productionItems.length} items · {fmt(productionUnits)} u</span>
                         </div>
-                        <div className="mt-0.5 text-[9px] text-orange-700/80 dark:text-orange-300/80">
-                          DeliveryDate per line: <strong>today + leadTime</strong> per SKU
+                        <div className={`mt-0.5 text-[9px] ${prodAsDHL ? 'text-sky-700/80 dark:text-sky-300/80' : 'text-orange-700/80 dark:text-orange-300/80'}`}>
+                          {prodAsDHL
+                            ? <>DeliveryDate: <strong>today + 7d</strong> express · status DHL-Inbounds</>
+                            : <>DeliveryDate per line: <strong>today + leadTime</strong> per SKU</>}
+                        </div>
+                        {/* Choose how this bucket ships */}
+                        <div className="mt-1.5 inline-flex overflow-hidden rounded-md border border-border/60 text-[9px] font-semibold">
+                          <button type="button" onClick={() => setProdAsDHL(false)} className={`px-2 py-0.5 transition-colors ${!prodAsDHL ? 'bg-orange-500 text-white' : 'bg-transparent text-muted-foreground hover:bg-muted'}`}>
+                            Production
+                          </button>
+                          <button type="button" onClick={() => setProdAsDHL(true)} className={`px-2 py-0.5 transition-colors ${prodAsDHL ? 'bg-sky-600 text-white' : 'bg-transparent text-muted-foreground hover:bg-muted'}`}>
+                            DHL
+                          </button>
                         </div>
                       </div>
                     )}
@@ -274,7 +288,7 @@ export function POBuilderPanel({
                   size="sm"
                   className="flex-1 h-8 text-xs gap-1"
                   onClick={async () => {
-                    await onCreatePO();
+                    await onCreatePO(prodAsDHL);
                     setConfirmOpen(false);
                   }}
                   disabled={creating}
