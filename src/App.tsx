@@ -27,6 +27,7 @@ import { AIM2026Overlay } from '@/components/AIM2026Overlay';
 import { ReportsOverlay } from '@/components/ReportsOverlay';
 import { ConnectionsPanel } from '@/components/ConnectionsPanel';
 import EcommerceTab from '@/components/EcommerceTab';
+import WebUpgradeTab from '@/components/WebUpgradeTab';
 import { fetchDashboardData, recalcKPIsForDateRange } from '@/lib/aim2026/api';
 import type { SKURow } from '@/lib/aim2026/types';
 import { TrendIndicator } from '@/components/aim2026/TrendIndicator';
@@ -138,7 +139,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
   // Modal for each nav pill - pills open modals instead of inline content
-  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | 'fy-report' | null>(null);
+  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | 'web-upgrade' | 'fy-report' | null>(null);
   
   // Configurable financial parameters
   const [shippingCostPercent, setShippingCostPercent] = useState<number>(0.157);
@@ -1995,6 +1996,17 @@ function App() {
                 size="sm"
                 className={cn(
                   "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'web-upgrade' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'web-upgrade' ? null : 'web-upgrade')}
+              >
+                Web Upgrade
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
                   activeModal === 'fy-report' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
                 )}
                 onClick={() => setActiveModal(activeModal === 'fy-report' ? null : 'fy-report')}
@@ -3434,6 +3446,19 @@ function App() {
             </DialogHeader>
             <div className="mt-4">
               <EcommerceTab dateRange={dateRange} setDateRange={setDateRange} fxRate={fxRate} />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Web Upgrade performance modal */}
+        <Dialog open={activeModal === 'web-upgrade'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Web Upgrade performance</DialogTitle>
+              <DialogDescription>On-site upgrade modules — funnel &amp; attributed sales</DialogDescription>
+            </DialogHeader>
+            <div className="mt-4">
+              <WebUpgradeTab dateRange={dateRange} setDateRange={setDateRange} />
             </div>
           </DialogContent>
         </Dialog>
