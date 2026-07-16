@@ -21,9 +21,9 @@ interface Dash {
 
 const HELP: Record<string, string> = {
   exposed: 'Distinct anonymous sessions (attribution_id) that fired at least one upgrade-module event in the period.',
-  directRevenue: 'AUD revenue of order lines that were added by an upgrade module (line carries _pesado_source). Populates as real orders come in.',
+  directRevenue: 'AUD revenue of order lines that were added by an upgrade module (line carries _pesado_source). Comes from Shopify orders via the sync — refreshed 3×/day (or on the main Update button), not instantly.',
   directOrders: 'Distinct orders that contain at least one upgrade-added line (direct attribution).',
-  assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes.',
+  assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed with the Shopify sync (3×/day or on Update).',
   module: 'Per module: sessions exposed, views → clicks → confirmed adds, click-through rate (clicks ÷ views) and add rate (adds ÷ sessions).',
   rewards: 'How many times each reward tier was unlocked (free shipping / 10% / 15%).',
   source: 'Direct sales grouped by the module that added the line (_pesado_source).',
@@ -177,7 +177,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             </div>
 
             <div className="wu-foot">
-              Live from <b>upgrade_events</b> (pixel) + <b>upgrade_order_attribution</b> (Shopify sync). <b>Direct</b> attribution works now; <b>assisted</b> lands once the theme's <b>__pesado_*</b> cart attributes reach the orders. <b>Preview</b> = test traffic.
+              <b>Data cadence:</b> the funnel (sessions, views, clicks, adds, rewards) updates in <b>real time</b> — the pixel sends each event instantly, so a refresh shows it. <b>Sales</b> (direct &amp; assisted) come from Shopify orders via the sync, refreshed <b>3×/day</b> (06:00 / 13:00 / 20:00 Brisbane) or on the main <b>Update</b> button — reaching checkout is not an order, only a completed purchase counts.<br />
+              <b>Preview</b> = test traffic · <b>Production</b> = live customers. Assisted attribution lands once the theme's <b>__pesado_*</b> cart attributes reach the orders.
             </div>
           </>
         )}
