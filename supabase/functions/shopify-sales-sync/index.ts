@@ -105,6 +105,18 @@ Deno.serve(async (req: Request) => {
 
     const rows: any[] = [];
     const orderIds = new Set<string>();
+    // Web Upgrade performance: order-side attribution, captured additively without
+    // touching the sales pipeline. Shopify returns properties/note_attributes as
+    // arrays of {name, value}.
+    const upgradeRows: any[] = [];
+    // Robust to both the Admin API array form [{name,value}] and a plain object;
+    // never throws, so it can't affect the sales pipeline.
+    const propsToObj = (v: any): Record<string, any> => {
+      const m: Record<string, any> = {};
+      if (Array.isArray(v)) { for (const p of v) if (p && p.name != null) m[p.name] = p.value; }
+      else if (v && typeof v === 'object') { for (const k of Object.keys(v)) m[k] = v[k]; }
+      return m;
+    };
     let orderCount = 0, pages = 0, skippedFrozen = 0, maxUpdated = updatedSince, capped = false;
 
     while (nextUrl) {
@@ -129,6 +141,31 @@ Deno.serve(async (req: Request) => {
         const month = day.slice(0, 7);
         const country = norm2(o.shipping_address?.country_code ?? o.billing_address?.country_code ?? 'NA');
         const conv = (pres: number, shop: number) => toUsd(cur, month, pres, shop);
+
+        // ── Upgrade attribution — read-only extraction of _pesado_* line props +
+        //    __pesado_* order note_attributes. Direct = a line carries _pesado_source.
+        //    Wrapped so a malformed order can never break the sales sync. ──
+        try {
+        const na = propsToObj(o.note_attributes);
+        for (const li of (o.line_items || [])) {
+          const pp = propsToObj(li.properties);
+          if (!pp['_pesado_source']) continue;
+          upgradeRows.push({
+            order_id: oid, order_date: day, sku: li.sku || '(no sku)', quantity: li.quantity || 0,
+            pesado_source: pp['_pesado_source'] ?? null,
+            pesado_attribution_id: pp['_pesado_attribution_id'] ?? null,
+            pesado_machine: pp['_pesado_machine'] ?? null,
+            pesado_reason: pp['_pesado_recommendation_reason'] ?? null,
+            pesado_rank: pp['_pesado_recommendation_rank'] != null ? String(pp['_pesado_recommendation_rank']) : null,
+            pesado_target_tier: pp['_pesado_target_tier'] || null,
+            pesado_gap_before: pp['_pesado_gap_before'] || null,
+            pesado_parent_product: pp['_pesado_parent_product'] || null,
+            pesado_environment: pp['_pesado_environment'] ?? null,
+            order_attribution_id: na['__pesado_attribution_id'] ?? null,
+            order_environment: na['__pesado_environment'] ?? null,
+          });
+        }
+        } catch (_) { /* skip this order's attribution; never affect sales */ }
 
         // aggregate this order's lines by sku
         type A = { product: string; variant: string; qty: number; gross: number; disc: number; returns: number; native: number; orderUsd: number };
@@ -196,6 +233,20 @@ Deno.serve(async (req: Request) => {
       if (error) throw new Error(`insert: ${error.message}`);
     }
 
+    // ── Upgrade attribution write — isolated + best-effort: an error here must NEVER
+    //    fail the sales sync or hold back the watermark. ──
+    let upgradeErr: string | null = null;
+    try {
+      for (let i = 0; i < ids.length; i += 200) {
+        const { error } = await supabase.from('upgrade_order_attribution').delete().in('order_id', ids.slice(i, i + 200));
+        if (error) throw new Error(error.message);
+      }
+      for (let i = 0; i < upgradeRows.length; i += 500) {
+        const { error } = await supabase.from('upgrade_order_attribution').insert(upgradeRows.slice(i, i + 500));
+        if (error) throw new Error(error.message);
+      }
+    } catch (e) { upgradeErr = e instanceof Error ? e.message : 'failed'; }
+
     const { count: liveRows } = await supabase.from('shopify_sales_lines').select('*', { count: 'exact', head: true }).eq('source', 'api');
     // A backfill chunk must not move the live updated_at cursor.
     await supabase.from('shopify_sales_sync_state').upsert({
@@ -204,7 +255,7 @@ Deno.serve(async (req: Request) => {
       ...(backfill ? {} : { last_updated_at: maxUpdated }),
     });
 
-    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
+    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, upgradeAttributed: upgradeRows.length, upgradeErr, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
   } catch (e) {
     // Mark the run failed so shopify-export-csv won't publish a partial CSV.
     try {
