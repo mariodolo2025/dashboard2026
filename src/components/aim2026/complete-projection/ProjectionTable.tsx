@@ -69,7 +69,9 @@ export function ProjectionTable({
   expandedConsumed, setExpandedConsumed, demandUnit, onToggleDemandUnit, poMode, coverageDays, addedSkus,
   onAddToCart, sort, onSort, showAllSkus, onToggleShowAllSkus,
 }: ProjectionTableProps) {
-  const colCount = 8 + (expandedSoh ? 3 : 0) + (poMode ? 1 : 0);
+  // Always exactly one suggestion column: "To order (Nd)" when browsing, or the
+  // interactive "Container Load / To Produce" when in PO mode.
+  const colCount = 9 + (expandedSoh ? 3 : 0);
   // Inline custom-qty editor: when the user clicks "+ add" on a SKU with no
   // suggested qty, the cell turns into a numeric input focused immediately.
   // editingType marca el bucket destino — Container por click normal/Alt,
@@ -253,6 +255,17 @@ export function ProjectionTable({
                   <span className="inline-flex flex-col items-end leading-tight">
                     <span>{poMode === 'container' ? 'Container Load' : 'To Produce'}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-[#7c3aed]">click to add</span>
+                  </span>
+                </th>
+              )}
+              {!poMode && (
+                <th
+                  title={`To order — units to order so that after the PO arrives at Main you still cover the selected ${coverageDays}d stock coverage target. Formula: max(0, effectiveDailyDemand × ${coverageDays}d − mainAtProductionArrival). Changes with the coverage-target selector.`}
+                  className={cn('px-2.5 py-2.5 text-right text-sm font-semibold uppercase tracking-wide text-[#4c1d95]', violetCell)}
+                >
+                  <span className="inline-flex flex-col items-end leading-tight">
+                    <span>To order</span>
+                    <span className="text-[10px] font-medium normal-case tracking-normal text-[#7c3aed]">{coverageDays}d target</span>
                   </span>
                 </th>
               )}
@@ -484,6 +497,19 @@ export function ProjectionTable({
                               <span className="text-[10px] font-medium normal-case text-[#828a98]">custom qty</span>
                             </span>
                           )}
+                        </td>
+                      );
+                    })()}
+                    {!poMode && (() => {
+                      // "To order (Nd)" — the production suggestion for the selected
+                      // coverage target, so the selector visibly drives a column.
+                      const toOrder = Math.max(0, r.productionQty);
+                      return (
+                        <td
+                          title={toOrder > 0 ? `Order ${num(toOrder)} u to cover ${coverageDays}d of demand.` : `Covered for ${coverageDays}d — nothing to order.`}
+                          className={cn('px-2.5 py-2 text-right text-base font-semibold', mono, violetCell, toOrder > 0 ? 'text-[#4c1d95]' : 'text-[#a3a3a3]')}
+                        >
+                          {toOrder > 0 ? num(toOrder) : '—'}
                         </td>
                       );
                     })()}
