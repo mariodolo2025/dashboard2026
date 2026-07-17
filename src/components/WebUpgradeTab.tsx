@@ -16,6 +16,8 @@ interface Dash {
   modules: Array<{ module: string; sessions: number; views: number; clicks: number; adds: number; ctr: number | null; addRate: number | null }>;
   rewards: Array<{ name: string; unlocks: number; sessions: number }>;
   bySource: Array<{ source: string; lines: number; revenue: number }>;
+  byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number }>;
+  byFamily: Array<{ family: string; lines: number; revenue: number }>;
   trend: Array<{ d: string; events: number; sessions: number }>;
 }
 
@@ -27,6 +29,8 @@ const HELP: Record<string, string> = {
   module: 'Per module: sessions exposed, views → clicks → confirmed adds, click-through rate (clicks ÷ views) and add rate (adds ÷ sessions).',
   rewards: 'How many times each reward tier was unlocked (free shipping / 10% / 15%).',
   source: 'Direct sales grouped by the module that added the line (_pesado_source).',
+  machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
+  family: "Direct sales grouped by the purchased product's family (Shower Screens, Filter Baskets, Portafilters…), derived from the SKU with the same mapping as the E-commerce tab.",
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
 };
 
@@ -169,6 +173,36 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       <div key={s.source} className="wu-row">
                         <span className="wu-mono">{s.source}</span>
                         <b className="tnum">{money(s.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(s.lines)}</span></b>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Direct sales — machine + family split */}
+            <div className="wu-two">
+              <div className="wu-card">
+                <div className="wu-klabel">Sales by machine <Info k="machine" /></div>
+                {data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+                  <div style={{ marginTop: 10 }}>
+                    {data!.byMachine.map((m) => (
+                      <div key={m.machine} className="wu-row">
+                        <span>{m.machine}</span>
+                        <b className="tnum">{money(m.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(m.orders)} ord</span></b>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="wu-card">
+                <div className="wu-klabel">Sales by product family <Info k="family" /></div>
+                {data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+                  <div style={{ marginTop: 10 }}>
+                    {data!.byFamily.map((f) => (
+                      <div key={f.family} className="wu-row">
+                        <span>{f.family}</span>
+                        <b className="tnum">{money(f.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(f.lines)}</span></b>
                       </div>
                     ))}
                   </div>
