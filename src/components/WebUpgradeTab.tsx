@@ -35,7 +35,7 @@ const HELP: Record<string, string> = {
   source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
   impact: 'Orders that used an upgrade module vs every other order in the window, compared on the full basket. This is an observed difference between two groups of shoppers, not a controlled test — people who engage with an upgrade module may simply be buying more anyway.',
   machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
-  compat: 'The compatibility guide, end to end: landed on the page → picked their machine → clicked add → add confirmed. The middle step is the one that tells you whether the guide is actually being used.',
+  compat: 'Activity on the standalone Compatibility Guide page (/pages/compatibility-guide) — where a shopper browses by machine brand → model to find compatible parts. This is that page\'s funnel, end to end: landed on the page → picked their machine → clicked add → add confirmed. It stays empty until someone uses that page (adds made on a normal product page show up under the other sections, not here).',
   brand: 'Which machine brand visitors picked in the guide. A brand with many picks but few adds means the guide finds their machine but the offer does not land.',
   screen: 'Only products a customer added THROUGH an upgrade module (machine finder or a recommendation). A product added with the normal Add-to-cart button is the base product, not a module add, so it will not appear here. Shows module clicks/adds plus sales now vs the frozen pre-launch run rate — the delta is a before/after observation (ad spend and seasonality move it too), not proof the modules caused it.',
   family: "Direct sales grouped by the purchased product's family (Shower Screens, Filter Baskets, Portafilters…), derived from the SKU with the same mapping as the E-commerce tab.",
@@ -233,11 +233,11 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             </div>
 
             {/* Compatibility guide — full funnel + brand split */}
-            <SectionH eyebrow="Compatibility guide" title="Guide funnel" help="compat" note="landed → picked machine → clicked → added" />
+            <SectionH eyebrow="Compatibility Guide page" title="Guide page funnel" help="compat" note="stats for /pages/compatibility-guide · landed → picked machine → clicked → added" href="https://pesado585.com/pages/compatibility-guide?view=compatibility-v3" linkLabel="Open the guide page" />
             <div className="wu-two">
               <div className="wu-card">
                 {!data!.compatFunnel || data!.compatFunnel.pageViews === 0 ? (
-                  <div className="wu-muted">No compatibility-guide activity in this window.</div>
+                  <div className="wu-muted">No activity on the Compatibility Guide page in this window. This fills in when someone uses <b>/pages/compatibility-guide</b> — adds made on a normal product page count elsewhere, not here.</div>
                 ) : (
                   <div>
                     {(() => {
@@ -415,12 +415,13 @@ function Kpi({ label, help, val, sub, accent }: { label: string; help: string; v
     </div>
   );
 }
-function SectionH({ eyebrow, title, help, note }: { eyebrow: string; title: string; help: string; note: string }) {
+function SectionH({ eyebrow, title, help, note, href, linkLabel }: { eyebrow: string; title: string; help: string; note: string; href?: string; linkLabel?: string }) {
   return (
     <div className="wu-section-h">
       <div className="wu-eyebrow">{eyebrow}</div>
       <h2><HelpTitle k={help}>{title}</HelpTitle></h2>
       <span className="wu-faint" style={{ fontSize: 12.5 }}>{note}</span>
+      {href && <a className="wu-link" href={href} target="_blank" rel="noopener noreferrer">{linkLabel ?? 'Open page'} ↗</a>}
     </div>
   );
 }
@@ -455,6 +456,8 @@ const WU_CSS = `
 .wu-sub{font-size:11.5px;color:var(--wu-faint);margin-top:7px}
 .wu-section-h{display:flex;align-items:baseline;gap:12px;margin:28px 2px 14px;flex-wrap:wrap}
 .wu-section-h h2{font-size:18px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:7px}
+.wu-link{font-size:12px;font-weight:600;color:var(--wu-crema);text-decoration:none;border-bottom:1px solid transparent;transition:border-color .15s}
+.wu-link:hover{border-bottom-color:var(--wu-crema)}
 .wu-two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
 .wu-table{width:100%;border-collapse:collapse;font-size:13px}
 .wu-table th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--wu-faint);padding:0 0 10px;border-bottom:1px solid var(--wu-line)}
