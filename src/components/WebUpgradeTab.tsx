@@ -13,9 +13,13 @@ type Env = 'production' | 'preview' | 'all';
 interface Dash {
   params: { from: string; to: string; environment: string };
   totals: { exposedSessions: number; totalEvents: number; directOrders: number; directLines: number; directRevenue: number; assistedOrders: number };
-  modules: Array<{ module: string; sessions: number; views: number; clicks: number; adds: number; ctr: number | null; addRate: number | null }>;
+  modules: Array<{ module: string; sessions: number; views: number; selects: number; clicks: number; adds: number; ctr: number | null; addsPerSession: number | null }>;
+  compatFunnel: { pageViews: number; modelSelect: number; addClicks: number; addSuccess: number; sessions: number; completeKit: number } | null;
+  byBrand: Array<{ brand: string; selects: number; addClicks: number; adds: number }>;
+  byScreen: Array<{ sku: string; fitment: string | null; title: string; clicks: number; adds: number; attributedRevenue: number; unitsPerWeek: number; baselineUnitsPerWeek: number; deltaPct: number | null }>;
   rewards: Array<{ name: string; unlocks: number; sessions: number }>;
-  bySource: Array<{ source: string; lines: number; revenue: number }>;
+  orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
+  bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
   byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number }>;
   byFamily: Array<{ family: string; lines: number; revenue: number }>;
   trend: Array<{ d: string; events: number; sessions: number }>;
@@ -26,10 +30,14 @@ const HELP: Record<string, string> = {
   directRevenue: 'AUD revenue of order lines that were added by an upgrade module (line carries _pesado_source). Comes from Shopify orders via the sync — refreshed 3×/day (or on the main Update button), not instantly.',
   directOrders: 'Distinct orders that contain at least one upgrade-added line (direct attribution).',
   assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed with the Shopify sync (3×/day or on Update).',
-  module: 'Per module: sessions exposed, views → clicks → confirmed adds, click-through rate (clicks ÷ views) and add rate (adds ÷ sessions).',
+  module: 'Per module: sessions exposed, views → clicks → confirmed adds, click-through rate (clicks ÷ views) and adds per session (a session can add more than once, so this is an average, not a percentage).',
   rewards: 'How many times each reward tier was unlocked (free shipping / 10% / 15%).',
-  source: 'Direct sales grouped by the module that added the line (_pesado_source).',
+  source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
+  impact: 'Orders that used an upgrade module vs every other order in the window, compared on the full basket. This is an observed difference between two groups of shoppers, not a controlled test — people who engage with an upgrade module may simply be buying more anyway.',
   machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
+  compat: 'The compatibility guide, end to end: landed on the page → picked their machine → clicked add → add confirmed. The middle step is the one that tells you whether the guide is actually being used.',
+  brand: 'Which machine brand visitors picked in the guide. A brand with many picks but few adds means the guide finds their machine but the offer does not land.',
+  screen: 'Per product: engagement from the upgrade modules, and sales now vs the frozen pre-launch run rate (old theme). Delta is a before/after observation — ad spend, seasonality and promos move it too, so it is directional, not proof the modules caused it.',
   family: "Direct sales grouped by the purchased product's family (Shower Screens, Filter Baskets, Portafilters…), derived from the SKU with the same mapping as the E-commerce tab.",
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
 };
@@ -131,17 +139,18 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <div className="wu-card">
               {data!.modules.length === 0 ? <div className="wu-muted">No module events.</div> : (
                 <table className="wu-table">
-                  <thead><tr><th>Module</th><th className="r">Sessions</th><th className="r">Views</th><th className="r">Clicks</th><th className="r">Adds</th><th className="r">CTR</th><th className="r">Add rate</th></tr></thead>
+                  <thead><tr><th>Module</th><th className="r">Sessions</th><th className="r">Views</th><th className="r">Picks</th><th className="r">Clicks</th><th className="r">Adds</th><th className="r">CTR</th><th className="r">Adds/sess</th></tr></thead>
                   <tbody>
                     {data!.modules.map((m) => (
                       <tr key={m.module}>
                         <td className="wu-mod">{m.module}</td>
                         <td className="r tnum">{int(m.sessions)}</td>
                         <td className="r tnum wu-dim">{int(m.views)}</td>
+                        <td className="r tnum wu-dim">{int(m.selects)}</td>
                         <td className="r tnum wu-dim">{int(m.clicks)}</td>
                         <td className="r tnum">{int(m.adds)}</td>
                         <td className="r tnum">{m.ctr != null ? `${m.ctr}%` : '—'}</td>
-                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{m.addRate != null ? `${m.addRate}%` : '—'}</td>
+                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{m.addsPerSession != null ? m.addsPerSession.toFixed(2) : '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -164,20 +173,113 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   </div>
                 )}
               </div>
-              {/* Direct sales by source */}
+              {/* Basket impact */}
               <div className="wu-card">
-                <div className="wu-klabel">Direct sales by module <Info k="source" /></div>
-                {data!.bySource.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+                <div className="wu-klabel">Basket impact <Info k="impact" /></div>
+                {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
+                  <div className="wu-muted" style={{ marginTop: 10 }}>
+                    No upgrade orders yet in this window. Baseline for comparison: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders, AOV ${money(data!.orderImpact.otherAov)}, ${data!.orderImpact.otherItems} items` : '—'}.
+                  </div>
+                ) : (
                   <div style={{ marginTop: 10 }}>
-                    {data!.bySource.map((s) => (
-                      <div key={s.source} className="wu-row">
-                        <span className="wu-mono">{s.source}</span>
-                        <b className="tnum">{money(s.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(s.lines)}</span></b>
-                      </div>
-                    ))}
+                    <div className="wu-row"><span>Used an upgrade module</span><b className="tnum">{money(data!.orderImpact.upgradeAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {data!.orderImpact.upgradeItems} items · {int(data!.orderImpact.upgradeOrders)} ord</span></b></div>
+                    <div className="wu-row"><span>Every other order</span><b className="tnum">{money(data!.orderImpact.otherAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {data!.orderImpact.otherItems} items · {int(data!.orderImpact.otherOrders)} ord</span></b></div>
+                    <div className="wu-row"><span>Difference</span>
+                      <b className="tnum" style={{ color: (data!.orderImpact.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                        {data!.orderImpact.aovLiftPct == null ? '—' : `${data!.orderImpact.aovLiftPct > 0 ? '+' : ''}${data!.orderImpact.aovLiftPct}% AOV`}
+                        {data!.orderImpact.itemsLiftPct != null && <span className="wu-faint" style={{ fontWeight: 400 }}> · {data!.orderImpact.itemsLiftPct > 0 ? '+' : ''}{data!.orderImpact.itemsLiftPct}% items</span>}
+                      </b>
+                    </div>
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Compatibility guide — full funnel + brand split */}
+            <SectionH eyebrow="Compatibility guide" title="Guide funnel" help="compat" note="landed → picked machine → clicked → added" />
+            <div className="wu-two">
+              <div className="wu-card">
+                {!data!.compatFunnel || data!.compatFunnel.pageViews === 0 ? (
+                  <div className="wu-muted">No compatibility-guide activity in this window.</div>
+                ) : (
+                  <div>
+                    {(() => {
+                      const f = data!.compatFunnel!;
+                      const steps: Array<[string, number]> = [
+                        ['Landed on the guide', f.pageViews],
+                        ['Picked their machine', f.modelSelect],
+                        ['Clicked add', f.addClicks],
+                        ['Add confirmed', f.addSuccess],
+                      ];
+                      const top = Math.max(f.pageViews, 1);
+                      return steps.map(([label, n], i) => {
+                        const prev = i === 0 ? null : steps[i - 1][1];
+                        return (
+                          <div key={label} className="wu-step">
+                            <div className="wu-step-h">
+                              <span>{label}</span>
+                              <b className="tnum">{int(n)}{prev != null && prev > 0 && (
+                                <span className="wu-faint" style={{ fontWeight: 400 }}> · {Math.round((100 * n) / prev)}%</span>
+                              )}</b>
+                            </div>
+                            <div className="wu-bar"><span style={{ width: `${(100 * n) / top}%` }} /></div>
+                          </div>
+                        );
+                      });
+                    })()}
+                    <div className="wu-muted" style={{ marginTop: 10 }}>
+                      {int(data!.compatFunnel!.sessions)} sessions · {int(data!.compatFunnel!.completeKit)} complete-kit adds
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="wu-card">
+                <div className="wu-klabel">Machine brand picked <Info k="brand" /></div>
+                {data!.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand selections yet.</div> : (
+                  <table className="wu-table" style={{ marginTop: 10 }}>
+                    <thead><tr><th>Brand</th><th className="r">Picked</th><th className="r">Clicked</th><th className="r">Added</th></tr></thead>
+                    <tbody>
+                      {data!.byBrand.map((b) => (
+                        <tr key={b.brand}>
+                          <td className="wu-mod">{b.brand}</td>
+                          <td className="r tnum">{int(b.selects)}</td>
+                          <td className="r tnum wu-dim">{int(b.addClicks)}</td>
+                          <td className="r tnum" style={{ color: b.selects > 0 && b.adds === 0 ? 'var(--wu-neg)' : 'var(--wu-crema)', fontWeight: 600 }}>{int(b.adds)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+            {/* Per product: module engagement + sales vs the pre-launch baseline */}
+            <SectionH eyebrow="Products" title="By screen &amp; product" help="screen" note="engagement + sales vs pre-launch run rate" />
+            <div className="wu-card">
+              {data!.byScreen.length === 0 ? <div className="wu-muted">No product-level events yet.</div> : (
+                <table className="wu-table">
+                  <thead><tr>
+                    <th>Product</th><th>Fitment</th><th className="r">Clicks</th><th className="r">Adds</th>
+                    <th className="r">Attributed</th><th className="r">Units/wk now</th><th className="r">Pre-launch</th><th className="r">Delta</th>
+                  </tr></thead>
+                  <tbody>
+                    {data!.byScreen.map((s) => (
+                      <tr key={s.sku}>
+                        <td className="wu-mod">{s.title}<div className="wu-mono wu-faint">{s.sku}</div></td>
+                        <td className="wu-dim" style={{ fontSize: 12 }}>{s.fitment ?? '—'}</td>
+                        <td className="r tnum">{int(s.clicks)}</td>
+                        <td className="r tnum">{int(s.adds)}</td>
+                        <td className="r tnum">{s.attributedRevenue > 0 ? money(s.attributedRevenue) : '—'}</td>
+                        <td className="r tnum">{s.unitsPerWeek}</td>
+                        <td className="r tnum wu-dim">{s.baselineUnitsPerWeek || '—'}</td>
+                        <td className="r tnum" style={{ fontWeight: 600, color: s.deltaPct == null ? 'var(--wu-faint)' : s.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                          {s.deltaPct == null ? '—' : `${s.deltaPct > 0 ? '+' : ''}${s.deltaPct}%`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
 
             {/* Direct sales — machine + family split */}
@@ -208,6 +310,32 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Sales per module source, with the whole basket of those orders */}
+            <SectionH eyebrow="Sales" title="By module source" help="source" note="attributed value + full basket of those orders" />
+            <div className="wu-card">
+              {data!.bySource.length === 0 ? <div className="wu-muted">No attributed sales yet — populates as real orders come in.</div> : (
+                <table className="wu-table">
+                  <thead><tr>
+                    <th>Source</th><th className="r">Orders</th><th className="r">Lines</th><th className="r">Attributed</th>
+                    <th className="r">Added/order</th><th className="r">AOV</th><th className="r">Items/order</th>
+                  </tr></thead>
+                  <tbody>
+                    {data!.bySource.map((s) => (
+                      <tr key={s.source}>
+                        <td className="wu-mono">{s.source}</td>
+                        <td className="r tnum">{int(s.orders)}</td>
+                        <td className="r tnum wu-dim">{int(s.lines)}</td>
+                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{money(s.revenue)}</td>
+                        <td className="r tnum">{s.addedPerOrder ?? '—'}</td>
+                        <td className="r tnum">{s.aov != null ? money(s.aov) : '—'}</td>
+                        <td className="r tnum">{s.itemsPerOrder ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
 
             <div className="wu-foot">
@@ -282,6 +410,11 @@ const WU_CSS = `
 .wu-row{display:flex;justify-content:space-between;font-size:13px;padding:7px 0;border-bottom:1px solid var(--wu-line)}
 .wu-row:last-child{border-bottom:none}.wu-row b{font-family:'Fraunces',Georgia,serif;font-variant-numeric:tabular-nums}
 .wu-muted{font-size:12.5px;color:var(--wu-faint)}
+.wu-step{margin-bottom:12px}.wu-step:last-of-type{margin-bottom:0}
+.wu-step-h{display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px}
+.wu-step-h b{font-family:'Fraunces',Georgia,serif;font-variant-numeric:tabular-nums}
+.wu-bar{height:7px;border-radius:999px;background:var(--wu-crema-soft);overflow:hidden}
+.wu-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))}
 .wu-foot{margin-top:24px;padding-top:16px;border-top:1px solid var(--wu-line);font-size:12px;color:var(--wu-faint);line-height:1.7}.wu-foot b{color:var(--wu-dim);font-weight:600}
 @media (max-width:900px){.wu-kpis{grid-template-columns:repeat(2,1fr)}.wu-two{grid-template-columns:1fr}}
 `;
