@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react';
 import { format, subDays } from 'date-fns';
 import { Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,7 @@ interface Dash {
   modules: Array<{ module: string; sessions: number; views: number; selects: number; clicks: number; adds: number; ctr: number | null; addsPerSession: number | null }>;
   compatFunnel: { pageViews: number; modelSelect: number; addClicks: number; addSuccess: number; sessions: number; completeKit: number } | null;
   byBrand: Array<{ brand: string; selects: number; addClicks: number; adds: number }>;
+  byModel: Array<{ brand: string; model: string; selects: number; addClicks: number; adds: number }>;
   byScreen: Array<{ sku: string; fitment: string | null; title: string; clicks: number; adds: number; attributedRevenue: number; unitsPerWeek: number; baselineUnitsPerWeek: number; deltaPct: number | null }>;
   rewards: Array<{ name: string; unlocks: number; sessions: number }>;
   orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
@@ -36,7 +37,7 @@ const HELP: Record<string, string> = {
   impact: 'Orders that used an upgrade module vs every other order in the window, compared on the full basket. This is an observed difference between two groups of shoppers, not a controlled test — people who engage with an upgrade module may simply be buying more anyway.',
   machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
   compat: 'Activity on the standalone Compatibility Guide page (/pages/compatibility-guide) — where a shopper browses by machine brand → model to find compatible parts. This is that page\'s funnel, end to end: landed on the page → picked their machine → clicked add → add confirmed. It stays empty until someone uses that page (adds made on a normal product page show up under the other sections, not here).',
-  brand: 'Which machine brand visitors picked in the guide. A brand with many picks but few adds means the guide finds their machine but the offer does not land.',
+  brand: 'Which machine brand visitors picked in the guide, with each specific model listed underneath it. A brand (or model) with many picks but few adds means the guide finds their machine but the offer does not land.',
   screen: 'Only products a customer added THROUGH an upgrade module (machine finder or a recommendation). A product added with the normal Add-to-cart button is the base product, not a module add, so it will not appear here. Shows module clicks/adds plus sales now vs the frozen pre-launch run rate — the delta is a before/after observation (ad spend and seasonality move it too), not proof the modules caused it.',
   family: "Direct sales grouped by the purchased product's family (Shower Screens, Filter Baskets, Portafilters…), derived from the SKU with the same mapping as the E-commerce tab.",
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
@@ -282,12 +283,22 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     </tr></thead>
                     <tbody>
                       {data!.byBrand.map((b) => (
-                        <tr key={b.brand}>
-                          <td className="wu-mod">{b.brand}</td>
-                          <td className="r tnum">{int(b.selects)}</td>
-                          <td className="r tnum wu-dim">{int(b.addClicks)}</td>
-                          <td className="r tnum" style={{ color: b.selects > 0 && b.adds === 0 ? 'var(--wu-neg)' : 'var(--wu-crema)', fontWeight: 600 }}>{int(b.adds)}</td>
-                        </tr>
+                        <Fragment key={b.brand}>
+                          <tr className="wu-brand-row">
+                            <td className="wu-mod">{b.brand}</td>
+                            <td className="r tnum">{int(b.selects)}</td>
+                            <td className="r tnum wu-dim">{int(b.addClicks)}</td>
+                            <td className="r tnum" style={{ color: b.selects > 0 && b.adds === 0 ? 'var(--wu-neg)' : 'var(--wu-crema)', fontWeight: 600 }}>{int(b.adds)}</td>
+                          </tr>
+                          {data!.byModel.filter((m) => m.brand === b.brand).map((m) => (
+                            <tr key={b.brand + '·' + m.model} className="wu-model-row">
+                              <td className="wu-model-name">{m.model}</td>
+                              <td className="r tnum">{int(m.selects)}</td>
+                              <td className="r tnum wu-dim">{int(m.addClicks)}</td>
+                              <td className="r tnum" style={{ color: m.selects > 0 && m.adds === 0 ? 'var(--wu-neg)' : 'var(--wu-crema)', fontWeight: 600 }}>{int(m.adds)}</td>
+                            </tr>
+                          ))}
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>
@@ -465,6 +476,10 @@ const WU_CSS = `
 .wu-table td{padding:11px 0;border-bottom:1px solid var(--wu-line)}
 .wu-table tr:last-child td{border-bottom:none}
 .wu-mod{font-weight:600;font-family:'Fraunces',Georgia,serif}
+.wu-brand-row td{border-bottom:none;padding-bottom:4px}
+.wu-model-row td{padding:2px 0 6px;border-bottom:1px solid var(--wu-line);font-size:12.5px}
+.wu-model-name{padding-left:16px !important;color:var(--wu-dim);position:relative}
+.wu-model-name::before{content:"└";position:absolute;left:4px;color:var(--wu-faint)}
 .wu-row{display:flex;justify-content:space-between;font-size:13px;padding:7px 0;border-bottom:1px solid var(--wu-line)}
 .wu-row:last-child{border-bottom:none}.wu-row b{font-family:'Fraunces',Georgia,serif;font-variant-numeric:tabular-nums}
 .wu-muted{font-size:12.5px;color:var(--wu-faint)}
