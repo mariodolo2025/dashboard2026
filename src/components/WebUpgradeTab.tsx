@@ -18,7 +18,8 @@ interface Dash {
   byBrand: Array<{ brand: string; selects: number; addClicks: number; adds: number }>;
   byScreen: Array<{ sku: string; fitment: string | null; title: string; clicks: number; adds: number; attributedRevenue: number; unitsPerWeek: number; baselineUnitsPerWeek: number; deltaPct: number | null }>;
   rewards: Array<{ name: string; unlocks: number; sessions: number }>;
-  bySource: Array<{ source: string; lines: number; revenue: number }>;
+  orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
+  bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
   byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number }>;
   byFamily: Array<{ family: string; lines: number; revenue: number }>;
   trend: Array<{ d: string; events: number; sessions: number }>;
@@ -31,7 +32,8 @@ const HELP: Record<string, string> = {
   assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed with the Shopify sync (3×/day or on Update).',
   module: 'Per module: sessions exposed, views → clicks → confirmed adds, click-through rate (clicks ÷ views) and adds per session (a session can add more than once, so this is an average, not a percentage).',
   rewards: 'How many times each reward tier was unlocked (free shipping / 10% / 15%).',
-  source: 'Direct sales grouped by the module that added the line (_pesado_source).',
+  source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
+  impact: 'Orders that used an upgrade module vs every other order in the window, compared on the full basket. This is an observed difference between two groups of shoppers, not a controlled test — people who engage with an upgrade module may simply be buying more anyway.',
   machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
   compat: 'The compatibility guide, end to end: landed on the page → picked their machine → clicked add → add confirmed. The middle step is the one that tells you whether the guide is actually being used.',
   brand: 'Which machine brand visitors picked in the guide. A brand with many picks but few adds means the guide finds their machine but the offer does not land.',
@@ -171,17 +173,23 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   </div>
                 )}
               </div>
-              {/* Direct sales by source */}
+              {/* Basket impact */}
               <div className="wu-card">
-                <div className="wu-klabel">Direct sales by module <Info k="source" /></div>
-                {data!.bySource.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+                <div className="wu-klabel">Basket impact <Info k="impact" /></div>
+                {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
+                  <div className="wu-muted" style={{ marginTop: 10 }}>
+                    No upgrade orders yet in this window. Baseline for comparison: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders, AOV ${money(data!.orderImpact.otherAov)}, ${data!.orderImpact.otherItems} items` : '—'}.
+                  </div>
+                ) : (
                   <div style={{ marginTop: 10 }}>
-                    {data!.bySource.map((s) => (
-                      <div key={s.source} className="wu-row">
-                        <span className="wu-mono">{s.source}</span>
-                        <b className="tnum">{money(s.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(s.lines)}</span></b>
-                      </div>
-                    ))}
+                    <div className="wu-row"><span>Used an upgrade module</span><b className="tnum">{money(data!.orderImpact.upgradeAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {data!.orderImpact.upgradeItems} items · {int(data!.orderImpact.upgradeOrders)} ord</span></b></div>
+                    <div className="wu-row"><span>Every other order</span><b className="tnum">{money(data!.orderImpact.otherAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {data!.orderImpact.otherItems} items · {int(data!.orderImpact.otherOrders)} ord</span></b></div>
+                    <div className="wu-row"><span>Difference</span>
+                      <b className="tnum" style={{ color: (data!.orderImpact.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                        {data!.orderImpact.aovLiftPct == null ? '—' : `${data!.orderImpact.aovLiftPct > 0 ? '+' : ''}${data!.orderImpact.aovLiftPct}% AOV`}
+                        {data!.orderImpact.itemsLiftPct != null && <span className="wu-faint" style={{ fontWeight: 400 }}> · {data!.orderImpact.itemsLiftPct > 0 ? '+' : ''}{data!.orderImpact.itemsLiftPct}% items</span>}
+                      </b>
+                    </div>
                   </div>
                 )}
               </div>
@@ -302,6 +310,32 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Sales per module source, with the whole basket of those orders */}
+            <SectionH eyebrow="Sales" title="By module source" help="source" note="attributed value + full basket of those orders" />
+            <div className="wu-card">
+              {data!.bySource.length === 0 ? <div className="wu-muted">No attributed sales yet — populates as real orders come in.</div> : (
+                <table className="wu-table">
+                  <thead><tr>
+                    <th>Source</th><th className="r">Orders</th><th className="r">Lines</th><th className="r">Attributed</th>
+                    <th className="r">Added/order</th><th className="r">AOV</th><th className="r">Items/order</th>
+                  </tr></thead>
+                  <tbody>
+                    {data!.bySource.map((s) => (
+                      <tr key={s.source}>
+                        <td className="wu-mono">{s.source}</td>
+                        <td className="r tnum">{int(s.orders)}</td>
+                        <td className="r tnum wu-dim">{int(s.lines)}</td>
+                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{money(s.revenue)}</td>
+                        <td className="r tnum">{s.addedPerOrder ?? '—'}</td>
+                        <td className="r tnum">{s.aov != null ? money(s.aov) : '—'}</td>
+                        <td className="r tnum">{s.itemsPerOrder ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
 
             <div className="wu-foot">
