@@ -42,6 +42,16 @@ const HELP: Record<string, string> = {
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
 };
 
+// Plain-language explanation of each on-site module, keyed by the exact label the
+// RPC emits. Shown on hover of the module name in the By-module table.
+const MODULE_HELP: Record<string, string> = {
+  'Compatibility Guide': 'The dedicated Compatibility Guide page. The shopper browses by machine brand → model to find the parts that fit their machine, and can add them straight from the guide.',
+  'Machine finder (product page)': 'The "Find your machine" tool built into a product page: the shopper picks their espresso machine and it shows — and adds — the exact shower screen that fits it. Screens added here appear under "By screen & product".',
+  'Compatible Additions (product page)': 'The "Complete your setup" recommendations rendered ON the product page itself, while the shopper is still looking at the product (before opening the cart). Same look as the cart one — different place and different code, so we count them apart to see which surface actually converts.',
+  'Compatible Additions (cart)': 'The "Complete your setup" recommendations that appear INSIDE the cart / mini-cart drawer (the panel in your screenshot), as the shopper reviews the basket right before checkout.',
+  'Other': 'Events that did not match a known module (e.g. a new event name the theme started sending).',
+};
+
 const REWARD_LABEL: Record<string, string> = { free_shipping: 'Free shipping', discount_10: '10% off', discount_15: '15% off' };
 const money = (v: number | null | undefined) => { const n = Number(v) || 0; return Math.abs(n) >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : Math.abs(n) >= 1000 ? `$${Math.round(n / 1000)}K` : `$${Math.round(n)}`; };
 const int = (v: number | null | undefined) => (Number(v) || 0).toLocaleString('en-US');
@@ -56,15 +66,22 @@ function Info({ k }: { k: string }) {
   );
 }
 
-// A title/label that shows its explanation on hover of the TEXT itself (dotted
-// underline signals it), so you don't have to aim at a tiny "i".
-function HelpTitle({ k, children }: { k: string; children: ReactNode }) {
+// A hover target that shows explanatory text on the TEXT itself (dotted underline
+// signals it), so you don't have to aim at a tiny "i".
+function Tip({ content, children }: { content: string; children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild><span className="wu-help">{children}</span></TooltipTrigger>
-      <TooltipContent className="max-w-[280px] text-xs leading-relaxed">{HELP[k]}</TooltipContent>
+      <TooltipContent className="max-w-[300px] text-xs leading-relaxed">{content}</TooltipContent>
     </Tooltip>
   );
+}
+function HelpTitle({ k, children }: { k: string; children: ReactNode }) {
+  return <Tip content={HELP[k]}>{children}</Tip>;
+}
+// Hoverable table-column header: the header text itself explains the column.
+function Th({ children, tip, right }: { children: ReactNode; tip: string; right?: boolean }) {
+  return <th className={right ? 'r' : undefined}><Tip content={tip}>{children}</Tip></th>;
 }
 
 export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTabProps) {
@@ -150,11 +167,20 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <div className="wu-card">
               {data!.modules.length === 0 ? <div className="wu-muted">No module events.</div> : (
                 <table className="wu-table">
-                  <thead><tr><th>Module</th><th className="r">Sessions</th><th className="r">Views</th><th className="r">Picks</th><th className="r">Clicks</th><th className="r">Adds</th><th className="r">CTR</th><th className="r">Adds/sess</th></tr></thead>
+                  <thead><tr>
+                    <Th tip="The on-site upgrade surface. Hover the name for what it is.">Module</Th>
+                    <Th right tip="Distinct anonymous sessions that saw this module at least once.">Sessions</Th>
+                    <Th right tip="Times the module was shown on screen (its panel or nudge appeared).">Views</Th>
+                    <Th right tip="Times a shopper engaged the middle step — picked their machine, or opened a recommendation to look at it.">Picks</Th>
+                    <Th right tip="Times a shopper clicked 'add' on something the module offered.">Clicks</Th>
+                    <Th right tip="Times an add was confirmed by the cart — the item actually went in.">Adds</Th>
+                    <Th right tip="Click-through rate: clicks ÷ views.">CTR</Th>
+                    <Th right tip="Average confirmed adds per session. A session can add more than once, so this is an average, not a percentage.">Adds/sess</Th>
+                  </tr></thead>
                   <tbody>
                     {data!.modules.map((m) => (
                       <tr key={m.module}>
-                        <td className="wu-mod">{m.module}</td>
+                        <td className="wu-mod">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</td>
                         <td className="r tnum">{int(m.sessions)}</td>
                         <td className="r tnum wu-dim">{int(m.views)}</td>
                         <td className="r tnum wu-dim">{int(m.selects)}</td>
@@ -248,7 +274,12 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 <div className="wu-klabel"><HelpTitle k="brand">Machine brand picked</HelpTitle></div>
                 {data!.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand selections yet.</div> : (
                   <table className="wu-table" style={{ marginTop: 10 }}>
-                    <thead><tr><th>Brand</th><th className="r">Picked</th><th className="r">Clicked</th><th className="r">Added</th></tr></thead>
+                    <thead><tr>
+                      <Th tip="The machine brand the shopper selected in the compatibility guide.">Brand</Th>
+                      <Th right tip="Times a shopper picked a machine of this brand in the guide.">Picked</Th>
+                      <Th right tip="Times they clicked 'add' after picking this brand.">Clicked</Th>
+                      <Th right tip="Confirmed adds after picking this brand.">Added</Th>
+                    </tr></thead>
                     <tbody>
                       {data!.byBrand.map((b) => (
                         <tr key={b.brand}>
@@ -270,8 +301,14 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               {data!.byScreen.length === 0 ? <div className="wu-muted">No product-level events yet.</div> : (
                 <table className="wu-table">
                   <thead><tr>
-                    <th>Product</th><th>Fitment</th><th className="r">Clicks</th><th className="r">Adds</th>
-                    <th className="r">Attributed</th><th className="r">Units/wk now</th><th className="r">Pre-launch</th><th className="r">Delta</th>
+                    <Th tip="The product a shopper engaged with through an upgrade module.">Product</Th>
+                    <Th tip="Which machine the screen fits, read from the SKU (e.g. Gaggia, Breville 54mm). For fitments shared by many brands, the SKU can't say the machine brand — that only comes from the machine the customer picked.">Fitment</Th>
+                    <Th right tip="Module 'add' clicks for this product.">Clicks</Th>
+                    <Th right tip="Confirmed adds of this product through a module.">Adds</Th>
+                    <Th right tip="AUD revenue from real completed orders where this product's line was module-added. Test events have no order behind them, so this stays 0 in Preview.">Attributed</Th>
+                    <Th right tip="Units of this product sold per week in the selected window — from real completed orders, NOT test events. 0 in Preview.">Units/wk now</Th>
+                    <Th right tip="The frozen pre-launch weekly run-rate (old-theme baseline) for this product, for before/after comparison.">Pre-launch</Th>
+                    <Th right tip="Change of units/week vs the pre-launch run-rate. Observational — ad spend and seasonality move it too. In Preview it reads -100% because test events have no real sales behind them.">Delta</Th>
                   </tr></thead>
                   <tbody>
                     {data!.byScreen.map((s) => (
@@ -329,8 +366,13 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               {data!.bySource.length === 0 ? <div className="wu-muted">No attributed sales yet — populates as real orders come in.</div> : (
                 <table className="wu-table">
                   <thead><tr>
-                    <th>Source</th><th className="r">Orders</th><th className="r">Lines</th><th className="r">Attributed</th>
-                    <th className="r">Added/order</th><th className="r">AOV</th><th className="r">Items/order</th>
+                    <Th tip="The _pesado_source tag the theme wrote on the added line — which module put the item in the cart.">Source</Th>
+                    <Th right tip="Distinct orders that used this source.">Orders</Th>
+                    <Th right tip="Order lines this source added.">Lines</Th>
+                    <Th right tip="AUD revenue of just the lines this source added.">Attributed</Th>
+                    <Th right tip="Average items this source added per order.">Added/order</Th>
+                    <Th right tip="Average value of the WHOLE order (not just the added line) for orders that used this source.">AOV</Th>
+                    <Th right tip="Average total items in those whole orders.">Items/order</Th>
                   </tr></thead>
                   <tbody>
                     {data!.bySource.map((s) => (
