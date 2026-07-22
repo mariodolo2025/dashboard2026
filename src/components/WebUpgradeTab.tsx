@@ -31,13 +31,13 @@ const HELP: Record<string, string> = {
   directOrders: 'Distinct orders that contain at least one upgrade-added line (direct attribution).',
   assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed with the Shopify sync (3×/day or on Update).',
   module: 'Per module: sessions exposed, views → clicks → confirmed adds, click-through rate (clicks ÷ views) and adds per session (a session can add more than once, so this is an average, not a percentage).',
-  rewards: 'How many times each reward tier was unlocked (free shipping / 10% / 15%).',
+  rewards: 'Reward tiers a shopper crossed during their session (free shipping / 10% off / 15% off). A tier only appears once a cart actually reached its threshold — if the basket stayed below $200, the 10% tier will not show even though free shipping did.',
   source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
   impact: 'Orders that used an upgrade module vs every other order in the window, compared on the full basket. This is an observed difference between two groups of shoppers, not a controlled test — people who engage with an upgrade module may simply be buying more anyway.',
   machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
   compat: 'The compatibility guide, end to end: landed on the page → picked their machine → clicked add → add confirmed. The middle step is the one that tells you whether the guide is actually being used.',
   brand: 'Which machine brand visitors picked in the guide. A brand with many picks but few adds means the guide finds their machine but the offer does not land.',
-  screen: 'Per product: engagement from the upgrade modules, and sales now vs the frozen pre-launch run rate (old theme). Delta is a before/after observation — ad spend, seasonality and promos move it too, so it is directional, not proof the modules caused it.',
+  screen: 'Only products a customer added THROUGH an upgrade module (machine finder or a recommendation). A product added with the normal Add-to-cart button is the base product, not a module add, so it will not appear here. Shows module clicks/adds plus sales now vs the frozen pre-launch run rate — the delta is a before/after observation (ad spend and seasonality move it too), not proof the modules caused it.',
   family: "Direct sales grouped by the purchased product's family (Shower Screens, Filter Baskets, Portafilters…), derived from the SKU with the same mapping as the E-commerce tab.",
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
 };
@@ -51,7 +51,18 @@ function Info({ k }: { k: string }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild><span className="wu-info" tabIndex={0} aria-label="What is this?">i</span></TooltipTrigger>
-      <TooltipContent className="max-w-[260px] text-xs leading-relaxed">{HELP[k]}</TooltipContent>
+      <TooltipContent className="max-w-[280px] text-xs leading-relaxed">{HELP[k]}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+// A title/label that shows its explanation on hover of the TEXT itself (dotted
+// underline signals it), so you don't have to aim at a tiny "i".
+function HelpTitle({ k, children }: { k: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild><span className="wu-help">{children}</span></TooltipTrigger>
+      <TooltipContent className="max-w-[280px] text-xs leading-relaxed">{HELP[k]}</TooltipContent>
     </Tooltip>
   );
 }
@@ -161,7 +172,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <div className="wu-two">
               {/* Rewards */}
               <div className="wu-card">
-                <div className="wu-klabel">Reward unlocks <Info k="rewards" /></div>
+                <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
                 {data!.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.rewards.map((rw) => (
@@ -175,7 +186,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               </div>
               {/* Basket impact */}
               <div className="wu-card">
-                <div className="wu-klabel">Basket impact <Info k="impact" /></div>
+                <div className="wu-klabel"><HelpTitle k="impact">Basket impact</HelpTitle></div>
                 {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
                   <div className="wu-muted" style={{ marginTop: 10 }}>
                     No upgrade orders yet in this window. Baseline for comparison: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders, AOV ${money(data!.orderImpact.otherAov)}, ${data!.orderImpact.otherItems} items` : '—'}.
@@ -234,7 +245,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 )}
               </div>
               <div className="wu-card">
-                <div className="wu-klabel">Machine brand picked <Info k="brand" /></div>
+                <div className="wu-klabel"><HelpTitle k="brand">Machine brand picked</HelpTitle></div>
                 {data!.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand selections yet.</div> : (
                   <table className="wu-table" style={{ marginTop: 10 }}>
                     <thead><tr><th>Brand</th><th className="r">Picked</th><th className="r">Clicked</th><th className="r">Added</th></tr></thead>
@@ -285,7 +296,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             {/* Direct sales — machine + family split */}
             <div className="wu-two">
               <div className="wu-card">
-                <div className="wu-klabel">Sales by machine <Info k="machine" /></div>
+                <div className="wu-klabel"><HelpTitle k="machine">Sales by machine</HelpTitle></div>
                 {data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byMachine.map((m) => (
@@ -298,7 +309,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 )}
               </div>
               <div className="wu-card">
-                <div className="wu-klabel">Sales by product family <Info k="family" /></div>
+                <div className="wu-klabel"><HelpTitle k="family">Sales by product family</HelpTitle></div>
                 {data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byFamily.map((f) => (
@@ -356,7 +367,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 function Kpi({ label, help, val, sub, accent }: { label: string; help: string; val: string; sub: ReactNode; accent?: boolean }) {
   return (
     <div className={cn('wu-card wu-kpi', accent && 'accent')}>
-      <div className="wu-klabel">{label} <Info k={help} /></div>
+      <div className="wu-klabel"><HelpTitle k={help}>{label}</HelpTitle></div>
       <div className="wu-val">{val}</div>
       <div className="wu-sub">{sub}</div>
     </div>
@@ -366,7 +377,7 @@ function SectionH({ eyebrow, title, help, note }: { eyebrow: string; title: stri
   return (
     <div className="wu-section-h">
       <div className="wu-eyebrow">{eyebrow}</div>
-      <h2>{title} <Info k={help} /></h2>
+      <h2><HelpTitle k={help}>{title}</HelpTitle></h2>
       <span className="wu-faint" style={{ fontSize: 12.5 }}>{note}</span>
     </div>
   );
@@ -380,6 +391,8 @@ const WU_CSS = `
 .wu .tnum{font-variant-numeric:tabular-nums}.wu-faint{color:var(--wu-faint)}.wu-dim{color:var(--wu-dim)}.wu-mono{font-family:ui-monospace,monospace;font-size:12px}
 .wu-info{display:inline-grid;place-items:center;width:14px;height:14px;border-radius:50%;border:1px solid var(--wu-faint);color:var(--wu-faint);font-size:9px;font-weight:700;cursor:help;line-height:1;vertical-align:middle}
 .wu-info:hover,.wu-info:focus{border-color:var(--wu-crema);color:var(--wu-crema);outline:none}
+.wu-help{border-bottom:1px dashed var(--wu-faint);cursor:help;transition:border-color .15s,color .15s}
+.wu-help:hover,.wu-help:focus{border-bottom-color:var(--wu-crema);color:var(--wu-crema);outline:none}
 .wu-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap;margin-bottom:18px}
 .wu-eyebrow{font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--wu-crema)}
 .wu-title{font-size:clamp(24px,3vw,36px);font-weight:600;letter-spacing:-.01em;line-height:1.05;margin-top:6px}.wu-title em{font-style:italic;color:var(--wu-crema)}
