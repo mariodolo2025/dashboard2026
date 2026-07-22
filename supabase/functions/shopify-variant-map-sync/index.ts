@@ -26,6 +26,7 @@ const json = (b: unknown, s = 200) =>
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors });
   try {
+    const body = await req.json().catch(() => ({}));
     const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
     const { data: creds } = await supabase
@@ -35,6 +36,27 @@ Deno.serve(async (req: Request) => {
     if (!store.includes('.')) store += '.myshopify.com';
     store = store.replace(/^https?:\/\//, '').split('/')[0];
     const token = creds.access_token as string;
+
+    // Diagnostic: which custom app does the stored token belong to, and what can it
+    // already do? Needed because the store has several apps and only one of them is
+    // the dashboard's — editing the wrong one's scopes would do nothing.
+    if (body?.mode === 'whoami') {
+      const gql = await fetch(`https://${store}/admin/api/2024-01/graphql.json`, {
+        method: 'POST',
+        headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '{ currentAppInstallation { app { title handle } } }' }),
+      });
+      const who = await gql.json();
+      const sc = await fetch(`https://${store}/admin/oauth/access_scopes.json`, {
+        headers: { 'X-Shopify-Access-Token': token },
+      });
+      const scopes = await sc.json();
+      return json({
+        success: true, store,
+        app: who?.data?.currentAppInstallation?.app ?? null,
+        scopes: (scopes?.access_scopes ?? []).map((s: { handle: string }) => s.handle).sort(),
+      });
+    }
 
     let nextUrl: string | null =
       `https://${store}/admin/api/2024-01/products.json?limit=250&fields=id,title,variants`;
