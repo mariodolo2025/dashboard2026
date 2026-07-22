@@ -43,6 +43,13 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   // Shopify sales: pull from the API into shopify_sales_lines, then regenerate the
   // "Total sales by product variant" CSV the dashboard reads (frozen history + live).
   { name: 'Shopify sales', fn: 'shopify-sales-sync', body: {} },
+  // variant_id -> sku bridge for the Web Upgrade tab. The pixel identifies products
+  // by variant_id, every sales table keys on sku. Built from order line items (which
+  // carry both) rather than the catalogue, because the app's token has read_orders
+  // but not read_products. A 7-day window covers a missed run or two and stays well
+  // inside the step budget; upsert-only, so re-running is free and never deletes a
+  // mapping that historical events still reference.
+  { name: 'Shopify variant map', fn: 'shopify-variant-map-sync', body: { days: 7 } },
   { name: 'Shopify CSV', fn: 'shopify-export-csv', body: { dest: 'MARIO Total sales by product variant.csv' } },
   // Meta ads: pull daily spend + purchase conversion value into meta_ads_daily
   // (trailing 30d re-pull for attribution revisions), then regenerate the

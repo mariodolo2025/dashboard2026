@@ -107,7 +107,8 @@ Deno.serve(async (req: Request) => {
         if (error) return json({ success: false, message: `upsert: ${error.message}`, written: written2 }, 500);
         written2 += chunk.length;
       }
-      return json({ success: true, source: 'orders', days, pages, orders, variants: rows2.length, written: written2 });
+      // `rows` is what sync-orchestrate logs into sync_runs.steps.
+      return json({ success: true, source: 'orders', days, pages, orders, variants: rows2.length, written: written2, rows: written2 });
     }
 
     let nextUrl: string | null =
