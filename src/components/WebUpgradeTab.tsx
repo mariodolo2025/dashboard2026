@@ -42,6 +42,16 @@ const HELP: Record<string, string> = {
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
 };
 
+// Plain-language explanation of each on-site module, keyed by the exact label the
+// RPC emits. Shown on hover of the module name in the By-module table.
+const MODULE_HELP: Record<string, string> = {
+  'Compatibility Guide': 'The dedicated Compatibility Guide page. The shopper browses by machine brand → model to find the parts that fit their machine, and can add them straight from the guide.',
+  'Machine finder (product page)': 'The "Find your machine" tool built into a product page: the shopper picks their espresso machine and it shows — and adds — the exact shower screen that fits it. Screens added here appear under "By screen & product".',
+  'Compatible Additions (product page)': 'The "Complete your setup" recommendations shown on the product page itself — accessories that pair with the product the shopper is currently viewing.',
+  'Compatible Additions (cart)': 'The same "Complete your setup" recommendations, but shown inside the cart / mini-cart drawer while the shopper reviews their basket — a last nudge before checkout.',
+  'Other': 'Events that did not match a known module (e.g. a new event name the theme started sending).',
+};
+
 const REWARD_LABEL: Record<string, string> = { free_shipping: 'Free shipping', discount_10: '10% off', discount_15: '15% off' };
 const money = (v: number | null | undefined) => { const n = Number(v) || 0; return Math.abs(n) >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : Math.abs(n) >= 1000 ? `$${Math.round(n / 1000)}K` : `$${Math.round(n)}`; };
 const int = (v: number | null | undefined) => (Number(v) || 0).toLocaleString('en-US');
@@ -56,15 +66,18 @@ function Info({ k }: { k: string }) {
   );
 }
 
-// A title/label that shows its explanation on hover of the TEXT itself (dotted
-// underline signals it), so you don't have to aim at a tiny "i".
-function HelpTitle({ k, children }: { k: string; children: ReactNode }) {
+// A hover target that shows explanatory text on the TEXT itself (dotted underline
+// signals it), so you don't have to aim at a tiny "i".
+function Tip({ content, children }: { content: string; children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild><span className="wu-help">{children}</span></TooltipTrigger>
-      <TooltipContent className="max-w-[280px] text-xs leading-relaxed">{HELP[k]}</TooltipContent>
+      <TooltipContent className="max-w-[300px] text-xs leading-relaxed">{content}</TooltipContent>
     </Tooltip>
   );
+}
+function HelpTitle({ k, children }: { k: string; children: ReactNode }) {
+  return <Tip content={HELP[k]}>{children}</Tip>;
 }
 
 export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTabProps) {
@@ -154,7 +167,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   <tbody>
                     {data!.modules.map((m) => (
                       <tr key={m.module}>
-                        <td className="wu-mod">{m.module}</td>
+                        <td className="wu-mod">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</td>
                         <td className="r tnum">{int(m.sessions)}</td>
                         <td className="r tnum wu-dim">{int(m.views)}</td>
                         <td className="r tnum wu-dim">{int(m.selects)}</td>
