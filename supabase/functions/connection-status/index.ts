@@ -38,6 +38,7 @@ interface ConnectionDef {
     lastSync?: unknown;
     tokenUpdatedAt?: string | null;
     runs?: unknown;
+    fastCron?: { active: boolean; everyMinutes: number } | null;
   }>;
 }
 
@@ -108,15 +109,20 @@ const CONNECTIONS: ConnectionDef[] = [
   {
     id: 'shopify-sales',
     name: 'Shopify sales',
-    cronJobName: null, // driven by the master auto-refresh, not its own cron
+    cronJobName: null, // the full-chain step is driven by master; it also has its own fast cron (below)
     readStatus: async (supabase) => {
       const { data: creds } = await supabase.from('api_credentials').select('store_url').eq('provider', 'shopify').maybeSingle();
       const { data: st } = await supabase.from('shopify_sales_sync_state').select('*').eq('id', 1).maybeSingle();
+      // The dedicated 15-min cron (shopify-sales-fast) that keeps Web Upgrade
+      // attribution near-live. Surface its on/off state so it isn't invisible.
+      const { data: fast } = await supabase.rpc('connection_cron_get', { p_jobname: 'shopify-sales-fast' });
+      const fastRow = Array.isArray(fast) ? fast[0] : fast;
       return {
         connected: !!creds?.store_url,
         detail: st?.rows_live != null ? `${st.rows_live} live rows since Jul 2026` : (creds?.store_url ?? 'Sales API'),
         tokenUpdatedAt: null,
         lastSync: st?.last_run_at ? { at: st.last_run_at, ok: st.last_run_status === 'ok' } : null,
+        fastCron: fastRow ? { active: !!fastRow.active, everyMinutes: 15 } : null,
       };
     },
   },

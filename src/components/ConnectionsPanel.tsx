@@ -54,6 +54,7 @@ interface ConnectionInfo {
   tokenUpdatedAt?: string | null;
   lastSync?: { at: string; ok: boolean; step?: string; error?: string } | null;
   cron: ConnectionCron | null;
+  fastCron?: { active: boolean; everyMinutes: number } | null;
 }
 
 /** Which function to invoke for "Sync now" / "Refresh all now", per connection id. */
@@ -289,12 +290,14 @@ export function ConnectionsPanel() {
         )}
 
         {/* Runs log */}
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Recent updates</p>
           {(c.runs ?? []).length === 0 && <p className="text-xs text-muted-foreground">No runs yet.</p>}
-          {(c.runs ?? []).map((r) => (
-            <RunRow key={r.id} run={r} />
-          ))}
+          <div className="max-h-64 space-y-0.5 overflow-y-auto pr-0.5">
+            {(c.runs ?? []).map((r) => (
+              <RunRow key={r.id} run={r} />
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -343,6 +346,16 @@ export function ConnectionsPanel() {
           {c.tokenUpdatedAt && <span className="ml-2">· token refreshed {fmtDateTime(c.tokenUpdatedAt)}</span>}
         </div>
 
+        {c.fastCron && (
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className={cn('h-2 w-2 rounded-full', c.fastCron.active ? 'bg-emerald-500' : 'bg-amber-500')} />
+            <span className="text-muted-foreground">
+              Fast refresh: every {c.fastCron.everyMinutes} min <span className="text-muted-foreground/70">— keeps Web Upgrade attribution near-live</span>
+              {!c.fastCron.active && <span className="ml-1 text-amber-600">(paused)</span>}
+            </span>
+          </div>
+        )}
+
         {c.cron && (
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="text-muted-foreground">Auto-sync:</span>
@@ -390,48 +403,54 @@ export function ConnectionsPanel() {
   }
 }
 
-/** One run in the log: overall status + a pill per step with its result. */
+/** One run in the log: a tidy aligned row — status, when, a dot per step (hover
+ *  for detail), the count done, and any failed step named in red. */
 function RunRow({ run }: { run: RunLog }) {
   const overall = run.status;
   const badge =
-    overall === 'done' ? { cls: 'bg-emerald-50 text-emerald-700', label: 'OK' }
-      : overall === 'error' ? { cls: 'bg-red-50 text-red-700', label: 'PARTIAL' }
-        : { cls: 'bg-blue-50 text-blue-700', label: 'RUNNING' };
+    overall === 'done' ? { cls: 'bg-emerald-100 text-emerald-700', label: 'OK' }
+      : overall === 'error' ? { cls: 'bg-red-100 text-red-700', label: 'PARTIAL' }
+        : { cls: 'bg-blue-100 text-blue-700', label: 'RUNNING' };
   const durationMs = run.finished_at
     ? new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()
     : null;
+  const failed = run.steps.filter((s) => s.status !== 'ok');
+  const okCount = run.steps.length - failed.length;
+  const pending = overall === 'running' ? Math.max(0, run.total_steps - run.steps.length) : 0;
+
   return (
-    <div className="rounded border p-2 text-xs space-y-1">
-      <div className="flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1.5">
-          <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-semibold', badge.cls)}>{badge.label}</span>
-          <span className="text-muted-foreground">{fmtDateTime(run.started_at)}</span>
-          {run.trigger && <span className="text-muted-foreground">· {run.trigger}</span>}
-        </span>
-        <span className="text-muted-foreground">
-          {overall === 'running' ? `${run.cursor}/${run.total_steps}` : durationMs != null ? fmtDuration(durationMs) : ''}
+    <div className="rounded-md border px-2 py-1.5 text-xs">
+      {/* Line 1: status · when · trigger — right: count + duration */}
+      <div className="flex items-center gap-1.5">
+        <span className={cn('rounded px-1 py-0.5 text-[9px] font-bold tracking-wide', badge.cls)}>{badge.label}</span>
+        <span className="text-muted-foreground">{fmtDateTime(run.started_at)}</span>
+        {run.trigger && <span className="rounded bg-muted px-1 py-px text-[9px] text-muted-foreground">{run.trigger}</span>}
+        <span className="ml-auto tabular-nums text-muted-foreground">
+          <span className={failed.length ? 'text-red-600' : 'text-emerald-600'}>{okCount}</span>
+          <span className="text-muted-foreground">/{run.total_steps}</span>
+          {overall !== 'running' && durationMs != null && <span className="ml-1.5">{fmtDuration(durationMs)}</span>}
         </span>
       </div>
-      <div className="flex flex-wrap gap-1">
+      {/* Line 2: one dot per step (hover for detail) */}
+      <div className="mt-1 flex flex-wrap items-center gap-[3px]">
         {run.steps.map((s, i) => (
           <span
             key={i}
             title={`${s.name}${s.rows != null ? ` · ${s.rows} rows` : ''} · ${fmtDuration(s.ms)}${s.message ? ` · ${s.message}` : ''}`}
-            className={cn(
-              'flex items-center gap-1 rounded px-1.5 py-0.5',
-              s.status === 'ok' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700',
-            )}
-          >
-            <span className={cn('h-1.5 w-1.5 rounded-full', s.status === 'ok' ? 'bg-emerald-500' : 'bg-red-500')} />
-            {shortStep(s.name)}
-          </span>
+            className={cn('h-2 w-2 rounded-full', s.status === 'ok' ? 'bg-emerald-500' : 'bg-red-500 ring-2 ring-red-200')}
+          />
         ))}
-        {/* Steps not run yet in a live run */}
-        {overall === 'running' &&
-          Array.from({ length: Math.max(0, run.total_steps - run.steps.length) }, (_, i) => (
-            <span key={`p${i}`} className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-400">·</span>
-          ))}
+        {Array.from({ length: pending }, (_, i) => (
+          <span key={`p${i}`} className="h-2 w-2 rounded-full bg-gray-200" />
+        ))}
       </div>
+      {/* Line 3 (only on failure): name the step(s) that broke */}
+      {failed.length > 0 && (
+        <div className="mt-1 flex items-start gap-1 text-[11px] text-red-600">
+          <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+          <span>{failed.map((s) => shortStep(s.name)).join(', ')}</span>
+        </div>
+      )}
     </div>
   );
 }
