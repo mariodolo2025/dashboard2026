@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 interface DateRange { from?: Date; to?: Date; }
 interface WebUpgradeTabProps { dateRange?: DateRange; setDateRange?: (r: DateRange) => void; }
 type Env = 'production' | 'preview' | 'all';
+type View = 'current' | 'blocks' | 'zones' | 'summary';
 
 interface Dash {
   params: { from: string; to: string; environment: string };
@@ -97,6 +98,11 @@ function Th({ children, tip, right }: { children: ReactNode; tip: string; right?
 
 export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTabProps) {
   const [env, setEnv] = useState<Env>('production');
+  // Layout view selector; persisted so the pick sticks across sessions.
+  const [view, setView] = useState<View>(() => {
+    try { return (localStorage.getItem('wu-view') as View) || 'current'; } catch { return 'current'; }
+  });
+  const pickView = (v: View) => { setView(v); try { localStorage.setItem('wu-view', v); } catch { /* ignore */ } };
   const [data, setData] = useState<Dash | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -122,170 +128,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const t = data?.totals;
   const noData = !!data && (data.totals.totalEvents === 0);
 
-  return (
-    <TooltipProvider delayDuration={120}>
-      <style>{WU_CSS}</style>
-      <div className="wu">
-        <div className="wu-head">
-          <div>
-            <div className="wu-eyebrow">Pesado · Website upgrades</div>
-            <h1 className="wu-title">Web Upgrade <em>Performance</em></h1>
-          </div>
-          <span className="wu-pill"><span className="wu-live" />Live from DB</span>
-        </div>
-
-        <div className="wu-ctx">
-          <div className="wu-seg" role="group" aria-label="Environment">
-            {(['production', 'preview', 'all'] as Env[]).map((e) => (
-              <button key={e} aria-pressed={env === e} onClick={() => setEnv(e)}>
-                {e === 'production' ? 'Production' : e === 'preview' ? 'Preview (test)' : 'All'}
-              </button>
-            ))}
-          </div>
-          <Info k="env" />
-          {setDateRange && (
-            <div className="wu-seg">
-              {[7, 30, 90].map((d) => (
-                <button key={d} onClick={() => { const now = new Date(); setDateRange({ from: subDays(now, d), to: now }); }}>Last {d}d</button>
-              ))}
-            </div>
-          )}
-          <span className="wu-range tnum">{range.from && format(range.from, 'MMM d')} – {range.to && format(range.to, 'MMM d, yyyy')}</span>
-          <Button variant="ghost" size="sm" className="h-8" onClick={fetchData} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          </Button>
-        </div>
-
-        {error && <div className="wu-err"><AlertTriangle className="h-4 w-4 shrink-0" /><span>{error}</span></div>}
-
-        {t && (
-          <>
-            <div className="wu-kpis">
-              <Kpi label="Exposed sessions" help="exposed" val={int(t.exposedSessions)} sub={`${int(t.totalEvents)} events`} accent />
-              <Kpi label="Direct revenue" help="directRevenue" val={money(t.directRevenue)} sub={`${int(t.directLines)} lines`} accent />
-              <Kpi label="Direct orders" help="directOrders" val={int(t.directOrders)} sub="with an upgrade line" />
-              <Kpi label="Assisted orders" help="assisted" val={int(t.assistedOrders)} sub="via attribution id" />
-            </div>
-
-            {noData && (
-              <div className="wu-empty">
-                No <b>{env}</b> events in this window.{env === 'production' ? ' Switch to Preview (test) to see the test session, or wait for the theme to go live.' : ''}
-              </div>
-            )}
-
-            {/* Module funnel */}
-            <SectionH eyebrow="Funnel" title="By module" help="module" note="sessions → views → clicks → adds" />
-            <div className="wu-card">
-              {data!.modules.length === 0 ? <div className="wu-muted">No module events.</div> : (
-                <table className="wu-table">
-                  <thead><tr>
-                    <Th tip="The on-site upgrade surface. Hover the name for what it is.">Module</Th>
-                    <Th right tip="Distinct anonymous sessions that saw this module at least once.">Sessions</Th>
-                    <Th right tip="Times the module was shown on screen (its panel or nudge appeared).">Views</Th>
-                    <Th right tip="Times a shopper engaged the middle step — picked their machine, or opened a recommendation to look at it.">Picks</Th>
-                    <Th right tip="Times a shopper clicked 'add' on something the module offered.">Clicks</Th>
-                    <Th right tip="Times an add was confirmed by the cart — the item actually went in.">Adds</Th>
-                    <Th right tip="Click-through rate: clicks ÷ views.">CTR</Th>
-                    <Th right tip="Average confirmed adds per session. A session can add more than once, so this is an average, not a percentage.">Adds/sess</Th>
-                    <Th right tip="THE END OF THE FUNNEL: orders actually PAID FOR that contain an item this module added. An 'add' only means it went into the cart — this column is the purchase. Comes from the Shopify sync (3×/day or the Update button), so it lags the funnel columns.">Orders</Th>
-                    <Th right tip="AUD revenue of the module-added lines inside those paid orders.">Revenue</Th>
-                  </tr></thead>
-                  <tbody>
-                    {data!.modules.map((m) => (
-                      <tr key={m.module}>
-                        <td className="wu-mod">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</td>
-                        <td className="r tnum">{int(m.sessions)}</td>
-                        <td className="r tnum wu-dim">{int(m.views)}</td>
-                        <td className="r tnum wu-dim">{int(m.selects)}</td>
-                        <td className="r tnum wu-dim">{int(m.clicks)}</td>
-                        <td className="r tnum">{int(m.adds)}</td>
-                        <td className="r tnum">{m.ctr != null ? `${m.ctr}%` : '—'}</td>
-                        <td className="r tnum">{m.addsPerSession != null ? m.addsPerSession.toFixed(2) : '—'}</td>
-                        <td className="r tnum" style={{ color: m.orders > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)', fontWeight: 700 }}>{int(m.orders)}</td>
-                        <td className="r tnum" style={{ color: m.revenue > 0 ? 'var(--wu-crema)' : 'var(--wu-faint)', fontWeight: 600 }}>{m.revenue > 0 ? money(m.revenue) : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            {/* Rewards — full width */}
-            <div className="wu-card">
-              <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
-              {data!.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
-                <div style={{ marginTop: 10 }}>
-                  {data!.rewards.map((rw) => (
-                    <div key={rw.name} className="wu-row">
-                      <span>{REWARD_LABEL[rw.name] ?? rw.name}</span>
-                      <b className="tnum">
-                        {int(rw.sessions)} <span className="wu-faint" style={{ fontWeight: 400 }}>carts</span>
-                        <span style={{ color: rw.bought > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}> → {int(rw.bought)} bought</span>
-                      </b>
-                    </div>
-                  ))}
-                  <div className="wu-muted" style={{ marginTop: 10 }}>
-                    Unlocking a tier is a <b>cart</b> milestone, not a sale — most of these carts are never paid for.
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Sales per module source — moved directly below Reward unlocks (key table) */}
-            <SectionH eyebrow="Sales" title="By module source" help="source" note="which module drove the sale · attributed value + the full basket of those orders" />
-            <div className="wu-card">
-              {data!.bySource.length === 0 ? <div className="wu-muted">No attributed sales yet — populates as real orders come in.</div> : (
-                <table className="wu-table">
-                  <thead><tr>
-                    <Th tip="The _pesado_source tag the theme wrote on the added line — which module put the item in the cart. Hover a source name for what it is.">Source</Th>
-                    <Th right tip="Distinct orders that used this source.">Orders</Th>
-                    <Th right tip="Order lines this source added.">Lines</Th>
-                    <Th right tip="AUD revenue of just the lines this source added.">Attributed</Th>
-                    <Th right tip="Average items this source added per order.">Added/order</Th>
-                    <Th right tip="Average value of the WHOLE order (not just the added line) for orders that used this source.">AOV</Th>
-                    <Th right tip="Average total items in those whole orders.">Items/order</Th>
-                  </tr></thead>
-                  <tbody>
-                    {data!.bySource.map((s) => (
-                      <tr key={s.source}>
-                        <td className="wu-mono">{SOURCE_HELP[s.source] ? <Tip content={SOURCE_HELP[s.source]}>{s.source}</Tip> : s.source}</td>
-                        <td className="r tnum">{int(s.orders)}</td>
-                        <td className="r tnum wu-dim">{int(s.lines)}</td>
-                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{money(s.revenue)}</td>
-                        <td className="r tnum">{s.addedPerOrder ?? '—'}</td>
-                        <td className="r tnum">{s.aov != null ? money(s.aov) : '—'}</td>
-                        <td className="r tnum">{s.itemsPerOrder ?? '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            {/* Basket impact — reworked to answer one plain question */}
-            <div className="wu-card" style={{ marginTop: 14 }}>
-              <div className="wu-klabel"><HelpTitle k="impact">Do upgrades grow the order?</HelpTitle></div>
-              <div className="wu-muted" style={{ marginTop: 6 }}>
-                Average order value and items — orders that used an upgrade module vs everyone else.
-              </div>
-              {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
-                <div className="wu-muted" style={{ marginTop: 10 }}>
-                  No upgrade orders yet in this window. All other orders so far: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders · AOV ${money(data!.orderImpact.otherAov)} · ${data!.orderImpact.otherItems} items` : '—'}.
-                </div>
-              ) : (
-                <div style={{ marginTop: 10 }}>
-                  <div className="wu-row"><span>Orders that used an upgrade</span><b className="tnum">{money(data!.orderImpact.upgradeAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.upgradeItems} items · {int(data!.orderImpact.upgradeOrders)} ord</span></b></div>
-                  <div className="wu-row"><span>All other orders</span><b className="tnum">{money(data!.orderImpact.otherAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.otherItems} items · {int(data!.orderImpact.otherOrders)} ord</span></b></div>
-                  <div className="wu-row"><span><b>Upgrade lift</b></span>
-                    <b className="tnum" style={{ color: (data!.orderImpact.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
-                      {data!.orderImpact.aovLiftPct == null ? '—' : `${data!.orderImpact.aovLiftPct > 0 ? '+' : ''}${data!.orderImpact.aovLiftPct}% AOV`}
-                      {data!.orderImpact.itemsLiftPct != null && <span className="wu-faint" style={{ fontWeight: 400 }}> · {data!.orderImpact.itemsLiftPct > 0 ? '+' : ''}{data!.orderImpact.itemsLiftPct}% items</span>}
-                    </b>
-                  </div>
-                </div>
-              )}
-            </div>
-
+  const secGuide = t ? (
+    <>
             {/* Compatibility guide — full funnel + brand split */}
             <SectionH eyebrow="Compatibility Guide page" title="Guide page funnel" help="compat" note="stats for /pages/compatibility-guide · landed → picked machine → clicked → added → purchased" href="https://pesado585.com/pages/compatibility-guide?view=compatibility-v3" linkLabel="Open the guide page" />
             <div className="wu-two">
@@ -360,6 +204,233 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               </div>
             </div>
 
+    </>
+  ) : null;
+
+  return (
+    <TooltipProvider delayDuration={120}>
+      <style>{WU_CSS}</style>
+      <div className="wu">
+        <div className="wu-head">
+          <div>
+            <div className="wu-eyebrow">Pesado · Website upgrades</div>
+            <h1 className="wu-title">Web Upgrade <em>Performance</em></h1>
+          </div>
+          <span className="wu-pill"><span className="wu-live" />Live from DB</span>
+        </div>
+
+        <div className="wu-ctx">
+          <div className="wu-seg" role="group" aria-label="Environment">
+            {(['production', 'preview', 'all'] as Env[]).map((e) => (
+              <button key={e} aria-pressed={env === e} onClick={() => setEnv(e)}>
+                {e === 'production' ? 'Production' : e === 'preview' ? 'Preview (test)' : 'All'}
+              </button>
+            ))}
+          </div>
+          <Info k="env" />
+          {setDateRange && (
+            <div className="wu-seg">
+              {[7, 30, 90].map((d) => (
+                <button key={d} onClick={() => { const now = new Date(); setDateRange({ from: subDays(now, d), to: now }); }}>Last {d}d</button>
+              ))}
+            </div>
+          )}
+          <select className="wu-view" value={view} onChange={(e) => pickView(e.target.value as View)} aria-label="Layout view">
+            <option value="current">View: Classic</option>
+            <option value="blocks">View: Module blocks</option>
+            <option value="zones">View: Two zones</option>
+            <option value="summary">View: Summary</option>
+          </select>
+          <span className="wu-range tnum">{range.from && format(range.from, 'MMM d')} – {range.to && format(range.to, 'MMM d, yyyy')}</span>
+          <Button variant="ghost" size="sm" className="h-8" onClick={fetchData} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          </Button>
+        </div>
+
+        {error && <div className="wu-err"><AlertTriangle className="h-4 w-4 shrink-0" /><span>{error}</span></div>}
+
+        {t && (
+          <>
+            <div className="wu-kpis">
+              <Kpi label="Exposed sessions" help="exposed" val={int(t.exposedSessions)} sub={`${int(t.totalEvents)} events`} accent />
+              <Kpi label="Direct revenue" help="directRevenue" val={money(t.directRevenue)} sub={`${int(t.directLines)} lines`} accent />
+              <Kpi label="Direct orders" help="directOrders" val={int(t.directOrders)} sub="with an upgrade line" />
+              <Kpi label="Assisted orders" help="assisted" val={int(t.assistedOrders)} sub="via attribution id" />
+            </div>
+
+            {noData && (
+              <div className="wu-empty">
+                No <b>{env}</b> events in this window.{env === 'production' ? ' Switch to Preview (test) to see the test session, or wait for the theme to go live.' : ''}
+              </div>
+            )}
+
+            {view === 'blocks' && (
+              <>
+                <SectionH eyebrow="Funnel" title="By module" help="module" note="each module in one card — funnel down to paid orders" />
+                <div className="wu-blocks">
+                  {data!.modules.map((m) => {
+                    const top = Math.max(m.views, m.clicks, m.adds, m.orders, 1);
+                    return (
+                      <div key={m.module} className="wu-card wu-block">
+                        <div className="wu-block-h">
+                          <div>
+                            <div className="wu-block-name">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</div>
+                            <div className="wu-sub">{int(m.sessions)} sessions · CTR {m.ctr != null ? `${m.ctr}%` : '—'}</div>
+                          </div>
+                          <div className="wu-block-rev">
+                            <div className="wu-block-money">{m.revenue > 0 ? money(m.revenue) : '—'}</div>
+                            <div className="wu-sub">{int(m.orders)} paid orders</div>
+                          </div>
+                        </div>
+                        <div className="wu-block-bars">
+                          {([['Views', m.views], ['Clicks', m.clicks], ['Adds', m.adds], ['Orders', m.orders]] as Array<[string, number]>).map(([lb, v], i) => (
+                            <div key={lb} className="wu-block-bar">
+                              <span>{lb}</span>
+                              <div className="wu-bar"><span style={{ width: `${(100 * v) / top}%`, ...(i === 3 ? { background: 'var(--wu-pos)' } : {}) }} /></div>
+                              <b className="tnum">{int(v)}</b>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+            {view === 'summary' && (
+              <>
+                <SectionH eyebrow="Funnel" title="By module" help="module" note="one row per module — click to expand its detail" />
+                <div className="wu-card" style={{ padding: 0 }}>
+                  {data!.modules.map((m) => <SummaryRow key={m.module} m={m} />)}
+                </div>
+              </>
+            )}
+            {view === 'zones' && <div className="wu-zone">Engagement — what visitors do</div>}
+            {(view === 'current' || view === 'zones') && (<>
+            {/* Module funnel */}
+            <SectionH eyebrow="Funnel" title="By module" help="module" note="sessions → views → clicks → adds" />
+            <div className="wu-card">
+              {data!.modules.length === 0 ? <div className="wu-muted">No module events.</div> : (
+                <table className="wu-table">
+                  <thead><tr>
+                    <Th tip="The on-site upgrade surface. Hover the name for what it is.">Module</Th>
+                    <Th right tip="Distinct anonymous sessions that saw this module at least once.">Sessions</Th>
+                    <Th right tip="Times the module was shown on screen (its panel or nudge appeared).">Views</Th>
+                    <Th right tip="Times a shopper engaged the middle step — picked their machine, or opened a recommendation to look at it.">Picks</Th>
+                    <Th right tip="Times a shopper clicked 'add' on something the module offered.">Clicks</Th>
+                    <Th right tip="Times an add was confirmed by the cart — the item actually went in.">Adds</Th>
+                    <Th right tip="Click-through rate: clicks ÷ views.">CTR</Th>
+                    <Th right tip="Average confirmed adds per session. A session can add more than once, so this is an average, not a percentage.">Adds/sess</Th>
+                    <Th right tip="THE END OF THE FUNNEL: orders actually PAID FOR that contain an item this module added. An 'add' only means it went into the cart — this column is the purchase. Comes from the Shopify sync (3×/day or the Update button), so it lags the funnel columns.">Orders</Th>
+                    <Th right tip="AUD revenue of the module-added lines inside those paid orders.">Revenue</Th>
+                  </tr></thead>
+                  <tbody>
+                    {data!.modules.map((m) => (
+                      <tr key={m.module}>
+                        <td className="wu-mod">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</td>
+                        <td className="r tnum">{int(m.sessions)}</td>
+                        <td className="r tnum wu-dim">{int(m.views)}</td>
+                        <td className="r tnum wu-dim">{int(m.selects)}</td>
+                        <td className="r tnum wu-dim">{int(m.clicks)}</td>
+                        <td className="r tnum">{int(m.adds)}</td>
+                        <td className="r tnum">{m.ctr != null ? `${m.ctr}%` : '—'}</td>
+                        <td className="r tnum">{m.addsPerSession != null ? m.addsPerSession.toFixed(2) : '—'}</td>
+                        <td className="r tnum" style={{ color: m.orders > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)', fontWeight: 700 }}>{int(m.orders)}</td>
+                        <td className="r tnum" style={{ color: m.revenue > 0 ? 'var(--wu-crema)' : 'var(--wu-faint)', fontWeight: 600 }}>{m.revenue > 0 ? money(m.revenue) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            </>)}
+            {view === 'zones' && secGuide}
+            <>
+            {/* Rewards — full width */}
+            <div className="wu-card">
+              <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
+              {data!.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
+                <div style={{ marginTop: 10 }}>
+                  {data!.rewards.map((rw) => (
+                    <div key={rw.name} className="wu-row">
+                      <span>{REWARD_LABEL[rw.name] ?? rw.name}</span>
+                      <b className="tnum">
+                        {int(rw.sessions)} <span className="wu-faint" style={{ fontWeight: 400 }}>carts</span>
+                        <span style={{ color: rw.bought > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}> → {int(rw.bought)} bought</span>
+                      </b>
+                    </div>
+                  ))}
+                  <div className="wu-muted" style={{ marginTop: 10 }}>
+                    Unlocking a tier is a <b>cart</b> milestone, not a sale — most of these carts are never paid for.
+                  </div>
+                </div>
+              )}
+            </div>
+
+            </>
+            {view === 'zones' && <div className="wu-zone">Revenue — what sold</div>}
+            {(view === 'current' || view === 'zones') && (<>
+            {/* Sales per module source — moved directly below Reward unlocks (key table) */}
+            <SectionH eyebrow="Sales" title="By module source" help="source" note="which module drove the sale · attributed value + the full basket of those orders" />
+            <div className="wu-card">
+              {data!.bySource.length === 0 ? <div className="wu-muted">No attributed sales yet — populates as real orders come in.</div> : (
+                <table className="wu-table">
+                  <thead><tr>
+                    <Th tip="The _pesado_source tag the theme wrote on the added line — which module put the item in the cart. Hover a source name for what it is.">Source</Th>
+                    <Th right tip="Distinct orders that used this source.">Orders</Th>
+                    <Th right tip="Order lines this source added.">Lines</Th>
+                    <Th right tip="AUD revenue of just the lines this source added.">Attributed</Th>
+                    <Th right tip="Average items this source added per order.">Added/order</Th>
+                    <Th right tip="Average value of the WHOLE order (not just the added line) for orders that used this source.">AOV</Th>
+                    <Th right tip="Average total items in those whole orders.">Items/order</Th>
+                  </tr></thead>
+                  <tbody>
+                    {data!.bySource.map((s) => (
+                      <tr key={s.source}>
+                        <td className="wu-mono">{SOURCE_HELP[s.source] ? <Tip content={SOURCE_HELP[s.source]}>{s.source}</Tip> : s.source}</td>
+                        <td className="r tnum">{int(s.orders)}</td>
+                        <td className="r tnum wu-dim">{int(s.lines)}</td>
+                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{money(s.revenue)}</td>
+                        <td className="r tnum">{s.addedPerOrder ?? '—'}</td>
+                        <td className="r tnum">{s.aov != null ? money(s.aov) : '—'}</td>
+                        <td className="r tnum">{s.itemsPerOrder ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            </>)}
+            <>
+            {/* Basket impact — reworked to answer one plain question */}
+            <div className="wu-card" style={{ marginTop: 14 }}>
+              <div className="wu-klabel"><HelpTitle k="impact">Do upgrades grow the order?</HelpTitle></div>
+              <div className="wu-muted" style={{ marginTop: 6 }}>
+                Average order value and items — orders that used an upgrade module vs everyone else.
+              </div>
+              {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
+                <div className="wu-muted" style={{ marginTop: 10 }}>
+                  No upgrade orders yet in this window. All other orders so far: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders · AOV ${money(data!.orderImpact.otherAov)} · ${data!.orderImpact.otherItems} items` : '—'}.
+                </div>
+              ) : (
+                <div style={{ marginTop: 10 }}>
+                  <div className="wu-row"><span>Orders that used an upgrade</span><b className="tnum">{money(data!.orderImpact.upgradeAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.upgradeItems} items · {int(data!.orderImpact.upgradeOrders)} ord</span></b></div>
+                  <div className="wu-row"><span>All other orders</span><b className="tnum">{money(data!.orderImpact.otherAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.otherItems} items · {int(data!.orderImpact.otherOrders)} ord</span></b></div>
+                  <div className="wu-row"><span><b>Upgrade lift</b></span>
+                    <b className="tnum" style={{ color: (data!.orderImpact.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                      {data!.orderImpact.aovLiftPct == null ? '—' : `${data!.orderImpact.aovLiftPct > 0 ? '+' : ''}${data!.orderImpact.aovLiftPct}% AOV`}
+                      {data!.orderImpact.itemsLiftPct != null && <span className="wu-faint" style={{ fontWeight: 400 }}> · {data!.orderImpact.itemsLiftPct > 0 ? '+' : ''}{data!.orderImpact.itemsLiftPct}% items</span>}
+                    </b>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            </>
+            {view !== 'zones' && secGuide}
+            <>
             {/* Per product: module engagement + sales vs the pre-launch baseline */}
             <SectionH eyebrow="Products" title="By screen &amp; product" help="screen" note="engagement + sales vs pre-launch run rate" />
             <div className="wu-card">
@@ -425,6 +496,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               </div>
             </div>
 
+            </>
             <div className="wu-foot">
               <b>Data cadence:</b> the funnel (sessions, views, clicks, adds, rewards) updates in <b>real time</b> — the pixel sends each event instantly, so a refresh shows it. <b>Sales</b> (direct &amp; assisted) come from Shopify orders via the sync, refreshed <b>3×/day</b> (06:00 / 13:00 / 20:00 Brisbane) or on the main <b>Update</b> button — reaching checkout is not an order, only a completed purchase counts.<br />
               <b>Preview</b> = test traffic · <b>Production</b> = live customers. Assisted attribution lands once the theme's <b>__pesado_*</b> cart attributes reach the orders.
@@ -456,6 +528,32 @@ function SectionH({ eyebrow, title, help, note, href, linkLabel }: { eyebrow: st
       <h2><HelpTitle k={help}>{title}</HelpTitle></h2>
       <span className="wu-faint" style={{ fontSize: 12.5 }}>{note}</span>
       {href && <a className="wu-link" href={href} target="_blank" rel="noopener noreferrer">{linkLabel ?? 'Open page'} ↗</a>}
+    </div>
+  );
+}
+
+function SummaryRow({ m }: { m: Dash['modules'][number] }) {
+  const [open, setOpen] = useState(false);
+  const top = Math.max(m.views, 1);
+  return (
+    <div className="wu-sumrow">
+      <button type="button" onClick={() => setOpen((o) => !o)}>
+        <span className={cn('wu-chev', open && 'open')}>›</span>
+        <span className="wu-mod">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</span>
+        <span className="wu-sum-meta tnum">{int(m.sessions)} sess · {int(m.adds)} adds · <b style={{ color: m.orders > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}>{int(m.orders)} ord · {m.revenue > 0 ? money(m.revenue) : '$0'}</b></span>
+      </button>
+      {open && (
+        <div className="wu-sum-detail">
+          {([['Views', m.views], ['Picks', m.selects], ['Clicks', m.clicks], ['Adds', m.adds], ['Orders (paid)', m.orders]] as Array<[string, number]>).map(([lb, v]) => (
+            <div key={lb} className="wu-block-bar">
+              <span>{lb}</span>
+              <div className="wu-bar"><span style={{ width: `${(100 * v) / top}%` }} /></div>
+              <b className="tnum">{int(v)}</b>
+            </div>
+          ))}
+          <div className="wu-sub" style={{ marginTop: 6 }}>CTR {m.ctr != null ? `${m.ctr}%` : '—'} · {m.addsPerSession != null ? m.addsPerSession.toFixed(2) : '—'} adds/session</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -512,5 +610,24 @@ const WU_CSS = `
 .wu-bar{height:7px;border-radius:999px;background:var(--wu-crema-soft);overflow:hidden}
 .wu-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))}
 .wu-foot{margin-top:24px;padding-top:16px;border-top:1px solid var(--wu-line);font-size:12px;color:var(--wu-faint);line-height:1.7}.wu-foot b{color:var(--wu-dim);font-weight:600}
-@media (max-width:900px){.wu-kpis{grid-template-columns:repeat(2,1fr)}.wu-two{grid-template-columns:1fr}}
+.wu-view{height:30px;border-radius:999px;border:1px solid var(--wu-line);background:var(--wu-card);color:var(--wu-dim);font-size:12px;padding:0 12px;cursor:pointer}
+.wu-view:hover{border-color:var(--wu-crema)}
+.wu-zone{margin:26px 2px 2px;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--wu-crema);border-bottom:2px solid var(--wu-crema);padding-bottom:6px}
+.wu-blocks{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.wu-block-h{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.wu-block-name{font-family:'Fraunces',Georgia,serif;font-weight:600;font-size:15px}
+.wu-block-rev{text-align:right}
+.wu-block-money{font-family:'Fraunces',Georgia,serif;font-weight:600;font-size:18px;color:var(--wu-crema)}
+.wu-block-bars{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.wu-block-bar{display:grid;grid-template-columns:76px 1fr 52px;gap:8px;align-items:center;font-size:11.5px;color:var(--wu-dim)}
+.wu-block-bar b{text-align:right}
+.wu-sumrow{border-bottom:1px solid var(--wu-line)}
+.wu-sumrow:last-child{border-bottom:none}
+.wu-sumrow>button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;padding:12px 16px;cursor:pointer;font:inherit;color:var(--wu-text);text-align:left}
+.wu-sumrow>button:hover{background:var(--wu-crema-soft)}
+.wu-chev{color:var(--wu-faint);transition:transform .15s;display:inline-block}
+.wu-chev.open{transform:rotate(90deg)}
+.wu-sum-meta{margin-left:auto;font-size:12.5px;color:var(--wu-dim)}
+.wu-sum-detail{padding:4px 16px 14px 36px}
+@media (max-width:900px){.wu-kpis{grid-template-columns:repeat(2,1fr)}.wu-two{grid-template-columns:1fr}.wu-blocks{grid-template-columns:1fr}}
 `;
