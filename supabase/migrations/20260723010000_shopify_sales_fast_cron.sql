@@ -11,10 +11,15 @@
 --
 -- Two deliberate safeguards against colliding with the full orchestrator chain,
 -- which runs shopify-sales-sync as one of its own steps:
---   1. The WHERE guard makes the call a no-op while any sync_run is 'running'.
+--   1. The WHERE guard makes the call a no-op while a sync_run is 'running'.
 --   2. Minutes 7/22/37/52 never coincide with the orchestrator kickoff (minute 0).
 -- Even without them the function replaces each order wholesale, so a double run is
 -- idempotent rather than corrupting — but not racing at all is better.
+--
+-- The guard is BOUNDED to runs younger than 40 minutes on purpose: an unbounded
+-- "is anything running?" check would let a single wedged run block the fast sync
+-- forever. 40m matches the orchestrator's own STUCK_MINUTES backstop, past which it
+-- declares a run abandoned anyway.
 --
 -- Note this refreshes the TABLES (shopify_sales_lines, upgrade_order_attribution),
 -- which is what the Web Upgrade and E-commerce RPCs read. The CSV export and the
@@ -30,6 +35,8 @@ select cron.schedule(
       'Authorization','Bearer <SUPABASE_ANON_KEY>',
       'Content-Type','application/json'),
     timeout_milliseconds:=120000)
-  where not exists (select 1 from sync_runs where status = 'running');
+  where not exists (
+    select 1 from sync_runs
+    where status = 'running' and started_at > now() - interval '40 minutes');
   $cmd$
 );
