@@ -18,7 +18,7 @@ interface Dash {
   byBrand: Array<{ brand: string; selects: number; addClicks: number; adds: number }>;
   byModel: Array<{ brand: string; model: string; selects: number; addClicks: number; adds: number }>;
   byScreen: Array<{ sku: string; fitment: string | null; title: string; clicks: number; adds: number; attributedRevenue: number; unitsPerWeek: number; baselineUnitsPerWeek: number; deltaPct: number | null }>;
-  rewards: Array<{ name: string; unlocks: number; sessions: number }>;
+  rewards: Array<{ name: string; unlocks: number; sessions: number; bought: number }>;
   orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
   bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
   byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number }>;
@@ -32,7 +32,7 @@ const HELP: Record<string, string> = {
   directOrders: 'Distinct orders that contain at least one upgrade-added line (direct attribution).',
   assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed with the Shopify sync (3×/day or on Update).',
   module: 'Each module end to end: sessions exposed → views → clicks → adds (into the cart) → ORDERS (actually paid for) and the revenue behind them. The funnel columns are real-time from the pixel; the Orders/Revenue columns come from the Shopify sync (3×/day or the Update button), so they lag behind. Adding to a cart is not a purchase — Orders is the real bottom line.',
-  rewards: 'Reward tiers a shopper crossed during their session (free shipping / 10% off / 15% off). A tier only appears once a cart actually reached its threshold — if the basket stayed below $200, the 10% tier will not show even though free shipping did.',
+  rewards: 'Reward tiers shoppers crossed IN THEIR CART, listed lowest tier first (free shipping $100 → 10% off $200 → 15% off $300). "carts" = distinct sessions whose basket reached that threshold; "bought" = how many of those sessions actually completed a purchase. Crossing a tier is intent, not a sale — expect far more unlocks than orders, because most carts are abandoned. A tier only appears once a basket actually reached it.',
   source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
   impact: 'Orders that used an upgrade module vs every other order in the window, compared on the full basket. This is an observed difference between two groups of shoppers, not a controlled test — people who engage with an upgrade module may simply be buying more anyway.',
   machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
@@ -209,9 +209,15 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     {data!.rewards.map((rw) => (
                       <div key={rw.name} className="wu-row">
                         <span>{REWARD_LABEL[rw.name] ?? rw.name}</span>
-                        <b className="tnum">{int(rw.unlocks)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(rw.sessions)} sess</span></b>
+                        <b className="tnum">
+                          {int(rw.sessions)} <span className="wu-faint" style={{ fontWeight: 400 }}>carts</span>
+                          <span style={{ color: rw.bought > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}> → {int(rw.bought)} bought</span>
+                        </b>
                       </div>
                     ))}
+                    <div className="wu-muted" style={{ marginTop: 10 }}>
+                      Unlocking a tier is a <b>cart</b> milestone, not a sale — most of these carts are never paid for.
+                    </div>
                   </div>
                 )}
               </div>
