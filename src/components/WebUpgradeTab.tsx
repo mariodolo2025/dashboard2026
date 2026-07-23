@@ -34,7 +34,7 @@ const HELP: Record<string, string> = {
   module: 'Each module end to end: sessions exposed → views → clicks → adds (into the cart) → ORDERS (actually paid for) and the revenue behind them. The funnel columns are real-time from the pixel; the Orders/Revenue columns come from the Shopify sync (3×/day or the Update button), so they lag behind. Adding to a cart is not a purchase — Orders is the real bottom line.',
   rewards: 'Reward tiers shoppers crossed IN THEIR CART, listed lowest tier first (free shipping $100 → 10% off $200 → 15% off $300). "carts" = distinct sessions whose basket reached that threshold; "bought" = how many of those sessions actually completed a purchase. Crossing a tier is intent, not a sale — expect far more unlocks than orders, because most carts are abandoned. A tier only appears once a basket actually reached it.',
   source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
-  impact: 'Orders that used an upgrade module vs every other order in the window, compared on the full basket. This is an observed difference between two groups of shoppers, not a controlled test — people who engage with an upgrade module may simply be buying more anyway.',
+  impact: 'A simple question: do people who use an upgrade module end up buying MORE per order than everyone else? It takes every paid order in the window, splits them into "used an upgrade module" vs "did not", and compares the average order value (AOV) and the average number of items. The difference is the lift. It is an observed gap between two groups of shoppers, not a controlled test — people who engage with an upgrade may already be bigger spenders.',
   machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
   compat: 'Activity on the standalone Compatibility Guide page (/pages/compatibility-guide) — where a shopper browses by machine brand → model to find compatible parts. This is that page\'s funnel, end to end: landed on the page → picked their machine → clicked add → add confirmed. It stays empty until someone uses that page (adds made on a normal product page show up under the other sections, not here).',
   brand: 'Which machine brand visitors picked in the guide, with each specific model listed underneath it. A brand (or model) with many picks but few adds means the guide finds their machine but the offer does not land.',
@@ -51,6 +51,16 @@ const MODULE_HELP: Record<string, string> = {
   'Compatible Additions (product page)': 'The "Complete your setup" recommendations rendered ON the product page itself, while the shopper is still looking at the product (before opening the cart). Same look as the cart one — different place and different code, so we count them apart to see which surface actually converts.',
   'Compatible Additions (cart)': 'The "Complete your setup" recommendations that appear INSIDE the cart / mini-cart drawer (the panel in your screenshot), as the shopper reviews the basket right before checkout.',
   'Other': 'Events that did not match a known module (e.g. a new event name the theme started sending).',
+};
+
+// Plain-language explanation of each _pesado_source tag, shown on hover of the
+// source name in the "By module source" table.
+const SOURCE_HELP: Record<string, string> = {
+  product_machine_finder: 'Added via the "Find your machine" tool on a product page — the shopper picked their machine and it added the matching screen.',
+  compatibility_guide: 'Added from the Compatibility Guide page as a single item.',
+  compatibility_complete_kit: 'Added from the Compatibility Guide as a complete kit — several items in one click.',
+  product_compatible_additions: 'Added from the "Complete your setup" recommendations shown on the product page.',
+  compatible_additions: 'Added from the "Complete your setup" recommendations inside the cart / mini-cart drawer.',
 };
 
 const REWARD_LABEL: Record<string, string> = { free_shipping: 'Free shipping', discount_10: '10% off', discount_15: '15% off' };
@@ -200,47 +210,80 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               )}
             </div>
 
-            <div className="wu-two">
-              {/* Rewards */}
-              <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
-                {data!.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
-                  <div style={{ marginTop: 10 }}>
-                    {data!.rewards.map((rw) => (
-                      <div key={rw.name} className="wu-row">
-                        <span>{REWARD_LABEL[rw.name] ?? rw.name}</span>
-                        <b className="tnum">
-                          {int(rw.sessions)} <span className="wu-faint" style={{ fontWeight: 400 }}>carts</span>
-                          <span style={{ color: rw.bought > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}> → {int(rw.bought)} bought</span>
-                        </b>
-                      </div>
-                    ))}
-                    <div className="wu-muted" style={{ marginTop: 10 }}>
-                      Unlocking a tier is a <b>cart</b> milestone, not a sale — most of these carts are never paid for.
-                    </div>
-                  </div>
-                )}
-              </div>
-              {/* Basket impact */}
-              <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="impact">Basket impact</HelpTitle></div>
-                {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
-                  <div className="wu-muted" style={{ marginTop: 10 }}>
-                    No upgrade orders yet in this window. Baseline for comparison: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders, AOV ${money(data!.orderImpact.otherAov)}, ${data!.orderImpact.otherItems} items` : '—'}.
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 10 }}>
-                    <div className="wu-row"><span>Used an upgrade module</span><b className="tnum">{money(data!.orderImpact.upgradeAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {data!.orderImpact.upgradeItems} items · {int(data!.orderImpact.upgradeOrders)} ord</span></b></div>
-                    <div className="wu-row"><span>Every other order</span><b className="tnum">{money(data!.orderImpact.otherAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {data!.orderImpact.otherItems} items · {int(data!.orderImpact.otherOrders)} ord</span></b></div>
-                    <div className="wu-row"><span>Difference</span>
-                      <b className="tnum" style={{ color: (data!.orderImpact.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
-                        {data!.orderImpact.aovLiftPct == null ? '—' : `${data!.orderImpact.aovLiftPct > 0 ? '+' : ''}${data!.orderImpact.aovLiftPct}% AOV`}
-                        {data!.orderImpact.itemsLiftPct != null && <span className="wu-faint" style={{ fontWeight: 400 }}> · {data!.orderImpact.itemsLiftPct > 0 ? '+' : ''}{data!.orderImpact.itemsLiftPct}% items</span>}
+            {/* Rewards — full width */}
+            <div className="wu-card">
+              <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
+              {data!.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
+                <div style={{ marginTop: 10 }}>
+                  {data!.rewards.map((rw) => (
+                    <div key={rw.name} className="wu-row">
+                      <span>{REWARD_LABEL[rw.name] ?? rw.name}</span>
+                      <b className="tnum">
+                        {int(rw.sessions)} <span className="wu-faint" style={{ fontWeight: 400 }}>carts</span>
+                        <span style={{ color: rw.bought > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}> → {int(rw.bought)} bought</span>
                       </b>
                     </div>
+                  ))}
+                  <div className="wu-muted" style={{ marginTop: 10 }}>
+                    Unlocking a tier is a <b>cart</b> milestone, not a sale — most of these carts are never paid for.
                   </div>
-                )}
+                </div>
+              )}
+            </div>
+
+            {/* Sales per module source — moved directly below Reward unlocks (key table) */}
+            <SectionH eyebrow="Sales" title="By module source" help="source" note="which module drove the sale · attributed value + the full basket of those orders" />
+            <div className="wu-card">
+              {data!.bySource.length === 0 ? <div className="wu-muted">No attributed sales yet — populates as real orders come in.</div> : (
+                <table className="wu-table">
+                  <thead><tr>
+                    <Th tip="The _pesado_source tag the theme wrote on the added line — which module put the item in the cart. Hover a source name for what it is.">Source</Th>
+                    <Th right tip="Distinct orders that used this source.">Orders</Th>
+                    <Th right tip="Order lines this source added.">Lines</Th>
+                    <Th right tip="AUD revenue of just the lines this source added.">Attributed</Th>
+                    <Th right tip="Average items this source added per order.">Added/order</Th>
+                    <Th right tip="Average value of the WHOLE order (not just the added line) for orders that used this source.">AOV</Th>
+                    <Th right tip="Average total items in those whole orders.">Items/order</Th>
+                  </tr></thead>
+                  <tbody>
+                    {data!.bySource.map((s) => (
+                      <tr key={s.source}>
+                        <td className="wu-mono">{SOURCE_HELP[s.source] ? <Tip content={SOURCE_HELP[s.source]}>{s.source}</Tip> : s.source}</td>
+                        <td className="r tnum">{int(s.orders)}</td>
+                        <td className="r tnum wu-dim">{int(s.lines)}</td>
+                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{money(s.revenue)}</td>
+                        <td className="r tnum">{s.addedPerOrder ?? '—'}</td>
+                        <td className="r tnum">{s.aov != null ? money(s.aov) : '—'}</td>
+                        <td className="r tnum">{s.itemsPerOrder ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Basket impact — reworked to answer one plain question */}
+            <div className="wu-card" style={{ marginTop: 14 }}>
+              <div className="wu-klabel"><HelpTitle k="impact">Do upgrades grow the order?</HelpTitle></div>
+              <div className="wu-muted" style={{ marginTop: 6 }}>
+                Average order value and items — orders that used an upgrade module vs everyone else.
               </div>
+              {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
+                <div className="wu-muted" style={{ marginTop: 10 }}>
+                  No upgrade orders yet in this window. All other orders so far: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders · AOV ${money(data!.orderImpact.otherAov)} · ${data!.orderImpact.otherItems} items` : '—'}.
+                </div>
+              ) : (
+                <div style={{ marginTop: 10 }}>
+                  <div className="wu-row"><span>Orders that used an upgrade</span><b className="tnum">{money(data!.orderImpact.upgradeAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.upgradeItems} items · {int(data!.orderImpact.upgradeOrders)} ord</span></b></div>
+                  <div className="wu-row"><span>All other orders</span><b className="tnum">{money(data!.orderImpact.otherAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.otherItems} items · {int(data!.orderImpact.otherOrders)} ord</span></b></div>
+                  <div className="wu-row"><span><b>Upgrade lift</b></span>
+                    <b className="tnum" style={{ color: (data!.orderImpact.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                      {data!.orderImpact.aovLiftPct == null ? '—' : `${data!.orderImpact.aovLiftPct > 0 ? '+' : ''}${data!.orderImpact.aovLiftPct}% AOV`}
+                      {data!.orderImpact.itemsLiftPct != null && <span className="wu-faint" style={{ fontWeight: 400 }}> · {data!.orderImpact.itemsLiftPct > 0 ? '+' : ''}{data!.orderImpact.itemsLiftPct}% items</span>}
+                    </b>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Compatibility guide — full funnel + brand split */}
@@ -380,37 +423,6 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   </div>
                 )}
               </div>
-            </div>
-
-            {/* Sales per module source, with the whole basket of those orders */}
-            <SectionH eyebrow="Sales" title="By module source" help="source" note="attributed value + full basket of those orders" />
-            <div className="wu-card">
-              {data!.bySource.length === 0 ? <div className="wu-muted">No attributed sales yet — populates as real orders come in.</div> : (
-                <table className="wu-table">
-                  <thead><tr>
-                    <Th tip="The _pesado_source tag the theme wrote on the added line — which module put the item in the cart.">Source</Th>
-                    <Th right tip="Distinct orders that used this source.">Orders</Th>
-                    <Th right tip="Order lines this source added.">Lines</Th>
-                    <Th right tip="AUD revenue of just the lines this source added.">Attributed</Th>
-                    <Th right tip="Average items this source added per order.">Added/order</Th>
-                    <Th right tip="Average value of the WHOLE order (not just the added line) for orders that used this source.">AOV</Th>
-                    <Th right tip="Average total items in those whole orders.">Items/order</Th>
-                  </tr></thead>
-                  <tbody>
-                    {data!.bySource.map((s) => (
-                      <tr key={s.source}>
-                        <td className="wu-mono">{s.source}</td>
-                        <td className="r tnum">{int(s.orders)}</td>
-                        <td className="r tnum wu-dim">{int(s.lines)}</td>
-                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{money(s.revenue)}</td>
-                        <td className="r tnum">{s.addedPerOrder ?? '—'}</td>
-                        <td className="r tnum">{s.aov != null ? money(s.aov) : '—'}</td>
-                        <td className="r tnum">{s.itemsPerOrder ?? '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
             </div>
 
             <div className="wu-foot">

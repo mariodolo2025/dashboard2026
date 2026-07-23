@@ -31,6 +31,8 @@ interface ConnectionDef {
   cronJobName: string | null;
   /** Master = the orchestrated full refresh (multi-time schedule + runs log). */
   master?: boolean;
+  /** Fast = an every-N-minutes interval schedule (its own configurable card). */
+  fastInterval?: boolean;
   /** Reads connection-specific liveness/last-sync info. */
   readStatus: (supabase: any) => Promise<{
     connected: boolean;
@@ -38,7 +40,6 @@ interface ConnectionDef {
     lastSync?: unknown;
     tokenUpdatedAt?: string | null;
     runs?: unknown;
-    fastCron?: { active: boolean; everyMinutes: number } | null;
   }>;
 }
 
@@ -65,6 +66,21 @@ const CONNECTIONS: ConnectionDef[] = [
         lastSync: lastFinished
           ? { at: lastFinished.finished_at ?? lastFinished.started_at, ok: lastFinished.status === 'done' }
           : null,
+      };
+    },
+  },
+  {
+    // Dedicated 15-min sales refresh that keeps Web Upgrade attribution near-live.
+    // Its own card with a configurable interval, sitting next to the master.
+    id: 'shopify-sales-fast',
+    name: 'Fast sales refresh',
+    cronJobName: 'shopify-sales-fast',
+    fastInterval: true,
+    readStatus: async (supabase) => {
+      const { data: creds } = await supabase.from('api_credentials').select('store_url').eq('provider', 'shopify').maybeSingle();
+      return {
+        connected: !!creds?.store_url,
+        detail: 'Near-live sales for Web Upgrade attribution',
       };
     },
   },
@@ -113,16 +129,11 @@ const CONNECTIONS: ConnectionDef[] = [
     readStatus: async (supabase) => {
       const { data: creds } = await supabase.from('api_credentials').select('store_url').eq('provider', 'shopify').maybeSingle();
       const { data: st } = await supabase.from('shopify_sales_sync_state').select('*').eq('id', 1).maybeSingle();
-      // The dedicated 15-min cron (shopify-sales-fast) that keeps Web Upgrade
-      // attribution near-live. Surface its on/off state so it isn't invisible.
-      const { data: fast } = await supabase.rpc('connection_cron_get', { p_jobname: 'shopify-sales-fast' });
-      const fastRow = Array.isArray(fast) ? fast[0] : fast;
       return {
         connected: !!creds?.store_url,
         detail: st?.rows_live != null ? `${st.rows_live} live rows since Jul 2026` : (creds?.store_url ?? 'Sales API'),
         tokenUpdatedAt: null,
         lastSync: st?.last_run_at ? { at: st.last_run_at, ok: st.last_run_status === 'ok' } : null,
-        fastCron: fastRow ? { active: !!fastRow.active, everyMinutes: 15 } : null,
       };
     },
   },
@@ -176,6 +187,19 @@ function parseCronMultiToAest(schedule: string): { hoursAest: number[] } | null 
   return { hoursAest };
 }
 
+// --- Minute-interval schedule (fast sales refresh) -------------------------
+const FAST_INTERVALS = [5, 10, 15, 20, 30, 60];
+function parseCronIntervalMinutes(schedule: string): number | null {
+  const s = schedule.trim();
+  const step = s.match(/^\*\/(\d+) \* \* \* \*$/);
+  if (step) return parseInt(step[1], 10);
+  // The original schedule was an explicit minute list (7,22,37,52) = 4/hour = 15 min.
+  const list = s.match(/^([\d,]+) \* \* \* \*$/);
+  if (list) { const n = list[1].split(',').length; return n > 0 ? Math.round(60 / n) : null; }
+  return null;
+}
+const buildMinuteCron = (minutes: number) => `*/${minutes} * * * *`;
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 200, headers: corsHeaders });
@@ -191,7 +215,7 @@ Deno.serve(async (req: Request) => {
       for (const def of CONNECTIONS) {
         const status = await def.readStatus(supabase);
         let cron:
-          | { schedule: string; active: boolean; aest: { days: number[]; hourAest: number } | null; hoursAest?: number[]; driverActive?: boolean }
+          | { schedule: string; active: boolean; aest: { days: number[]; hourAest: number } | null; hoursAest?: number[]; driverActive?: boolean; intervalMinutes?: number | null }
           | null = null;
         if (def.cronJobName) {
           const { data } = await supabase.rpc('connection_cron_get', { p_jobname: def.cronJobName });
@@ -199,7 +223,9 @@ Deno.serve(async (req: Request) => {
           if (row) {
             cron = def.master
               ? { schedule: row.schedule, active: row.active, aest: null, hoursAest: parseCronMultiToAest(String(row.schedule))?.hoursAest ?? [] }
-              : { schedule: row.schedule, active: row.active, aest: parseCronToAest(String(row.schedule)) };
+              : def.fastInterval
+                ? { schedule: row.schedule, active: row.active, aest: null, intervalMinutes: parseCronIntervalMinutes(String(row.schedule)) ?? 15 }
+                : { schedule: row.schedule, active: row.active, aest: parseCronToAest(String(row.schedule)) };
           }
           if (cron && def.master) {
             // Surface whether the every-minute engine that advances runs is alive.
@@ -217,6 +243,19 @@ Deno.serve(async (req: Request) => {
       const body = await req.json().catch(() => ({}));
       const def = CONNECTIONS.find((c) => c.id === body?.id);
       if (!def) return json({ success: false, message: 'Unknown connection id' }, 400);
+
+      // Fast sales refresh: change the every-N-minutes interval.
+      if (body?.action === 'set-interval') {
+        if (!def.cronJobName || !def.fastInterval) return json({ success: false, message: 'Connection has no interval schedule' }, 400);
+        const minutes = Number(body?.minutes);
+        if (!FAST_INTERVALS.includes(minutes)) {
+          return json({ success: false, message: `minutes must be one of ${FAST_INTERVALS.join('/')}` }, 400);
+        }
+        const schedule = buildMinuteCron(minutes);
+        const { error } = await supabase.rpc('connection_cron_set', { p_jobname: def.cronJobName, p_schedule: schedule });
+        if (error) return json({ success: false, message: error.message }, 500);
+        return json({ success: true, schedule, minutes });
+      }
 
       if (body?.action === 'set-schedule') {
         if (!def.cronJobName) return json({ success: false, message: 'Connection has no schedule' }, 400);
