@@ -13,8 +13,8 @@ type Env = 'production' | 'preview' | 'all';
 interface Dash {
   params: { from: string; to: string; environment: string };
   totals: { exposedSessions: number; totalEvents: number; directOrders: number; directLines: number; directRevenue: number; assistedOrders: number };
-  modules: Array<{ module: string; sessions: number; views: number; selects: number; clicks: number; adds: number; ctr: number | null; addsPerSession: number | null }>;
-  compatFunnel: { pageViews: number; modelSelect: number; addClicks: number; addSuccess: number; sessions: number; completeKit: number } | null;
+  modules: Array<{ module: string; sessions: number; views: number; selects: number; clicks: number; adds: number; ctr: number | null; addsPerSession: number | null; orders: number; revenue: number }>;
+  compatFunnel: { pageViews: number; modelSelect: number; addClicks: number; addSuccess: number; sessions: number; completeKit: number; orders: number } | null;
   byBrand: Array<{ brand: string; selects: number; addClicks: number; adds: number }>;
   byModel: Array<{ brand: string; model: string; selects: number; addClicks: number; adds: number }>;
   byScreen: Array<{ sku: string; fitment: string | null; title: string; clicks: number; adds: number; attributedRevenue: number; unitsPerWeek: number; baselineUnitsPerWeek: number; deltaPct: number | null }>;
@@ -31,7 +31,7 @@ const HELP: Record<string, string> = {
   directRevenue: 'AUD revenue of order lines that were added by an upgrade module (line carries _pesado_source). Comes from Shopify orders via the sync — refreshed 3×/day (or on the main Update button), not instantly.',
   directOrders: 'Distinct orders that contain at least one upgrade-added line (direct attribution).',
   assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed with the Shopify sync (3×/day or on Update).',
-  module: 'Per module: sessions exposed, views → clicks → confirmed adds, click-through rate (clicks ÷ views) and adds per session (a session can add more than once, so this is an average, not a percentage).',
+  module: 'Each module end to end: sessions exposed → views → clicks → adds (into the cart) → ORDERS (actually paid for) and the revenue behind them. The funnel columns are real-time from the pixel; the Orders/Revenue columns come from the Shopify sync (3×/day or the Update button), so they lag behind. Adding to a cart is not a purchase — Orders is the real bottom line.',
   rewards: 'Reward tiers a shopper crossed during their session (free shipping / 10% off / 15% off). A tier only appears once a cart actually reached its threshold — if the basket stayed below $200, the 10% tier will not show even though free shipping did.',
   source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
   impact: 'Orders that used an upgrade module vs every other order in the window, compared on the full basket. This is an observed difference between two groups of shoppers, not a controlled test — people who engage with an upgrade module may simply be buying more anyway.',
@@ -177,6 +177,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     <Th right tip="Times an add was confirmed by the cart — the item actually went in.">Adds</Th>
                     <Th right tip="Click-through rate: clicks ÷ views.">CTR</Th>
                     <Th right tip="Average confirmed adds per session. A session can add more than once, so this is an average, not a percentage.">Adds/sess</Th>
+                    <Th right tip="THE END OF THE FUNNEL: orders actually PAID FOR that contain an item this module added. An 'add' only means it went into the cart — this column is the purchase. Comes from the Shopify sync (3×/day or the Update button), so it lags the funnel columns.">Orders</Th>
+                    <Th right tip="AUD revenue of the module-added lines inside those paid orders.">Revenue</Th>
                   </tr></thead>
                   <tbody>
                     {data!.modules.map((m) => (
@@ -188,7 +190,9 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                         <td className="r tnum wu-dim">{int(m.clicks)}</td>
                         <td className="r tnum">{int(m.adds)}</td>
                         <td className="r tnum">{m.ctr != null ? `${m.ctr}%` : '—'}</td>
-                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{m.addsPerSession != null ? m.addsPerSession.toFixed(2) : '—'}</td>
+                        <td className="r tnum">{m.addsPerSession != null ? m.addsPerSession.toFixed(2) : '—'}</td>
+                        <td className="r tnum" style={{ color: m.orders > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)', fontWeight: 700 }}>{int(m.orders)}</td>
+                        <td className="r tnum" style={{ color: m.revenue > 0 ? 'var(--wu-crema)' : 'var(--wu-faint)', fontWeight: 600 }}>{m.revenue > 0 ? money(m.revenue) : '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -234,7 +238,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             </div>
 
             {/* Compatibility guide — full funnel + brand split */}
-            <SectionH eyebrow="Compatibility Guide page" title="Guide page funnel" help="compat" note="stats for /pages/compatibility-guide · landed → picked machine → clicked → added" href="https://pesado585.com/pages/compatibility-guide?view=compatibility-v3" linkLabel="Open the guide page" />
+            <SectionH eyebrow="Compatibility Guide page" title="Guide page funnel" help="compat" note="stats for /pages/compatibility-guide · landed → picked machine → clicked → added → purchased" href="https://pesado585.com/pages/compatibility-guide?view=compatibility-v3" linkLabel="Open the guide page" />
             <div className="wu-two">
               <div className="wu-card">
                 {!data!.compatFunnel || data!.compatFunnel.pageViews === 0 ? (
@@ -247,7 +251,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                         ['Landed on the guide', f.pageViews],
                         ['Picked their machine', f.modelSelect],
                         ['Clicked add', f.addClicks],
-                        ['Add confirmed', f.addSuccess],
+                        ['Added to cart', f.addSuccess],
+                        ['Purchased (paid orders)', f.orders ?? 0],
                       ];
                       const top = Math.max(f.pageViews, 1);
                       return steps.map(([label, n], i) => {
