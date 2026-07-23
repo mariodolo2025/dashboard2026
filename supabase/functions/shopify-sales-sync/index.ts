@@ -80,7 +80,15 @@ Deno.serve(async (req: Request) => {
     const backfill: { from: string; to: string } | null =
       body?.backfill?.from && body?.backfill?.to ? { from: body.backfill.from, to: body.backfill.to } : null;
     const { data: st } = await supabase.from('shopify_sales_sync_state').select('*').eq('id', 1).maybeSingle();
-    let updatedSince: string = body.updatedSince ?? st?.last_updated_at ?? `${LIVE_BOUNDARY}T00:00:00Z`;
+    // Watermark lives in last_modified_watermark (the code previously read a
+    // non-existent last_updated_at, so every run silently fell back to
+    // LIVE_BOUNDARY and re-pulled the whole history). Read it with a 30-min
+    // overlap: orders updated around the previous cutoff are re-pulled, and since
+    // each order's rows are replaced wholesale the overlap is idempotent.
+    const storedWm = st?.last_modified_watermark
+      ? new Date(Date.parse(st.last_modified_watermark) - 30 * 60_000).toISOString()
+      : null;
+    let updatedSince: string = body.updatedSince ?? storedWm ?? `${LIVE_BOUNDARY}T00:00:00Z`;
 
     // ── Market FX: month → AUD→USD (currency_exchange_rates holds USD→AUD) ─
     const { data: rateRows } = await supabase.from('currency_exchange_rates').select('year, month, rate');
@@ -252,7 +260,7 @@ Deno.serve(async (req: Request) => {
     await supabase.from('shopify_sales_sync_state').upsert({
       id: 1, last_run_at: new Date().toISOString(),
       last_run_status: capped ? 'partial-capped' : 'ok', rows_live: liveRows ?? null,
-      ...(backfill ? {} : { last_updated_at: maxUpdated }),
+      ...(backfill ? {} : { last_modified_watermark: maxUpdated }),
     });
 
     return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, upgradeAttributed: upgradeRows.length, upgradeErr, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
