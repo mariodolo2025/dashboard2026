@@ -22,7 +22,7 @@ interface Dash {
   rewards: Array<{ name: string; unlocks: number; sessions: number; bought: number }>;
   orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
   bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
-  byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number }>;
+  byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number; variants: Array<{ label: string; orders: number; lines: number; revenue: number }> | null }>;
   byFamily: Array<{ family: string; lines: number; revenue: number }>;
   trend: Array<{ d: string; events: number; sessions: number }>;
 }
@@ -320,8 +320,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     const top = Math.max(m.views, m.clicks, m.adds, m.orders, 1);
                     return (
                       <div key={m.module} className="wu-card wu-block">
-                        {MODULE_IMG[m.module] && <img className="wu-block-img" src={MODULE_IMG[m.module]} alt={m.module} />}
                         <div className="wu-block-h">
+                          {MODULE_IMG[m.module] && <img className="wu-block-thumb" src={MODULE_IMG[m.module]} alt={m.module} />}
                           <div>
                             <div className="wu-block-name"><ModuleTip module={m.module}>{m.module}</ModuleTip></div>
                             <div className="wu-sub">{int(m.sessions)} sessions · CTR {m.ctr != null ? `${m.ctr}%` : '—'}</div>
@@ -522,10 +522,18 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 {data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byMachine.map((m) => (
-                      <div key={m.machine} className="wu-row">
-                        <span>{m.machine}</span>
-                        <b className="tnum">{money(m.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(m.orders)} ord</span></b>
-                      </div>
+                      <Fragment key={m.machine}>
+                        <div className="wu-row">
+                          <span>{m.machine}</span>
+                          <b className="tnum">{money(m.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(m.orders)} ord</span></b>
+                        </div>
+                        {(m.variants ?? []).map((v) => (
+                          <div key={m.machine + '·' + v.label} className="wu-row wu-machine-variant">
+                            <span className="wu-model-name">{v.label}</span>
+                            <b className="tnum" style={{ fontWeight: 400, color: 'var(--wu-dim)' }}>{money(v.revenue)} <span className="wu-faint">· {int(v.orders)} ord</span></b>
+                          </div>
+                        ))}
+                      </Fragment>
                     ))}
                   </div>
                 )}
@@ -663,7 +671,8 @@ const WU_CSS = `
 .wu-view:hover{border-color:var(--wu-crema)}
 .wu-zone{margin:26px 2px 2px;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--wu-crema);border-bottom:2px solid var(--wu-crema);padding-bottom:6px}
 .wu-blocks{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
-.wu-block-img{width:100%;border-radius:8px;border:1px solid var(--wu-line);margin-bottom:10px;display:block}
+.wu-block-thumb{width:104px;height:60px;object-fit:cover;object-position:left top;border-radius:6px;border:1px solid var(--wu-line);flex-shrink:0}
+.wu-machine-variant{font-size:12px;padding:4px 0 6px}
 .wu-block-h{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .wu-block-name{font-family:'Fraunces',Georgia,serif;font-weight:600;font-size:15px}
 .wu-block-rev{text-align:right}
