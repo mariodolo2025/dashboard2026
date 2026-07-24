@@ -44,6 +44,17 @@ const HELP: Record<string, string> = {
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
 };
 
+// Real screenshots of each on-site module (captured from the live theme), shown
+// inside the module tooltips so the reader sees WHICH surface the row refers to.
+// Note: the cart drawer renders the same "Complete your setup" panel as the
+// product page, so both Compatible Additions entries share one capture.
+const MODULE_IMG: Record<string, string> = {
+  'Compatibility Guide': '/wu/guide.jpg',
+  'Machine finder (product page)': '/wu/machine-finder-selected.jpg',
+  'Compatible Additions (product page)': '/wu/additions-product.jpg',
+  'Compatible Additions (cart)': '/wu/additions-product.jpg',
+};
+
 // Plain-language explanation of each on-site module, keyed by the exact label the
 // RPC emits. Shown on hover of the module name in the By-module table.
 const MODULE_HELP: Record<string, string> = {
@@ -91,6 +102,43 @@ function Tip({ content, children }: { content: string; children: ReactNode }) {
 function HelpTitle({ k, children }: { k: string; children: ReactNode }) {
   return <Tip content={HELP[k]}>{children}</Tip>;
 }
+// Module tooltip: a real screenshot of the on-site surface + the explanation.
+function ModuleTip({ module, children }: { module: string; children?: ReactNode }) {
+  const img = MODULE_IMG[module];
+  const text = MODULE_HELP[module];
+  if (!img && !text) return <>{children ?? module}</>;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild><span className="wu-help">{children ?? module}</span></TooltipTrigger>
+      <TooltipContent className="max-w-[340px] p-2">
+        {img && <img src={img} alt={module} style={{ width: '100%', borderRadius: 6, border: '1px solid rgba(0,0,0,.12)', marginBottom: text ? 6 : 0 }} />}
+        {text && <div className="text-xs leading-relaxed px-1 pb-1">{text}</div>}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+// Source tag tooltip: screenshot of the module that writes this _pesado_source.
+const SOURCE_MODULE: Record<string, string> = {
+  product_machine_finder: 'Machine finder (product page)',
+  compatibility_guide: 'Compatibility Guide',
+  compatibility_complete_kit: 'Compatibility Guide',
+  product_compatible_additions: 'Compatible Additions (product page)',
+  compatible_additions: 'Compatible Additions (cart)',
+};
+function SourceTip({ source }: { source: string }) {
+  const img = MODULE_IMG[SOURCE_MODULE[source] ?? ''];
+  const text = SOURCE_HELP[source];
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild><span className="wu-help">{source}</span></TooltipTrigger>
+      <TooltipContent className="max-w-[340px] p-2">
+        {img && <img src={img} alt={source} style={{ width: '100%', borderRadius: 6, border: '1px solid rgba(0,0,0,.12)', marginBottom: 6 }} />}
+        <div className="text-xs leading-relaxed px-1 pb-1">{text}</div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 // Hoverable table-column header: the header text itself explains the column.
 function Th({ children, tip, right }: { children: ReactNode; tip: string; right?: boolean }) {
   return <th className={right ? 'r' : undefined}><Tip content={tip}>{children}</Tip></th>;
@@ -272,9 +320,10 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     const top = Math.max(m.views, m.clicks, m.adds, m.orders, 1);
                     return (
                       <div key={m.module} className="wu-card wu-block">
+                        {MODULE_IMG[m.module] && <img className="wu-block-img" src={MODULE_IMG[m.module]} alt={m.module} />}
                         <div className="wu-block-h">
                           <div>
-                            <div className="wu-block-name">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</div>
+                            <div className="wu-block-name"><ModuleTip module={m.module}>{m.module}</ModuleTip></div>
                             <div className="wu-sub">{int(m.sessions)} sessions · CTR {m.ctr != null ? `${m.ctr}%` : '—'}</div>
                           </div>
                           <div className="wu-block-rev">
@@ -327,7 +376,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   <tbody>
                     {data!.modules.map((m) => (
                       <tr key={m.module}>
-                        <td className="wu-mod">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</td>
+                        <td className="wu-mod"><ModuleTip module={m.module}>{m.module}</ModuleTip></td>
                         <td className="r tnum">{int(m.sessions)}</td>
                         <td className="r tnum wu-dim">{int(m.views)}</td>
                         <td className="r tnum wu-dim">{int(m.selects)}</td>
@@ -388,7 +437,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   <tbody>
                     {data!.bySource.map((s) => (
                       <tr key={s.source}>
-                        <td className="wu-mono">{SOURCE_HELP[s.source] ? <Tip content={SOURCE_HELP[s.source]}>{s.source}</Tip> : s.source}</td>
+                        <td className="wu-mono">{SOURCE_HELP[s.source] ? <SourceTip source={s.source} /> : s.source}</td>
                         <td className="r tnum">{int(s.orders)}</td>
                         <td className="r tnum wu-dim">{int(s.lines)}</td>
                         <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{money(s.revenue)}</td>
@@ -539,7 +588,7 @@ function SummaryRow({ m }: { m: Dash['modules'][number] }) {
     <div className="wu-sumrow">
       <button type="button" onClick={() => setOpen((o) => !o)}>
         <span className={cn('wu-chev', open && 'open')}>›</span>
-        <span className="wu-mod">{MODULE_HELP[m.module] ? <Tip content={MODULE_HELP[m.module]}>{m.module}</Tip> : m.module}</span>
+        <span className="wu-mod"><ModuleTip module={m.module}>{m.module}</ModuleTip></span>
         <span className="wu-sum-meta tnum">{int(m.sessions)} sess · {int(m.adds)} adds · <b style={{ color: m.orders > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}>{int(m.orders)} ord · {m.revenue > 0 ? money(m.revenue) : '$0'}</b></span>
       </button>
       {open && (
@@ -614,6 +663,7 @@ const WU_CSS = `
 .wu-view:hover{border-color:var(--wu-crema)}
 .wu-zone{margin:26px 2px 2px;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--wu-crema);border-bottom:2px solid var(--wu-crema);padding-bottom:6px}
 .wu-blocks{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.wu-block-img{width:100%;border-radius:8px;border:1px solid var(--wu-line);margin-bottom:10px;display:block}
 .wu-block-h{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .wu-block-name{font-family:'Fraunces',Georgia,serif;font-weight:600;font-size:15px}
 .wu-block-rev{text-align:right}
