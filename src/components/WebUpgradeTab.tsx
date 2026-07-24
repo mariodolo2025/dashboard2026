@@ -14,7 +14,7 @@ type View = 'current' | 'blocks' | 'zones' | 'summary';
 interface Dash {
   params: { from: string; to: string; environment: string };
   totals: { exposedSessions: number; totalEvents: number; directOrders: number; directLines: number; directRevenue: number; assistedOrders: number };
-  modules: Array<{ module: string; sessions: number; views: number; selects: number; clicks: number; adds: number; ctr: number | null; addsPerSession: number | null; orders: number; revenue: number }>;
+  modules: Array<{ module: string; sessions: number; views: number; selects: number; clicks: number; adds: number; ctr: number | null; addsPerSession: number | null; orders: number; revenue: number; aov: number | null }>;
   compatFunnel: { pageViews: number; modelSelect: number; addClicks: number; addSuccess: number; sessions: number; completeKit: number; orders: number } | null;
   byBrand: Array<{ brand: string; selects: number; addClicks: number; adds: number }>;
   byModel: Array<{ brand: string; model: string; selects: number; addClicks: number; adds: number }>;
@@ -337,7 +337,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                           </div>
                           <div className="wu-block-rev">
                             <div className="wu-block-money">{m.revenue > 0 ? money(m.revenue) : '—'}</div>
-                            <div className="wu-sub">{int(m.orders)} paid orders</div>
+                            <div className="wu-sub">{int(m.orders)} paid orders{m.aov != null && <> · AOV <b>${Math.round(m.aov)}</b></>}</div>
                           </div>
                         </div>
                         <div className="wu-block-bars">
