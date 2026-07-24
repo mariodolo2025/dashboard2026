@@ -36,7 +36,7 @@ const HELP: Record<string, string> = {
   rewards: 'Reward tiers shoppers crossed IN THEIR CART, listed lowest tier first (free shipping $100 → 10% off $200 → 15% off $300). "carts" = distinct sessions whose basket reached that threshold; "bought" = how many of those sessions actually completed a purchase. Crossing a tier is intent, not a sale — expect far more unlocks than orders, because most carts are abandoned. A tier only appears once a basket actually reached it.',
   source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
   impact: 'A simple question: do people who use an upgrade module end up buying MORE per order than everyone else? It takes every paid order in the window, splits them into "used an upgrade module" vs "did not", and compares the average order value (AOV) and the average number of items. The difference is the lift. It is an observed gap between two groups of shoppers, not a controlled test — people who engage with an upgrade may already be bigger spenders.',
-  machine: 'Direct sales grouped by the espresso machine the customer selected in the upgrade guide (pesado_machine). Tells you which machines drive the most upgrade revenue.',
+  machine: "Direct sales grouped by the customer's espresso machine. Each module writes the machine name in its own style, so the bold row is the machine TOTAL and the indented rows underneath split it by which module recorded the sale: “The X” = the Find-your-machine tool on the product page; “Compatible with your X” = the Complete-your-setup panel in the cart. Same machine, different door in.",
   compat: 'Activity on the standalone Compatibility Guide page (/pages/compatibility-guide) — where a shopper browses by machine brand → model to find compatible parts. This is that page\'s funnel, end to end: landed on the page → picked their machine → clicked add → add confirmed. It stays empty until someone uses that page (adds made on a normal product page show up under the other sections, not here).',
   brand: 'Which machine brand visitors picked in the guide, with each specific model listed underneath it. A brand (or model) with many picks but few adds means the guide finds their machine but the offer does not land.',
   screen: 'Only products a customer added THROUGH an upgrade module (machine finder or a recommendation). A product added with the normal Add-to-cart button is the base product, not a module add, so it will not appear here. Shows module clicks/adds plus sales now vs the frozen pre-launch run rate — the delta is a before/after observation (ad spend and seasonality move it too), not proof the modules caused it.',
@@ -74,6 +74,15 @@ const SOURCE_HELP: Record<string, string> = {
   product_compatible_additions: 'Added from the "Complete your setup" recommendations shown on the product page.',
   compatible_additions: 'Added from the "Complete your setup" recommendations inside the cart / mini-cart drawer.',
 };
+
+// Which module wrote a raw machine label — inferred from the label style each
+// module uses when stamping _pesado_machine on the sold line.
+const variantOrigin = (label: string): string =>
+  /^Compatible with your /i.test(label)
+    ? 'This slice of the sales was recorded by the "Complete your setup" panel in the cart drawer (it prefixes the machine with "Compatible with your …").'
+    : /^The /i.test(label)
+      ? 'This slice was recorded by the "Find your machine" tool on the product page (it prefixes the machine with "The …").'
+      : 'This slice was recorded with the machine name as-is — typically the "Find your machine" tool or the Compatibility Guide.';
 
 const REWARD_LABEL: Record<string, string> = { free_shipping: 'Free shipping', discount_10: '10% off', discount_15: '15% off' };
 const money = (v: number | null | undefined) => { const n = Number(v) || 0; return Math.abs(n) >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : Math.abs(n) >= 1000 ? `$${Math.round(n / 1000)}K` : `$${Math.round(n)}`; };
@@ -529,7 +538,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                         </div>
                         {(m.variants ?? []).map((v) => (
                           <div key={m.machine + '·' + v.label} className="wu-row wu-machine-variant">
-                            <span className="wu-model-name">{v.label}</span>
+                            <span className="wu-model-name"><Tip content={variantOrigin(v.label)}>{v.label}</Tip></span>
                             <b className="tnum" style={{ fontWeight: 400, color: 'var(--wu-dim)' }}>{money(v.revenue)} <span className="wu-faint">· {int(v.orders)} ord</span></b>
                           </div>
                         ))}
@@ -671,7 +680,9 @@ const WU_CSS = `
 .wu-view:hover{border-color:var(--wu-crema)}
 .wu-zone{margin:26px 2px 2px;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--wu-crema);border-bottom:2px solid var(--wu-crema);padding-bottom:6px}
 .wu-blocks{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
-.wu-block-thumb{width:104px;height:60px;object-fit:cover;object-position:left top;border-radius:6px;border:1px solid var(--wu-line);flex-shrink:0}
+.wu-block-thumb{width:104px;height:60px;object-fit:cover;object-position:left top;border-radius:6px;border:1px solid var(--wu-line);flex-shrink:0;transition:transform .18s ease;transform-origin:top left;position:relative;cursor:zoom-in}
+.wu-block-thumb:hover{transform:scale(3.2);z-index:40;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+.wu-card.wu-block{overflow:visible}
 .wu-machine-variant{font-size:12px;padding:4px 0 6px}
 .wu-block-h{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .wu-block-name{font-family:'Fraunces',Georgia,serif;font-weight:600;font-size:15px}
