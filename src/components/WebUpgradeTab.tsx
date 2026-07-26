@@ -185,6 +185,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   // the start date appears unclickable.
   const [draft, setDraft] = useState<DateRange | undefined>(undefined);
   const [screenFilter, setScreenFilter] = useState<'all' | 'up' | 'down' | 'sold'>('all');
+  const [screenGroup, setScreenGroup] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   // Per-card collapse, persisted. openS(id) says whether a card body is shown.
   const [closedCards, setClosedCards] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem('wu-closed') || '{}'); } catch { return {}; }
@@ -232,7 +234,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <SectionH eyebrow="Compatibility Guide page" title="Guide page funnel" help="compat" note="stats for /pages/compatibility-guide · landed → picked machine → clicked → added → purchased" href="https://pesado585.com/pages/compatibility-guide?view=compatibility-v3" linkLabel="Open the guide page" />
             <div className="wu-two">
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="compat">Guide funnel</HelpTitle><CollBtn id="guidef" /></div>
+                <div className="wu-klabel"><HelpTitle k="compat">Guide funnel</HelpTitle>{!openS('guidef') && data!.compatFunnel && <span className="wu-coll-sum tnum">{int(data!.compatFunnel.pageViews)} landed → {int(data!.compatFunnel.addSuccess)} added → {int(data!.compatFunnel.orders ?? 0)} bought</span>}<CollBtn id="guidef" /></div>
                 {openS('guidef') && (!data!.compatFunnel || data!.compatFunnel.pageViews === 0 ? (
                   <div className="wu-muted">No activity on the Compatibility Guide page in this window. This fills in when someone uses <b>/pages/compatibility-guide</b> — adds made on a normal product page count elsewhere, not here.</div>
                 ) : (
@@ -269,7 +271,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 ))}
               </div>
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="brand">Machine brand picked</HelpTitle><CollBtn id="brand" /></div>
+                <div className="wu-klabel"><HelpTitle k="brand">Machine brand picked</HelpTitle>{!openS('brand') && data!.byBrand.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byBrand.reduce((a, b) => a + b.selects, 0))} picks → {int(data!.byBrand.reduce((a, b) => a + b.adds, 0))} adds · top {data!.byBrand[0].brand}</span>}<CollBtn id="brand" /></div>
                 {openS('brand') && (data!.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand selections yet.</div> : (
                   <table className="wu-table" style={{ marginTop: 10 }}>
                     <thead><tr>
@@ -592,49 +594,114 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             {/* Per product: module engagement + sales vs the pre-launch baseline */}
             <SectionH eyebrow="Products" title="By screen &amp; product" help="screen" note="engagement + sales vs pre-launch run rate" />
             <div className="wu-card">
-              <div className="wu-klabel" style={{ justifyContent: 'space-between', display: 'flex' }}>
-                <span className="wu-seg wu-seg-sm" role="group" aria-label="Screen filter">
-                  {([['all', 'All'], ['up', 'Delta +'], ['down', 'Delta −'], ['sold', 'With sales']] as Array<[typeof screenFilter, string]>).map(([k, lb]) => (
-                    <button key={k} aria-pressed={screenFilter === k} onClick={() => setScreenFilter(k)}>{lb}</button>
-                  ))}
-                </span>
+              <div className="wu-klabel" style={{ display: 'flex' }}>
+                {openS('screens') && (
+                  <>
+                    <span className="wu-seg wu-seg-sm" role="group" aria-label="Screen filter">
+                      {([['all', 'All'], ['up', 'Delta +'], ['down', 'Delta −'], ['sold', 'With sales']] as Array<[typeof screenFilter, string]>).map(([k, lb]) => (
+                        <button key={k} aria-pressed={screenFilter === k} onClick={() => setScreenFilter(k)}>{lb}</button>
+                      ))}
+                    </span>
+                    <span className="wu-seg wu-seg-sm" role="group" aria-label="Grouping">
+                      <button aria-pressed={!screenGroup} onClick={() => setScreenGroup(false)}>Flat</button>
+                      <button aria-pressed={screenGroup} onClick={() => setScreenGroup(true)}>Group by family</button>
+                    </span>
+                  </>
+                )}
+                {!openS('screens') && data!.byScreen.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byScreen.length)} products · {money(data!.byScreen.reduce((a, b) => a + b.attributedRevenue, 0))} attributed</span>}
                 <CollBtn id="screens" />
               </div>
               {openS('screens') && (() => {
-                let rows = data!.byScreen;
-                if (screenFilter === 'up') rows = rows.filter((r) => (r.deltaPct ?? 0) > 0).sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0));
-                if (screenFilter === 'down') rows = rows.filter((r) => (r.deltaPct ?? 0) < 0).sort((a, b) => (a.deltaPct ?? 0) - (b.deltaPct ?? 0));
-                if (screenFilter === 'sold') rows = rows.filter((r) => r.attributedRevenue > 0).sort((a, b) => b.attributedRevenue - a.attributedRevenue);
-                if (rows.length === 0) return <div className="wu-muted" style={{ marginTop: 10 }}>Nothing matches this filter in the window.</div>;
-                return (
-                <table className="wu-table" style={{ marginTop: 6 }}>
+                type Row = Dash['byScreen'][number];
+                const famOf = (r: Row): string => {
+                  const sku = r.sku.toUpperCase(); const blob = (r.sku + ' ' + r.title).toUpperCase();
+                  const fam = sku.startsWith('PSD-HD') || sku.startsWith('PSDBREVILLE') ? 'Shower Screens'
+                    : sku.startsWith('PSD-PUCK') ? 'Puck Screens'
+                    : sku.startsWith('PSD-HE') || sku.startsWith('EP-') || sku.startsWith('EP_') ? 'Filter Baskets'
+                    : sku.startsWith('PF') ? 'Portafilters'
+                    : sku.startsWith('EXT') || sku.startsWith('PRE') ? 'Bundles'
+                    : /DISTRIBUT|TAMP|RING|CRUSHER|DOSING/.test(blob) ? 'Distribution & Prep'
+                    : 'Accessories';
+                  const size = /58/.test(blob) ? ' · 58mm' : /(54|53\.5)/.test(blob) ? ' · 54mm' : '';
+                  return fam + size;
+                };
+                const applyFilter = <T extends { deltaPct: number | null; attributedRevenue: number }>(rows: T[]): T[] => {
+                  if (screenFilter === 'up') return rows.filter((r) => (r.deltaPct ?? 0) > 0).sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0));
+                  if (screenFilter === 'down') return rows.filter((r) => (r.deltaPct ?? 0) < 0).sort((a, b) => (a.deltaPct ?? 0) - (b.deltaPct ?? 0));
+                  if (screenFilter === 'sold') return rows.filter((r) => r.attributedRevenue > 0).sort((a, b) => b.attributedRevenue - a.attributedRevenue);
+                  return rows;
+                };
+                const head = (
                   <thead><tr>
-                    <Th tip="The product a shopper engaged with through an upgrade module.">Product</Th>
-                    <Th tip="Which machine the screen fits, read from the SKU (e.g. Gaggia, Breville 54mm). For fitments shared by many brands, the SKU can't say the machine brand — that only comes from the machine the customer picked.">Fitment</Th>
-                    <Th right tip="Module 'add' clicks for this product.">Clicks</Th>
-                    <Th right tip="Confirmed adds of this product through a module.">Adds</Th>
-                    <Th right tip="AUD revenue from real completed orders where this product's line was module-added. Test events have no order behind them, so this stays 0 in Preview.">Attributed</Th>
-                    <Th right tip="Units of this product sold per week in the selected window — from real completed orders, NOT test events. 0 in Preview.">Units/wk now</Th>
-                    <Th right tip="The frozen pre-launch weekly run-rate (old-theme baseline) for this product, for before/after comparison.">Pre-launch</Th>
-                    <Th right tip="Change of units/week vs the pre-launch run-rate. Observational — ad spend and seasonality move it too. In Preview it reads -100% because test events have no real sales behind them.">Delta</Th>
+                    <Th tip="The product (or, grouped, the product family) a shopper engaged with through an upgrade module. Grouped mode: click a family to unfold its variants.">Product</Th>
+                    <Th tip="Which machine the screen fits, read from the SKU. For fitments shared by many brands, the SKU can't say the machine brand — that only comes from the machine the customer picked.">Fitment</Th>
+                    <Th right tip="Module 'add' clicks.">Clicks</Th>
+                    <Th right tip="Confirmed adds through a module.">Adds</Th>
+                    <Th right tip="AUD revenue from real completed orders where the line was module-added.">Attributed</Th>
+                    <Th right tip="Units sold per week in the selected window — from real completed orders.">Units/wk now</Th>
+                    <Th right tip="The frozen pre-launch weekly run-rate (old-theme baseline).">Pre-launch</Th>
+                    <Th right tip="Change of units/week vs the pre-launch run-rate. Grouped mode recomputes it over the whole family's units. Observational — ad spend and seasonality move it too.">Delta</Th>
                   </tr></thead>
-                  <tbody>
-                    {rows.map((r) => (
-                      <tr key={r.sku}>
-                        <td className="wu-mod">{r.title}<div className="wu-mono wu-faint">{r.sku}</div></td>
-                        <td className="wu-dim" style={{ fontSize: 12 }}>{r.fitment ?? '—'}</td>
-                        <td className="r tnum">{int(r.clicks)}</td>
-                        <td className="r tnum">{int(r.adds)}</td>
-                        <td className="r tnum">{r.attributedRevenue > 0 ? money(r.attributedRevenue) : '—'}</td>
-                        <td className="r tnum">{r.unitsPerWeek}</td>
-                        <td className="r tnum wu-dim">{r.baselineUnitsPerWeek || '—'}</td>
-                        <td className="r tnum" style={{ fontWeight: 600, color: r.deltaPct == null ? 'var(--wu-faint)' : r.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
-                          {r.deltaPct == null ? '—' : `${r.deltaPct > 0 ? '+' : ''}${r.deltaPct}%`}
-                        </td>
-                      </tr>
+                );
+                const rowTr = (r: Row, indent = false) => (
+                  <tr key={r.sku} className={indent ? 'wu-model-row' : undefined}>
+                    <td className={indent ? 'wu-model-name' : 'wu-mod'}>{r.title}<div className="wu-mono wu-faint">{r.sku}</div></td>
+                    <td className="wu-dim" style={{ fontSize: 12 }}>{r.fitment ?? '—'}</td>
+                    <td className="r tnum">{int(r.clicks)}</td>
+                    <td className="r tnum">{int(r.adds)}</td>
+                    <td className="r tnum">{r.attributedRevenue > 0 ? money(r.attributedRevenue) : '—'}</td>
+                    <td className="r tnum">{Math.round(r.unitsPerWeek * 10) / 10}</td>
+                    <td className="r tnum wu-dim">{r.baselineUnitsPerWeek || '—'}</td>
+                    <td className="r tnum" style={{ fontWeight: 600, color: r.deltaPct == null ? 'var(--wu-faint)' : r.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                      {r.deltaPct == null ? '—' : `${r.deltaPct > 0 ? '+' : ''}${r.deltaPct}%`}
+                    </td>
+                  </tr>
+                );
+                if (!screenGroup) {
+                  const rows = applyFilter(data!.byScreen);
+                  if (rows.length === 0) return <div className="wu-muted" style={{ marginTop: 10 }}>Nothing matches this filter in the window.</div>;
+                  return <table className="wu-table" style={{ marginTop: 6 }}>{head}<tbody>{rows.map((r) => rowTr(r))}</tbody></table>;
+                }
+                // Grouped: aggregate per family (+ detected size); delta recomputed on the group totals.
+                const groupsMap = new Map<string, Row[]>();
+                for (const r of data!.byScreen) {
+                  const k = famOf(r);
+                  groupsMap.set(k, [...(groupsMap.get(k) ?? []), r]);
+                }
+                const groups = applyFilter([...groupsMap.entries()].map(([k, members]) => {
+                  const upw = members.reduce((a, b) => a + b.unitsPerWeek, 0);
+                  const base = members.reduce((a, b) => a + b.baselineUnitsPerWeek, 0);
+                  return {
+                    key: k, members,
+                    clicks: members.reduce((a, b) => a + b.clicks, 0),
+                    adds: members.reduce((a, b) => a + b.adds, 0),
+                    attributedRevenue: members.reduce((a, b) => a + b.attributedRevenue, 0),
+                    unitsPerWeek: Math.round(upw * 10) / 10,
+                    baselineUnitsPerWeek: Math.round(base * 100) / 100,
+                    deltaPct: base > 0 ? Math.round(((upw - base) / base) * 1000) / 10 : null,
+                  };
+                }));
+                if (groups.length === 0) return <div className="wu-muted" style={{ marginTop: 10 }}>Nothing matches this filter in the window.</div>;
+                return (
+                  <table className="wu-table" style={{ marginTop: 6 }}>{head}<tbody>
+                    {groups.map((g) => (
+                      <Fragment key={g.key}>
+                        <tr className="wu-group-row" onClick={() => setOpenGroups((prev) => ({ ...prev, [g.key]: !prev[g.key] }))}>
+                          <td className="wu-mod"><span className={cn('wu-chev', openGroups[g.key] && 'open')}>›</span> {g.key}<span className="wu-faint" style={{ fontWeight: 400 }}> · {g.members.length} variant{g.members.length > 1 ? 's' : ''}</span></td>
+                          <td className="wu-dim" style={{ fontSize: 12 }}>—</td>
+                          <td className="r tnum">{int(g.clicks)}</td>
+                          <td className="r tnum">{int(g.adds)}</td>
+                          <td className="r tnum">{g.attributedRevenue > 0 ? money(g.attributedRevenue) : '—'}</td>
+                          <td className="r tnum">{g.unitsPerWeek}</td>
+                          <td className="r tnum wu-dim">{g.baselineUnitsPerWeek || '—'}</td>
+                          <td className="r tnum" style={{ fontWeight: 700, color: g.deltaPct == null ? 'var(--wu-faint)' : g.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                            {g.deltaPct == null ? '—' : `${g.deltaPct > 0 ? '+' : ''}${g.deltaPct}%`}
+                          </td>
+                        </tr>
+                        {openGroups[g.key] && g.members.map((r) => rowTr(r, true))}
+                      </Fragment>
                     ))}
-                  </tbody>
-                </table>
+                  </tbody></table>
                 );
               })()}
             </div>
@@ -642,7 +709,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             {/* Direct sales — machine + family split */}
             <div className="wu-two">
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="machine">Sales by machine</HelpTitle><CollBtn id="machines" /></div>
+                <div className="wu-klabel"><HelpTitle k="machine">Sales by machine</HelpTitle>{!openS('machines') && data!.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byMachine.length)} machines · {money(data!.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data!.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
                 {openS('machines') && (data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byMachine.map((m) => (
@@ -663,7 +730,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 ))}
               </div>
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="family">Sales by product family</HelpTitle><CollBtn id="families" /></div>
+                <div className="wu-klabel"><HelpTitle k="family">Sales by product family</HelpTitle>{!openS('families') && data!.byFamily.length > 0 && <span className="wu-coll-sum tnum">{money(data!.byFamily.reduce((a, b) => a + b.revenue, 0))} · top {data!.byFamily[0].family}</span>}<CollBtn id="families" /></div>
                 {openS('families') && (data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byFamily.map((f) => (
@@ -853,6 +920,12 @@ const WU_CSS = `
 .wu-collbtn .wu-chev{font-size:15px}
 .wu-collbtn .wu-chev.open{transform:rotate(90deg)}
 .wu-seg-sm button{padding:4px 10px;font-size:11.5px}
+.wu-coll-sum{margin-left:auto;font-size:12.5px;color:var(--wu-dim);font-weight:600;font-family:'Fraunces',Georgia,serif}
+.wu-coll-sum + .wu-collbtn{margin-left:8px}
+.wu-group-row{cursor:pointer}
+.wu-group-row:hover td{background:var(--wu-crema-soft)}
+.wu-group-row .wu-chev{display:inline-block;transition:transform .15s;color:var(--wu-faint)}
+.wu-group-row .wu-chev.open{transform:rotate(90deg)}
 .wu-ctx{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
 .wu-seg{display:inline-flex;background:var(--wu-card);border:1px solid var(--wu-line);border-radius:999px;padding:3px}
 .wu-seg button{font-size:12px;font-weight:500;color:var(--wu-dim);background:none;border:none;padding:6px 13px;border-radius:999px;cursor:pointer;transition:.18s;white-space:nowrap}
