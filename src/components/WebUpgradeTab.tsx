@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment, type ReactNode, type MouseEvent as ReactMouseEvent } from 'react';
 import { format, subDays } from 'date-fns';
 import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw, BookOpen, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -198,10 +198,15 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     return next;
   });
   const CollBtn = ({ id }: { id: string }) => (
-    <button type="button" className="wu-collbtn" aria-label={openS(id) ? 'Collapse' : 'Expand'} onClick={() => toggleS(id)}>
+    <button type="button" className="wu-collbtn" aria-label={openS(id) ? 'Collapse' : 'Expand'} onClick={(e) => { e.stopPropagation(); toggleS(id); }}>
       <span className={cn('wu-chev', openS(id) && 'open')}>›</span>
     </button>
   );
+  // Whole header row toggles the card; inner buttons (filters, CollBtn) keep their own clicks.
+  const headToggle = (id: string) => (e: ReactMouseEvent) => {
+    if ((e.target as HTMLElement).closest('button, a')) return;
+    toggleS(id);
+  };
   const range = useMemo<DateRange>(() => {
     if (localRange?.from && localRange?.to) return localRange;
     if (dateRange?.from && dateRange?.to) return dateRange;
@@ -234,7 +239,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <SectionH eyebrow="Compatibility Guide page" title="Guide page funnel" help="compat" note="stats for /pages/compatibility-guide · landed → picked machine → clicked → added → purchased" href="https://pesado585.com/pages/compatibility-guide?view=compatibility-v3" linkLabel="Open the guide page" />
             <div className="wu-two">
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="compat">Guide funnel</HelpTitle>{!openS('guidef') && data!.compatFunnel && <span className="wu-coll-sum tnum">{int(data!.compatFunnel.pageViews)} landed → {int(data!.compatFunnel.addSuccess)} added → {int(data!.compatFunnel.orders ?? 0)} bought</span>}<CollBtn id="guidef" /></div>
+                <div className="wu-klabel wu-clickhead" onClick={headToggle('guidef')}><HelpTitle k="compat">Guide funnel</HelpTitle>{!openS('guidef') && data!.compatFunnel && <span className="wu-coll-sum tnum">{int(data!.compatFunnel.pageViews)} landed → {int(data!.compatFunnel.addSuccess)} added → {int(data!.compatFunnel.orders ?? 0)} bought</span>}<CollBtn id="guidef" /></div>
                 {openS('guidef') && (!data!.compatFunnel || data!.compatFunnel.pageViews === 0 ? (
                   <div className="wu-muted">No activity on the Compatibility Guide page in this window. This fills in when someone uses <b>/pages/compatibility-guide</b> — adds made on a normal product page count elsewhere, not here.</div>
                 ) : (
@@ -271,7 +276,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 ))}
               </div>
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="brand">Machine brand picked</HelpTitle>{!openS('brand') && data!.byBrand.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byBrand.reduce((a, b) => a + b.selects, 0))} picks → {int(data!.byBrand.reduce((a, b) => a + b.adds, 0))} adds · top {data!.byBrand[0].brand}</span>}<CollBtn id="brand" /></div>
+                <div className="wu-klabel wu-clickhead" onClick={headToggle('brand')}><HelpTitle k="brand">Machine brand picked</HelpTitle>{!openS('brand') && data!.byBrand.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byBrand.reduce((a, b) => a + b.selects, 0))} picks → {int(data!.byBrand.reduce((a, b) => a + b.adds, 0))} adds · top {data!.byBrand[0].brand}</span>}<CollBtn id="brand" /></div>
                 {openS('brand') && (data!.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand selections yet.</div> : (
                   <table className="wu-table" style={{ marginTop: 10 }}>
                     <thead><tr>
@@ -594,7 +599,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             {/* Per product: module engagement + sales vs the pre-launch baseline */}
             <SectionH eyebrow="Products" title="By screen &amp; product" help="screen" note="engagement + sales vs pre-launch run rate" />
             <div className="wu-card">
-              <div className="wu-klabel" style={{ display: 'flex' }}>
+              <div className="wu-klabel wu-clickhead" style={{ display: 'flex' }} onClick={headToggle('screens')}>
                 {openS('screens') && (
                   <>
                     <span className="wu-seg wu-seg-sm" role="group" aria-label="Screen filter">
@@ -709,7 +714,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             {/* Direct sales — machine + family split */}
             <div className="wu-two">
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="machine">Sales by machine</HelpTitle>{!openS('machines') && data!.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byMachine.length)} machines · {money(data!.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data!.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
+                <div className="wu-klabel wu-clickhead" onClick={headToggle('machines')}><HelpTitle k="machine">Sales by machine</HelpTitle>{!openS('machines') && data!.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byMachine.length)} machines · {money(data!.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data!.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
                 {openS('machines') && (data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byMachine.map((m) => (
@@ -730,7 +735,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 ))}
               </div>
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="family">Sales by product family</HelpTitle>{!openS('families') && data!.byFamily.length > 0 && <span className="wu-coll-sum tnum">{money(data!.byFamily.reduce((a, b) => a + b.revenue, 0))} · top {data!.byFamily[0].family}</span>}<CollBtn id="families" /></div>
+                <div className="wu-klabel wu-clickhead" onClick={headToggle('families')}><HelpTitle k="family">Sales by product family</HelpTitle>{!openS('families') && data!.byFamily.length > 0 && <span className="wu-coll-sum tnum">{money(data!.byFamily.reduce((a, b) => a + b.revenue, 0))} · top {data!.byFamily[0].family}</span>}<CollBtn id="families" /></div>
                 {openS('families') && (data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byFamily.map((f) => (
@@ -922,6 +927,8 @@ const WU_CSS = `
 .wu-seg-sm button{padding:4px 10px;font-size:11.5px}
 .wu-coll-sum{margin-left:auto;font-size:12.5px;color:var(--wu-dim);font-weight:600;font-family:'Fraunces',Georgia,serif}
 .wu-coll-sum + .wu-collbtn{margin-left:8px}
+.wu-clickhead{cursor:pointer}
+.wu-clickhead:hover .wu-chev{color:var(--wu-ink)}
 .wu-group-row{cursor:pointer}
 .wu-group-row:hover td{background:var(--wu-crema-soft)}
 .wu-group-row .wu-chev{display:inline-block;transition:transform .15s;color:var(--wu-faint)}
