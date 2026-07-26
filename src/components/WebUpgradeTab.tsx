@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react';
 import { format, subDays } from 'date-fns';
-import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw, BookOpen } from 'lucide-react';
+import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw, BookOpen, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -92,6 +92,9 @@ const variantOrigin = (label: string): string =>
       ? 'This slice was recorded by the "Find your machine" tool on the product page (it prefixes the machine with "The …").'
       : 'This slice was recorded with the machine name as-is — typically the "Find your machine" tool or the Compatibility Guide.';
 
+// First real production event (theme published): 2026-07-23 10:21 Brisbane.
+const LAUNCH = new Date('2026-07-23T00:21:48Z');
+
 const REWARD_LABEL: Record<string, string> = { free_shipping: 'Free shipping', discount_10: '10% off', discount_15: '15% off' };
 const money = (v: number | null | undefined) => { const n = Number(v) || 0; return Math.abs(n) >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : Math.abs(n) >= 1000 ? `$${Math.round(n / 1000)}K` : `$${Math.round(n)}`; };
 const int = (v: number | null | undefined) => (Number(v) || 0).toLocaleString('en-US');
@@ -173,12 +176,30 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const [error, setError] = useState<string | null>(null);
 
   // Manual range picked inside the tab wins over the app-wide range.
-  const [localRange, setLocalRange] = useState<DateRange | null>(null);
+  // Default window: launch day → today. Earlier dates predate the tracking, so
+  // opening with the app-wide range would silently mix in empty days.
+  const [localRange, setLocalRange] = useState<DateRange | null>(() => ({ from: new Date('2026-07-23T00:00:00'), to: new Date() }));
   const [pickerOpen, setPickerOpen] = useState(false);
   // In-progress calendar selection. Without it, a half-picked range (start only)
   // never reaches `selected`, so the calendar keeps extending the old range and
   // the start date appears unclickable.
   const [draft, setDraft] = useState<DateRange | undefined>(undefined);
+  const [screenFilter, setScreenFilter] = useState<'all' | 'up' | 'down' | 'sold'>('all');
+  // Per-card collapse, persisted. openS(id) says whether a card body is shown.
+  const [closedCards, setClosedCards] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('wu-closed') || '{}'); } catch { return {}; }
+  });
+  const openS = (id: string) => !closedCards[id];
+  const toggleS = (id: string) => setClosedCards((prev) => {
+    const next = { ...prev, [id]: !prev[id] };
+    try { localStorage.setItem('wu-closed', JSON.stringify(next)); } catch { /* ignore */ }
+    return next;
+  });
+  const CollBtn = ({ id }: { id: string }) => (
+    <button type="button" className="wu-collbtn" aria-label={openS(id) ? 'Collapse' : 'Expand'} onClick={() => toggleS(id)}>
+      <span className={cn('wu-chev', openS(id) && 'open')}>›</span>
+    </button>
+  );
   const range = useMemo<DateRange>(() => {
     if (localRange?.from && localRange?.to) return localRange;
     if (dateRange?.from && dateRange?.to) return dateRange;
@@ -211,7 +232,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <SectionH eyebrow="Compatibility Guide page" title="Guide page funnel" help="compat" note="stats for /pages/compatibility-guide · landed → picked machine → clicked → added → purchased" href="https://pesado585.com/pages/compatibility-guide?view=compatibility-v3" linkLabel="Open the guide page" />
             <div className="wu-two">
               <div className="wu-card">
-                {!data!.compatFunnel || data!.compatFunnel.pageViews === 0 ? (
+                <div className="wu-klabel"><HelpTitle k="compat">Guide funnel</HelpTitle><CollBtn id="guidef" /></div>
+                {openS('guidef') && (!data!.compatFunnel || data!.compatFunnel.pageViews === 0 ? (
                   <div className="wu-muted">No activity on the Compatibility Guide page in this window. This fills in when someone uses <b>/pages/compatibility-guide</b> — adds made on a normal product page count elsewhere, not here.</div>
                 ) : (
                   <div>
@@ -244,11 +266,11 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       {int(data!.compatFunnel!.sessions)} sessions · {int(data!.compatFunnel!.completeKit)} complete-kit adds
                     </div>
                   </div>
-                )}
+                ))}
               </div>
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="brand">Machine brand picked</HelpTitle></div>
-                {data!.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand selections yet.</div> : (
+                <div className="wu-klabel"><HelpTitle k="brand">Machine brand picked</HelpTitle><CollBtn id="brand" /></div>
+                {openS('brand') && (data!.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand selections yet.</div> : (
                   <table className="wu-table" style={{ marginTop: 10 }}>
                     <thead><tr>
                       <Th tip="The machine brand the shopper selected in the compatibility guide.">Brand</Th>
@@ -277,7 +299,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       ))}
                     </tbody>
                   </table>
-                )}
+                ))}
               </div>
             </div>
 
@@ -292,8 +314,18 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
           <div>
             <div className="wu-eyebrow">Pesado · Website upgrades</div>
             <h1 className="wu-title">Web Upgrade <em>Performance</em></h1>
+            <div className="wu-sub" style={{ marginTop: 6 }}>Measuring live since <b>{format(LAUNCH, 'MMM d, yyyy')}</b> · {format(LAUNCH, 'h:mm a')} Brisbane — the moment the new theme went live and real events started flowing.</div>
           </div>
           <div className="flex items-center gap-2">
+            <Dialog>
+              <DialogTrigger asChild>
+                <button type="button" className="wu-pill wu-gloss"><Sparkles className="h-3.5 w-3.5" />What stands out</button>
+              </DialogTrigger>
+              <DialogContent className="max-w-xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader><DialogTitle>What stands out</DialogTitle></DialogHeader>
+                {data ? <Signals data={data} windowLabel={`${range.from ? format(range.from, 'MMM d') : ''} – ${range.to ? format(range.to, 'MMM d, yyyy') : ''} · ${env}`} /> : <div className="wu-muted">Loading…</div>}
+              </DialogContent>
+            </Dialog>
             <Dialog>
               <DialogTrigger asChild>
                 <button type="button" className="wu-pill wu-gloss"><BookOpen className="h-3.5 w-3.5" />How it's measured</button>
@@ -381,7 +413,6 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               </div>
             )}
 
-            <Signals data={data!} />
 
             {noData && (
               <div className="wu-empty">
@@ -561,8 +592,22 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             {/* Per product: module engagement + sales vs the pre-launch baseline */}
             <SectionH eyebrow="Products" title="By screen &amp; product" help="screen" note="engagement + sales vs pre-launch run rate" />
             <div className="wu-card">
-              {data!.byScreen.length === 0 ? <div className="wu-muted">No product-level events yet.</div> : (
-                <table className="wu-table">
+              <div className="wu-klabel" style={{ justifyContent: 'space-between', display: 'flex' }}>
+                <span className="wu-seg wu-seg-sm" role="group" aria-label="Screen filter">
+                  {([['all', 'All'], ['up', 'Delta +'], ['down', 'Delta −'], ['sold', 'With sales']] as Array<[typeof screenFilter, string]>).map(([k, lb]) => (
+                    <button key={k} aria-pressed={screenFilter === k} onClick={() => setScreenFilter(k)}>{lb}</button>
+                  ))}
+                </span>
+                <CollBtn id="screens" />
+              </div>
+              {openS('screens') && (() => {
+                let rows = data!.byScreen;
+                if (screenFilter === 'up') rows = rows.filter((r) => (r.deltaPct ?? 0) > 0).sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0));
+                if (screenFilter === 'down') rows = rows.filter((r) => (r.deltaPct ?? 0) < 0).sort((a, b) => (a.deltaPct ?? 0) - (b.deltaPct ?? 0));
+                if (screenFilter === 'sold') rows = rows.filter((r) => r.attributedRevenue > 0).sort((a, b) => b.attributedRevenue - a.attributedRevenue);
+                if (rows.length === 0) return <div className="wu-muted" style={{ marginTop: 10 }}>Nothing matches this filter in the window.</div>;
+                return (
+                <table className="wu-table" style={{ marginTop: 6 }}>
                   <thead><tr>
                     <Th tip="The product a shopper engaged with through an upgrade module.">Product</Th>
                     <Th tip="Which machine the screen fits, read from the SKU (e.g. Gaggia, Breville 54mm). For fitments shared by many brands, the SKU can't say the machine brand — that only comes from the machine the customer picked.">Fitment</Th>
@@ -574,30 +619,31 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     <Th right tip="Change of units/week vs the pre-launch run-rate. Observational — ad spend and seasonality move it too. In Preview it reads -100% because test events have no real sales behind them.">Delta</Th>
                   </tr></thead>
                   <tbody>
-                    {data!.byScreen.map((s) => (
-                      <tr key={s.sku}>
-                        <td className="wu-mod">{s.title}<div className="wu-mono wu-faint">{s.sku}</div></td>
-                        <td className="wu-dim" style={{ fontSize: 12 }}>{s.fitment ?? '—'}</td>
-                        <td className="r tnum">{int(s.clicks)}</td>
-                        <td className="r tnum">{int(s.adds)}</td>
-                        <td className="r tnum">{s.attributedRevenue > 0 ? money(s.attributedRevenue) : '—'}</td>
-                        <td className="r tnum">{s.unitsPerWeek}</td>
-                        <td className="r tnum wu-dim">{s.baselineUnitsPerWeek || '—'}</td>
-                        <td className="r tnum" style={{ fontWeight: 600, color: s.deltaPct == null ? 'var(--wu-faint)' : s.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
-                          {s.deltaPct == null ? '—' : `${s.deltaPct > 0 ? '+' : ''}${s.deltaPct}%`}
+                    {rows.map((r) => (
+                      <tr key={r.sku}>
+                        <td className="wu-mod">{r.title}<div className="wu-mono wu-faint">{r.sku}</div></td>
+                        <td className="wu-dim" style={{ fontSize: 12 }}>{r.fitment ?? '—'}</td>
+                        <td className="r tnum">{int(r.clicks)}</td>
+                        <td className="r tnum">{int(r.adds)}</td>
+                        <td className="r tnum">{r.attributedRevenue > 0 ? money(r.attributedRevenue) : '—'}</td>
+                        <td className="r tnum">{r.unitsPerWeek}</td>
+                        <td className="r tnum wu-dim">{r.baselineUnitsPerWeek || '—'}</td>
+                        <td className="r tnum" style={{ fontWeight: 600, color: r.deltaPct == null ? 'var(--wu-faint)' : r.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                          {r.deltaPct == null ? '—' : `${r.deltaPct > 0 ? '+' : ''}${r.deltaPct}%`}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              )}
+                );
+              })()}
             </div>
 
             {/* Direct sales — machine + family split */}
             <div className="wu-two">
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="machine">Sales by machine</HelpTitle></div>
-                {data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+                <div className="wu-klabel"><HelpTitle k="machine">Sales by machine</HelpTitle><CollBtn id="machines" /></div>
+                {openS('machines') && (data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byMachine.map((m) => (
                       <Fragment key={m.machine}>
@@ -614,11 +660,11 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       </Fragment>
                     ))}
                   </div>
-                )}
+                ))}
               </div>
               <div className="wu-card">
-                <div className="wu-klabel"><HelpTitle k="family">Sales by product family</HelpTitle></div>
-                {data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+                <div className="wu-klabel"><HelpTitle k="family">Sales by product family</HelpTitle><CollBtn id="families" /></div>
+                {openS('families') && (data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                   <div style={{ marginTop: 10 }}>
                     {data!.byFamily.map((f) => (
                       <div key={f.family} className="wu-row">
@@ -627,7 +673,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       </div>
                     ))}
                   </div>
-                )}
+                ))}
               </div>
             </div>
 
@@ -695,7 +741,7 @@ function SummaryRow({ m }: { m: Dash['modules'][number] }) {
 
 // Dynamic reading of the data — the comparisons a marketer would make by hand.
 // Pure client-side arithmetic over the RPC payload; recomputed on every fetch.
-function Signals({ data }: { data: Dash }) {
+function Signals({ data, windowLabel }: { data: Dash; windowLabel: string }) {
   const mods = data.modules.filter((m) => m.module !== 'Other' && m.sessions >= 30);
   const conv = (m: Dash['modules'][number]) => (m.sessions > 0 ? (100 * m.orders) / m.sessions : 0);
   const rps = (m: Dash['modules'][number]) => (m.sessions > 0 ? m.revenue / m.sessions : 0);
@@ -710,9 +756,17 @@ function Signals({ data }: { data: Dash }) {
     const withAdds = mods.filter((m) => m.adds >= 20);
     if (withAdds.length >= 2) {
       const worst = [...withAdds].sort((a, b) => a.orders / a.adds - b.orders / b.adds)[0];
+      const best = [...withAdds].sort((a, b) => b.orders / b.adds - a.orders / a.adds)[0];
       const rate = (100 * worst.orders) / worst.adds;
-      if (rate < 20) notes.push(<><b>{worst.module}</b> fills carts that don't close: {int(worst.adds)} adds became only {int(worst.orders)} paid orders ({rate.toFixed(0)}% cart-close). Worth checking what happens between its add and checkout.</>);
+      if (rate < 20 && worst.module !== best.module) notes.push(<><b>{worst.module}</b> fills carts that don't close: {int(worst.adds)} adds became only {int(worst.orders)} paid orders ({rate.toFixed(0)}% cart-close, vs {((100 * best.orders) / best.adds).toFixed(0)}% for {best.module}). Worth checking what happens between its add and checkout.</>);
     }
+  }
+  const screens = data.byScreen.filter((r) => r.baselineUnitsPerWeek > 0 && r.adds >= 3 && r.deltaPct != null);
+  if (screens.length >= 2) {
+    const up = [...screens].sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0))[0];
+    const down = [...screens].sort((a, b) => (a.deltaPct ?? 0) - (b.deltaPct ?? 0))[0];
+    if ((up.deltaPct ?? 0) > 10) notes.push(<><b>{up.title}</b> is selling <b>+{up.deltaPct}%</b> vs its pre-launch run rate ({up.unitsPerWeek} vs {up.baselineUnitsPerWeek} units/wk) with {int(up.adds)} module adds behind it.</>);
+    if ((down.deltaPct ?? 0) < -10 && down.sku !== up.sku) notes.push(<><b>{down.title}</b> is running <b>{down.deltaPct}%</b> below its pre-launch rate despite {int(down.adds)} module adds — the modules push it, something else dropped.</>);
   }
   const deadReward = data.rewards.find((r) => r.sessions >= 10 && r.bought === 0);
   if (deadReward) notes.push(<>{int(deadReward.sessions)} carts crossed the <b>{REWARD_LABEL[deadReward.name] ?? deadReward.name}</b> threshold and none bought — money sitting in abandoned carts.</>);
@@ -720,44 +774,43 @@ function Signals({ data }: { data: Dash }) {
     const l = data.orderImpact.aovLiftPct;
     notes.push(<>Orders that used an upgrade average <b>{l > 0 ? '+' : ''}{l}%</b> AOV vs everyone else ({money(data.orderImpact.upgradeAov)} vs {money(data.orderImpact.otherAov)}). Observed difference, not a controlled test.</>);
   }
-  if (!notes.length) return null;
   return (
-    <div className="wu-card wu-signals">
-      <div className="wu-klabel"><Tip content="Automatic reading of the numbers on this page — the same comparisons an analyst would make by hand (best $/session vs biggest biller, carts that don't close, dead reward tiers, AOV lift). Recomputed live from the current window and environment; nothing is hand-written.">What stands out</Tip></div>
-      <ul>{notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
+    <div className="wu-signals">
+      <div className="wu-muted" style={{ marginBottom: 4 }}>Computed live from the numbers currently on the page — window <b>{windowLabel}</b>. Change the dates or environment and these re-rank.</div>
+      {notes.length === 0 ? <div className="wu-muted">Not enough data in this window to say anything with confidence.</div> : <ul>{notes.map((n, i2) => <li key={i2}>{n}</li>)}</ul>}
     </div>
   );
 }
 
 // Every concept used on this page, with its formula. Opened from the header.
 function Glossary() {
-  const G: Array<[string, string]> = [
-    ['Exposed session', 'A distinct anonymous visitor (attribution_id, persisted in their browser) that fired at least one upgrade-module event in the window.'],
-    ['View', 'The module was shown on screen (its panel or nudge rendered).'],
-    ['Pick', 'The shopper engaged the middle step — selected their machine, or opened a recommendation.'],
-    ['Click', "Clicked 'add' on something the module offered."],
-    ['Add', 'The cart confirmed the item went in. An add is NOT a purchase.'],
-    ['Order (paid)', 'A completed, paid Shopify order containing at least one line the module added. The real bottom line.'],
-    ['CTR', 'Clicks ÷ views. How tempting the module is to the people who see it.'],
-    ['Adds/session', 'Confirmed adds ÷ sessions. An average (a session can add twice), not a percentage.'],
-    ['Conversion rate', 'Paid orders ÷ exposed sessions. The share of exposed visitors who ended up buying.'],
-    ['$/session', 'Attributed revenue ÷ exposed sessions. What each exposed visitor is worth — best metric for comparing modules with different traffic.'],
-    ['Cart-close rate', 'Paid orders ÷ adds. Of what entered the cart, how much actually got paid for.'],
-    ['Direct order / revenue', "Orders and AUD net revenue of the specific lines a module added (the line carries _pesado_source). Revenue counts only those lines, not the whole order."],
-    ['Assisted order', "An order linked to a previous module interaction via the attribution id the theme writes on the cart (__pesado_*) — the shopper interacted earlier, maybe another day, then bought."],
-    ['AOV (per module)', 'Average FULL order value of the paid orders that used that module — the whole basket, not just the added line.'],
-    ['Basket impact / upgrade lift', 'AOV and items of orders that used any module vs every other store order in the window. Observed difference between two groups, not a controlled test.'],
-    ['Store impact', '% of ALL store orders containing a module-added line, and % of ALL store net revenue that is module-attributed. The weight of the upgrade work in the business.'],
-    ['Pre-launch / Delta (By screen)', "Units/week now vs the frozen run-rate captured before the new theme went live (2026-07-21). Directional before/after — ad spend and seasonality move it too."],
-    ['Reward carts → bought', 'Carts that crossed a reward threshold (free shipping $100 / 10% $200 / 15% $300) and how many of those sessions completed a purchase. Crossing a tier is intent, not a sale.'],
-    ['Preview vs Production', 'preview = test traffic from the theme preview; production = live customers. Commercial numbers use production.'],
-    ['Data cadence', 'Funnel events are real-time (the pixel posts each one instantly). Sales refresh every ~5 minutes via the fast sync (interval configurable in Config → Connections), with a full reconciliation 3×/day.'],
+  const G: Array<[string, string, string]> = [
+    ['Exposed session', '—', 'A distinct anonymous visitor (attribution_id, persisted in their browser) that fired at least one upgrade-module event in the window.'],
+    ['View', '—', 'The module was shown on screen (its panel or nudge rendered).'],
+    ['Pick', '—', 'The shopper engaged the middle step — selected their machine, or opened a recommendation.'],
+    ['Click', '—', "Clicked 'add' on something the module offered."],
+    ['Add', '—', 'The cart confirmed the item went in. An add is NOT a purchase.'],
+    ['Order (paid)', '—', 'A completed, paid Shopify order containing at least one line the module added. The real bottom line.'],
+    ['CTR', 'clicks ÷ views × 100', 'How tempting the module is to the people who see it.'],
+    ['Adds/session', 'adds ÷ sessions', 'An average (a session can add twice), not a percentage.'],
+    ['Conversion rate', 'paid orders ÷ sessions × 100', 'The share of exposed visitors who ended up buying.'],
+    ['$/session', 'attributed revenue ÷ sessions', 'What each exposed visitor is worth — best metric for comparing modules with different traffic.'],
+    ['Cart-close rate', 'paid orders ÷ adds × 100', 'Of what entered the cart, how much actually got paid for.'],
+    ['Direct order / revenue', 'sum of module-added lines (AUD net)', "Orders and revenue of the specific lines a module added (the line carries _pesado_source) — only those lines, not the whole order."],
+    ['Assisted order', '—', "An order linked to a previous module interaction via the attribution id the theme writes on the cart (__pesado_*) — the shopper interacted earlier, maybe another day, then bought."],
+    ['AOV (per module)', 'sum(full order value) ÷ orders that used the module', 'The whole basket of those orders, not just the added line.'],
+    ['Basket impact / upgrade lift', '(upgrade AOV − other AOV) ÷ other AOV × 100', 'Orders that used any module vs every other store order in the window. Observed difference between two groups, not a controlled test.'],
+    ['Store impact', 'module orders ÷ all store orders · attributed revenue ÷ all store net revenue', 'The weight of the upgrade work in the whole business for the window.'],
+    ['Pre-launch / Delta (By screen)', '(units/wk now − baseline) ÷ baseline × 100', "Now vs the frozen run-rate captured before the new theme went live (2026-07-21). Directional — ad spend and seasonality move it too."],
+    ['Reward carts → bought', '—', 'Carts that crossed a reward threshold (free shipping $100 / 10% $200 / 15% $300) and how many of those sessions completed a purchase. Crossing a tier is intent, not a sale.'],
+    ['Preview vs Production', '—', 'preview = test traffic from the theme preview; production = live customers. Commercial numbers use production.'],
+    ['Data cadence', '—', 'Funnel events are real-time (the pixel posts each one instantly). Sales refresh every ~5 minutes via the fast sync (interval configurable in Config → Connections), with a full reconciliation 3×/day.'],
   ];
   return (
     <div className="wu-glossary">
-      {G.map(([term, def]) => (
+      {G.map(([term, formula, def]) => (
         <div key={term} className="wu-gloss-row">
-          <div className="wu-gloss-term">{term}</div>
+          <div className="wu-gloss-term">{term}{formula !== '—' && <div className="wu-gloss-formula">{formula}</div>}</div>
           <div className="wu-gloss-def">{def}</div>
         </div>
       ))}
@@ -794,6 +847,12 @@ const WU_CSS = `
 .wu-gloss-row:last-child{border-bottom:none}
 .wu-gloss-term{font-weight:600;font-size:13px}
 .wu-gloss-def{font-size:13px;line-height:1.55;opacity:.85}
+.wu-gloss-formula{font-family:ui-monospace,monospace;font-size:11px;color:var(--wu-crema);margin-top:3px;font-weight:500}
+.wu-collbtn{margin-left:auto;background:none;border:none;cursor:pointer;color:var(--wu-faint);padding:2px 4px;line-height:1}
+.wu-collbtn:hover{color:var(--wu-crema)}
+.wu-collbtn .wu-chev{font-size:15px}
+.wu-collbtn .wu-chev.open{transform:rotate(90deg)}
+.wu-seg-sm button{padding:4px 10px;font-size:11.5px}
 .wu-ctx{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
 .wu-seg{display:inline-flex;background:var(--wu-card);border:1px solid var(--wu-line);border-radius:999px;padding:3px}
 .wu-seg button{font-size:12px;font-weight:500;color:var(--wu-dim);background:none;border:none;padding:6px 13px;border-radius:999px;cursor:pointer;transition:.18s;white-space:nowrap}
