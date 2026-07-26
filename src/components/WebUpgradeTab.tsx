@@ -189,12 +189,12 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   // Per-card collapse, persisted. openS(id) says whether a card body is shown.
   const [closedCards, setClosedCards] = useState<Record<string, boolean>>(() => {
-    try { return JSON.parse(localStorage.getItem('wu-closed') || '{}'); } catch { return {}; }
+    try { return JSON.parse(localStorage.getItem('wu-closed2') || '{}'); } catch { return {}; }
   });
   const openS = (id: string) => !closedCards[id];
   const toggleS = (id: string) => setClosedCards((prev) => {
     const next = { ...prev, [id]: !prev[id] };
-    try { localStorage.setItem('wu-closed', JSON.stringify(next)); } catch { /* ignore */ }
+    try { localStorage.setItem('wu-closed2', JSON.stringify(next)); } catch { /* ignore */ }
     return next;
   });
   const CollBtn = ({ id }: { id: string }) => (
@@ -278,7 +278,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               <div className="wu-card">
                 <div className="wu-klabel wu-clickhead" onClick={headToggle('brand')}><HelpTitle k="brand">Machine brand picked</HelpTitle>{!openS('brand') && data!.byBrand.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byBrand.reduce((a, b) => a + b.selects, 0))} picks → {int(data!.byBrand.reduce((a, b) => a + b.adds, 0))} adds · top {data!.byBrand[0].brand}</span>}<CollBtn id="brand" /></div>
                 {openS('brand') && (data!.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand selections yet.</div> : (
-                  <table className="wu-table" style={{ marginTop: 10 }}>
+                  <div className="wu-scrollbody">
+                  <table className="wu-table">
                     <thead><tr>
                       <Th tip="The machine brand the shopper selected in the compatibility guide.">Brand</Th>
                       <Th right tip="Times a shopper picked a machine of this brand in the guide.">Picked</Th>
@@ -306,6 +307,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 ))}
               </div>
             </div>
@@ -929,6 +931,10 @@ const WU_CSS = `
 .wu-coll-sum + .wu-collbtn{margin-left:8px}
 .wu-clickhead{cursor:pointer}
 .wu-clickhead:hover .wu-chev{color:var(--wu-ink)}
+.wu-scrollbody{max-height:290px;overflow-y:auto;margin-top:10px;scrollbar-width:thin;scrollbar-color:var(--wu-faint) transparent}
+.wu-scrollbody::-webkit-scrollbar{width:8px}
+.wu-scrollbody::-webkit-scrollbar-thumb{background:var(--wu-line);border-radius:99px}
+.wu-scrollbody .wu-table th{position:sticky;top:0;background:var(--wu-card);z-index:1}
 .wu-group-row{cursor:pointer}
 .wu-group-row:hover td{background:var(--wu-crema-soft)}
 .wu-group-row .wu-chev{display:inline-block;transition:transform .15s;color:var(--wu-faint)}
