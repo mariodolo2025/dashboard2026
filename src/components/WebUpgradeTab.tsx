@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react';
 import { format, subDays } from 'date-fns';
-import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw, BookOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Calendar } from '@/components/ui/calendar';
 import { DateRangePresets } from '@/components/DateRangePresets';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -23,6 +24,7 @@ interface Dash {
   byModel: Array<{ brand: string; model: string; selects: number; addClicks: number; adds: number }>;
   byScreen: Array<{ sku: string; fitment: string | null; title: string; clicks: number; adds: number; attributedRevenue: number; unitsPerWeek: number; baselineUnitsPerWeek: number; deltaPct: number | null }>;
   rewards: Array<{ name: string; unlocks: number; sessions: number; bought: number }>;
+  storeShare: { storeOrders: number; storeRevenue: number; upgradeOrders: number; attributedRevenue: number; orderSharePct: number | null; revenueSharePct: number | null } | null;
   orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
   bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
   byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number; variants: Array<{ label: string; orders: number; lines: number; revenue: number }> | null }>;
@@ -32,10 +34,10 @@ interface Dash {
 
 const HELP: Record<string, string> = {
   exposed: 'Distinct anonymous sessions (attribution_id) that fired at least one upgrade-module event in the period.',
-  directRevenue: 'AUD revenue of order lines that were added by an upgrade module (line carries _pesado_source). Comes from Shopify orders via the sync — refreshed 3×/day (or on the main Update button), not instantly.',
+  directRevenue: 'AUD revenue of order lines that were added by an upgrade module (line carries _pesado_source). Comes from Shopify orders — refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day.',
   directOrders: 'Distinct orders that contain at least one upgrade-added line (direct attribution).',
-  assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed with the Shopify sync (3×/day or on Update).',
-  module: 'Each module end to end: sessions exposed → views → clicks → adds (into the cart) → ORDERS (actually paid for) and the revenue behind them. The funnel columns are real-time from the pixel; the Orders/Revenue columns come from the Shopify sync (3×/day or the Update button), so they lag behind. Adding to a cart is not a purchase — Orders is the real bottom line.',
+  assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day.',
+  module: 'Each module end to end: sessions exposed → views → clicks → adds (into the cart) → ORDERS (actually paid for) and the revenue behind them. The funnel columns are real-time from the pixel; the Orders/Revenue columns come from the Shopify sales sync — refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day — so they can lag a few minutes. Adding to a cart is not a purchase — Orders is the real bottom line.',
   rewards: 'Reward tiers shoppers crossed IN THEIR CART, listed lowest tier first (free shipping $100 → 10% off $200 → 15% off $300). "carts" = distinct sessions whose basket reached that threshold; "bought" = how many of those sessions actually completed a purchase. Crossing a tier is intent, not a sale — expect far more unlocks than orders, because most carts are abandoned. A tier only appears once a basket actually reached it.',
   source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
   impact: 'A simple question: do people who use an upgrade module end up buying MORE per order than everyone else? It takes every paid order in the window, splits them into "used an upgrade module" vs "did not", and compares the average order value (AOV) and the average number of items. The difference is the lift. It is an observed gap between two groups of shoppers, not a controlled test — people who engage with an upgrade may already be bigger spenders.',
@@ -44,6 +46,9 @@ const HELP: Record<string, string> = {
   brand: 'Which machine brand visitors picked in the guide, with each specific model listed underneath it. A brand (or model) with many picks but few adds means the guide finds their machine but the offer does not land.',
   screen: 'Only products a customer added THROUGH an upgrade module (machine finder or a recommendation). A product added with the normal Add-to-cart button is the base product, not a module add, so it will not appear here. Shows module clicks/adds plus sales now vs the frozen pre-launch run rate — the delta is a before/after observation (ad spend and seasonality move it too), not proof the modules caused it.',
   family: "Direct sales grouped by the purchased product's family (Shower Screens, Filter Baskets, Portafilters…), derived from the SKU with the same mapping as the E-commerce tab.",
+  conv: 'Conversion rate: paid orders ÷ exposed sessions. The share of people who saw the module and ended up buying something it added.',
+  rps: 'Revenue per session: attributed revenue ÷ exposed sessions. What each exposed visitor is worth — the best number for comparing modules with very different traffic.',
+  share: 'How much of the WHOLE store the upgrade modules account for in this window: % of all store orders that contain a module-added line, and % of all store net revenue that is module-attributed. This is the weight of the upgrade work in the business.',
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
 };
 
@@ -288,7 +293,18 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <div className="wu-eyebrow">Pesado · Website upgrades</div>
             <h1 className="wu-title">Web Upgrade <em>Performance</em></h1>
           </div>
-          <span className="wu-pill"><span className="wu-live" />Live from DB</span>
+          <div className="flex items-center gap-2">
+            <Dialog>
+              <DialogTrigger asChild>
+                <button type="button" className="wu-pill wu-gloss"><BookOpen className="h-3.5 w-3.5" />How it's measured</button>
+              </DialogTrigger>
+              <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader><DialogTitle>Web Upgrade — every concept, and how it's calculated</DialogTitle></DialogHeader>
+                <Glossary />
+              </DialogContent>
+            </Dialog>
+            <span className="wu-pill"><span className="wu-live" />Live from DB</span>
+          </div>
         </div>
 
         <div className="wu-ctx">
@@ -357,6 +373,16 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               <Kpi label="Assisted orders" help="assisted" val={int(t.assistedOrders)} sub="via attribution id" />
             </div>
 
+            {data!.storeShare && data!.storeShare.upgradeOrders > 0 && (
+              <div className="wu-share">
+                <HelpTitle k="share">Store impact</HelpTitle>
+                <span className="wu-share-item"><b className="tnum">{data!.storeShare.orderSharePct ?? '—'}%</b> of all store orders ({int(data!.storeShare.upgradeOrders)} of {int(data!.storeShare.storeOrders)}) touched an upgrade module</span>
+                <span className="wu-share-item"><b className="tnum">{data!.storeShare.revenueSharePct ?? '—'}%</b> of store net revenue ({money(data!.storeShare.attributedRevenue)} of {money(data!.storeShare.storeRevenue)}) is module-attributed</span>
+              </div>
+            )}
+
+            <Signals data={data!} />
+
             {noData && (
               <div className="wu-empty">
                 No <b>{env}</b> events in this window.{env === 'production' ? ' Switch to Preview (test) to see the test session, or wait for the theme to go live.' : ''}
@@ -380,6 +406,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                           <div className="wu-block-rev">
                             <div className="wu-block-money">{m.revenue > 0 ? money(m.revenue) : '—'}</div>
                             <div className="wu-sub">{int(m.orders)} paid orders{m.aov != null && <> · AOV <b>${Math.round(m.aov)}</b></>}</div>
+                            <div className="wu-sub"><Tip content={HELP.conv}><span className="wu-help">Conv {m.sessions > 0 ? `${((100 * m.orders) / m.sessions).toFixed(1)}%` : '—'}</span></Tip> · <Tip content={HELP.rps}><span className="wu-help">${m.sessions > 0 ? (m.revenue / m.sessions).toFixed(2) : '—'}/session</span></Tip></div>
                           </div>
                         </div>
                         <div className="wu-block-bars">
@@ -421,7 +448,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     <Th right tip="Times an add was confirmed by the cart — the item actually went in.">Adds</Th>
                     <Th right tip="Click-through rate: clicks ÷ views.">CTR</Th>
                     <Th right tip="Average confirmed adds per session. A session can add more than once, so this is an average, not a percentage.">Adds/sess</Th>
-                    <Th right tip="THE END OF THE FUNNEL: orders actually PAID FOR that contain an item this module added. An 'add' only means it went into the cart — this column is the purchase. Comes from the Shopify sync (3×/day or the Update button), so it lags the funnel columns.">Orders</Th>
+                    <Th right tip="THE END OF THE FUNNEL: orders actually PAID FOR that contain an item this module added. An 'add' only means it went into the cart — this column is the purchase. Comes from the fast sales sync (~5 min), so it can lag the funnel columns by a few minutes.">Orders</Th>
                     <Th right tip="AUD revenue of the module-added lines inside those paid orders.">Revenue</Th>
                   </tr></thead>
                   <tbody>
@@ -606,7 +633,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 
             </>
             <div className="wu-foot">
-              <b>Data cadence:</b> the funnel (sessions, views, clicks, adds, rewards) updates in <b>real time</b> — the pixel sends each event instantly, so a refresh shows it. <b>Sales</b> (direct &amp; assisted) come from Shopify orders via the sync, refreshed <b>3×/day</b> (06:00 / 13:00 / 20:00 Brisbane) or on the main <b>Update</b> button — reaching checkout is not an order, only a completed purchase counts.<br />
+              <b>Data cadence:</b> the funnel (sessions, views, clicks, adds, rewards) updates in <b>real time</b> — the pixel sends each event instantly, so a refresh shows it. <b>Sales</b> (direct &amp; assisted) come from Shopify orders via the fast sales sync — refreshed <b>every ~5 minutes</b> (interval configurable in Config → Connections), with a full reconciliation 3×/day — reaching checkout is not an order, only a completed purchase counts.<br />
               <b>Preview</b> = test traffic · <b>Production</b> = live customers. Assisted attribution lands once the theme's <b>__pesado_*</b> cart attributes reach the orders.
             </div>
           </>
@@ -666,6 +693,78 @@ function SummaryRow({ m }: { m: Dash['modules'][number] }) {
   );
 }
 
+// Dynamic reading of the data — the comparisons a marketer would make by hand.
+// Pure client-side arithmetic over the RPC payload; recomputed on every fetch.
+function Signals({ data }: { data: Dash }) {
+  const mods = data.modules.filter((m) => m.module !== 'Other' && m.sessions >= 30);
+  const conv = (m: Dash['modules'][number]) => (m.sessions > 0 ? (100 * m.orders) / m.sessions : 0);
+  const rps = (m: Dash['modules'][number]) => (m.sessions > 0 ? m.revenue / m.sessions : 0);
+  const notes: ReactNode[] = [];
+
+  if (mods.length >= 2) {
+    const topRev = [...mods].sort((a, b) => b.revenue - a.revenue)[0];
+    const topRps = [...mods].sort((a, b) => rps(b) - rps(a))[0];
+    if (topRev.revenue > 0 && rps(topRps) > 0 && topRev.module !== topRps.module) {
+      notes.push(<><b>{topRev.module}</b> bills the most ({money(topRev.revenue)}) but <b>{topRps.module}</b> is worth {(rps(topRps) / Math.max(rps(topRev), 0.01)).toFixed(1)}× more per visitor — ${rps(topRps).toFixed(2)}/session and {conv(topRps).toFixed(1)}% conversion vs ${rps(topRev).toFixed(2)} and {conv(topRev).toFixed(1)}%. If it gets more traffic, it should out-earn its size.</>);
+    }
+    const withAdds = mods.filter((m) => m.adds >= 20);
+    if (withAdds.length >= 2) {
+      const worst = [...withAdds].sort((a, b) => a.orders / a.adds - b.orders / b.adds)[0];
+      const rate = (100 * worst.orders) / worst.adds;
+      if (rate < 20) notes.push(<><b>{worst.module}</b> fills carts that don't close: {int(worst.adds)} adds became only {int(worst.orders)} paid orders ({rate.toFixed(0)}% cart-close). Worth checking what happens between its add and checkout.</>);
+    }
+  }
+  const deadReward = data.rewards.find((r) => r.sessions >= 10 && r.bought === 0);
+  if (deadReward) notes.push(<>{int(deadReward.sessions)} carts crossed the <b>{REWARD_LABEL[deadReward.name] ?? deadReward.name}</b> threshold and none bought — money sitting in abandoned carts.</>);
+  if (data.orderImpact?.aovLiftPct != null) {
+    const l = data.orderImpact.aovLiftPct;
+    notes.push(<>Orders that used an upgrade average <b>{l > 0 ? '+' : ''}{l}%</b> AOV vs everyone else ({money(data.orderImpact.upgradeAov)} vs {money(data.orderImpact.otherAov)}). Observed difference, not a controlled test.</>);
+  }
+  if (!notes.length) return null;
+  return (
+    <div className="wu-card wu-signals">
+      <div className="wu-klabel"><Tip content="Automatic reading of the numbers on this page — the same comparisons an analyst would make by hand (best $/session vs biggest biller, carts that don't close, dead reward tiers, AOV lift). Recomputed live from the current window and environment; nothing is hand-written.">What stands out</Tip></div>
+      <ul>{notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
+    </div>
+  );
+}
+
+// Every concept used on this page, with its formula. Opened from the header.
+function Glossary() {
+  const G: Array<[string, string]> = [
+    ['Exposed session', 'A distinct anonymous visitor (attribution_id, persisted in their browser) that fired at least one upgrade-module event in the window.'],
+    ['View', 'The module was shown on screen (its panel or nudge rendered).'],
+    ['Pick', 'The shopper engaged the middle step — selected their machine, or opened a recommendation.'],
+    ['Click', "Clicked 'add' on something the module offered."],
+    ['Add', 'The cart confirmed the item went in. An add is NOT a purchase.'],
+    ['Order (paid)', 'A completed, paid Shopify order containing at least one line the module added. The real bottom line.'],
+    ['CTR', 'Clicks ÷ views. How tempting the module is to the people who see it.'],
+    ['Adds/session', 'Confirmed adds ÷ sessions. An average (a session can add twice), not a percentage.'],
+    ['Conversion rate', 'Paid orders ÷ exposed sessions. The share of exposed visitors who ended up buying.'],
+    ['$/session', 'Attributed revenue ÷ exposed sessions. What each exposed visitor is worth — best metric for comparing modules with different traffic.'],
+    ['Cart-close rate', 'Paid orders ÷ adds. Of what entered the cart, how much actually got paid for.'],
+    ['Direct order / revenue', "Orders and AUD net revenue of the specific lines a module added (the line carries _pesado_source). Revenue counts only those lines, not the whole order."],
+    ['Assisted order', "An order linked to a previous module interaction via the attribution id the theme writes on the cart (__pesado_*) — the shopper interacted earlier, maybe another day, then bought."],
+    ['AOV (per module)', 'Average FULL order value of the paid orders that used that module — the whole basket, not just the added line.'],
+    ['Basket impact / upgrade lift', 'AOV and items of orders that used any module vs every other store order in the window. Observed difference between two groups, not a controlled test.'],
+    ['Store impact', '% of ALL store orders containing a module-added line, and % of ALL store net revenue that is module-attributed. The weight of the upgrade work in the business.'],
+    ['Pre-launch / Delta (By screen)', "Units/week now vs the frozen run-rate captured before the new theme went live (2026-07-21). Directional before/after — ad spend and seasonality move it too."],
+    ['Reward carts → bought', 'Carts that crossed a reward threshold (free shipping $100 / 10% $200 / 15% $300) and how many of those sessions completed a purchase. Crossing a tier is intent, not a sale.'],
+    ['Preview vs Production', 'preview = test traffic from the theme preview; production = live customers. Commercial numbers use production.'],
+    ['Data cadence', 'Funnel events are real-time (the pixel posts each one instantly). Sales refresh every ~5 minutes via the fast sync (interval configurable in Config → Connections), with a full reconciliation 3×/day.'],
+  ];
+  return (
+    <div className="wu-glossary">
+      {G.map(([term, def]) => (
+        <div key={term} className="wu-gloss-row">
+          <div className="wu-gloss-term">{term}</div>
+          <div className="wu-gloss-def">{def}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const WU_CSS = `
 .wu{--wu-ground:#F4EEE3;--wu-card:#FFFFFF;--wu-card2:#FBF6EC;--wu-line:#E8DFCC;--wu-text:#241B12;--wu-dim:#786A53;--wu-faint:#A2937C;--wu-crema:#B9812A;--wu-crema2:#D19B34;--wu-crema-soft:rgba(201,138,41,.10);--wu-pos:#2E9E6E;--wu-neg:#C6513A;--wu-shadow:0 1px 2px rgba(60,40,10,.06),0 10px 34px rgba(60,40,10,.07);
   font-family:'Inter',system-ui,sans-serif;color:var(--wu-text);background:radial-gradient(1200px 500px at 12% -10%,var(--wu-crema-soft),transparent 60%),var(--wu-ground);padding:clamp(14px,2vw,22px);border-radius:16px}
@@ -681,6 +780,20 @@ const WU_CSS = `
 .wu-title{font-size:clamp(24px,3vw,36px);font-weight:600;letter-spacing:-.01em;line-height:1.05;margin-top:6px}.wu-title em{font-style:italic;color:var(--wu-crema)}
 .wu-pill{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--wu-dim);background:var(--wu-card);border:1px solid var(--wu-line);border-radius:999px;padding:7px 14px}
 .wu-live{width:7px;height:7px;border-radius:50%;background:var(--wu-pos)}
+.wu-gloss{cursor:pointer;gap:6px}
+.wu-gloss:hover{border-color:var(--wu-crema);color:var(--wu-crema)}
+.wu-share{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;background:linear-gradient(158deg,var(--wu-card),var(--wu-card2));border:1px solid var(--wu-line);border-left:3px solid var(--wu-crema);border-radius:12px;padding:12px 16px;font-size:13px;color:var(--wu-dim);box-shadow:var(--wu-shadow)}
+.wu-share .wu-help{font-weight:700;color:var(--wu-crema);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.wu-share-item b{color:var(--wu-text);font-family:'Fraunces',Georgia,serif;font-size:15px}
+.wu-signals ul{margin:10px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:8px}
+.wu-signals li{font-size:13px;line-height:1.55;color:var(--wu-dim)}
+.wu-signals li b{color:var(--wu-text)}
+.wu-signals li::marker{color:var(--wu-crema)}
+.wu-glossary{display:flex;flex-direction:column}
+.wu-gloss-row{display:grid;grid-template-columns:180px 1fr;gap:14px;padding:9px 0;border-bottom:1px solid rgba(128,110,80,.15)}
+.wu-gloss-row:last-child{border-bottom:none}
+.wu-gloss-term{font-weight:600;font-size:13px}
+.wu-gloss-def{font-size:13px;line-height:1.55;opacity:.85}
 .wu-ctx{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
 .wu-seg{display:inline-flex;background:var(--wu-card);border:1px solid var(--wu-line);border-radius:999px;padding:3px}
 .wu-seg button{font-size:12px;font-weight:500;color:var(--wu-dim);background:none;border:none;padding:6px 13px;border-radius:999px;cursor:pointer;transition:.18s;white-space:nowrap}
