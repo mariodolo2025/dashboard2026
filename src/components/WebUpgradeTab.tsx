@@ -170,6 +170,10 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   // Manual range picked inside the tab wins over the app-wide range.
   const [localRange, setLocalRange] = useState<DateRange | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // In-progress calendar selection. Without it, a half-picked range (start only)
+  // never reaches `selected`, so the calendar keeps extending the old range and
+  // the start date appears unclickable.
+  const [draft, setDraft] = useState<DateRange | undefined>(undefined);
   const range = useMemo<DateRange>(() => {
     if (localRange?.from && localRange?.to) return localRange;
     if (dateRange?.from && dateRange?.to) return dateRange;
@@ -308,7 +312,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <option value="summary">View: Summary</option>
           </select>
           {/* Manual calendar — same picker as the rest of the dashboard */}
-          <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
+          <Popover open={pickerOpen} onOpenChange={(o) => { setPickerOpen(o); if (!o) setDraft(undefined); }} modal>
             <PopoverTrigger asChild>
               <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs font-medium">
                 <CalendarIcon className="h-3.5 w-3.5" />
@@ -317,11 +321,22 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
               <div className="flex">
-                <DateRangePresets onSelect={(r) => { applyRange(r); setPickerOpen(false); }} />
+                <DateRangePresets onSelect={(r) => { setDraft(undefined); applyRange(r); setPickerOpen(false); }} />
                 <div>
-                  <Calendar initialFocus mode="range" defaultMonth={range.from} selected={range as never}
-                    onSelect={(r) => applyRange((r as DateRange) || {})} numberOfMonths={2} weekStartsOn={1} />
-                  <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => setPickerOpen(false)}>Apply</Button></div>
+                  <Calendar initialFocus mode="range" defaultMonth={range.from} selected={(draft ?? range) as never}
+                    onSelect={(_sel: unknown, day: Date) => {
+                      // Deterministic two-click pick: first click always STARTS a new
+                      // range (the default picker instead extended the old one, which
+                      // made the start date feel unclickable); second click ends it.
+                      if (!draft?.from || draft.to) {
+                        setDraft({ from: day, to: undefined });
+                      } else {
+                        const r: DateRange = day < draft.from ? { from: day, to: draft.from } : { from: draft.from, to: day };
+                        setDraft(r);
+                        applyRange(r);
+                      }
+                    }} numberOfMonths={2} weekStartsOn={1} />
+                  <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => { setDraft(undefined); setPickerOpen(false); }}>Apply</Button></div>
                 </div>
               </div>
             </PopoverContent>
