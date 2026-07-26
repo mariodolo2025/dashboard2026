@@ -3453,13 +3453,10 @@ function App() {
         {/* Web Upgrade performance modal */}
         <Dialog open={activeModal === 'web-upgrade'} onOpenChange={(o) => !o && setActiveModal(null)}>
           <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
+            <DialogHeader className="sr-only">
               <DialogTitle>Web Upgrade performance</DialogTitle>
-              <DialogDescription>On-site upgrade modules — funnel &amp; attributed sales</DialogDescription>
             </DialogHeader>
-            <div className="mt-4">
-              <WebUpgradeTab dateRange={dateRange} setDateRange={setDateRange} />
-            </div>
+            <WebUpgradeTab dateRange={dateRange} setDateRange={setDateRange} />
           </DialogContent>
         </Dialog>
 
