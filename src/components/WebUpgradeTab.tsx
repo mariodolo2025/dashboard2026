@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, Fragment, type ReactNode, type MouseEvent as ReactMouseEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment, type ReactNode, type MouseEvent as ReactMouseEvent } from 'react';
 import { format, subDays } from 'date-fns';
 import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw, BookOpen, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -33,25 +33,64 @@ interface Dash {
 }
 
 const HELP: Record<string, string> = {
-  exposed: 'Distinct anonymous sessions (attribution_id) that fired at least one upgrade-module event in the period.',
-  directRevenue: 'AUD revenue of order lines that were added by an upgrade module (line carries _pesado_source). Comes from Shopify orders — refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day.',
-  directOrders: 'Distinct orders that contain at least one upgrade-added line (direct attribution).',
-  assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day.',
   module: 'Each module end to end: sessions exposed → views → clicks → adds (into the cart) → ORDERS (actually paid for) and the revenue behind them. The funnel columns are real-time from the pixel; the Orders/Revenue columns come from the Shopify sales sync — refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day — so they can lag a few minutes. Adding to a cart is not a purchase — Orders is the real bottom line.',
-  rewards: 'Reward tiers shoppers crossed IN THEIR CART, listed lowest tier first (free shipping $100 → 10% off $200 → 15% off $300). "carts" = distinct sessions whose basket reached that threshold; "bought" = how many of those sessions actually completed a purchase. Crossing a tier is intent, not a sale — expect far more unlocks than orders, because most carts are abandoned. A tier only appears once a basket actually reached it.',
-  impact: 'A simple question: do people who use an upgrade module end up buying MORE per order than everyone else? It takes every paid order in the window, splits them into "used an upgrade module" vs "did not", and compares the average order value (AOV) and the average number of items. The difference is the lift. It is an observed gap between two groups of shoppers, not a controlled test — people who engage with an upgrade may already be bigger spenders.',
-  machine: "Direct sales grouped by the customer's espresso machine. Each module writes the machine name in its own style, so the bold row is the machine TOTAL and the indented rows underneath split it by which module recorded the sale: “The X” = the Find-your-machine tool on the product page; “Compatible with your X” = the Complete-your-setup panel in the cart. Same machine, different door in.",
+  rewards: 'Reward tiers shoppers crossed IN THEIR CART, listed lowest tier first (free shipping $100 → 10% off $200 → 15% off $300). "carts" = distinct sessions whose basket reached that threshold; "bought" = how many of those sessions actually completed a purchase. Crossing a tier is intent, not a sale — expect far more unlocks than orders, because most carts are abandoned.',
+  impact: 'A simple question: do people who use an upgrade module end up buying MORE per order than everyone else? It takes every paid order in the window, splits them into "used an upgrade module" vs "did not", and compares the average order value (AOV) and the average number of items. It is an observed gap between two groups of shoppers, not a controlled test.',
   compat: 'Activity on the standalone Compatibility Guide page (/pages/compatibility-guide) — where a shopper browses by machine brand → model to find compatible parts. This is that page\'s funnel, end to end: landed on the page → picked their machine → clicked add → add confirmed. It stays empty until someone uses that page (adds made on a normal product page show up under the other sections, not here).',
   brand: 'Which machine brand visitors picked in the guide, with each specific model listed underneath it. A brand (or model) with many picks but few adds means the guide finds their machine but the offer does not land.',
   screen: 'Only products a customer added THROUGH an upgrade module (machine finder or a recommendation). A product added with the normal Add-to-cart button is the base product, not a module add, so it will not appear here. Shows module clicks/adds plus sales now vs the frozen pre-launch run rate — the delta is a before/after observation (ad spend and seasonality move it too), not proof the modules caused it.',
-  family: "Direct sales grouped by the purchased product's family (Shower Screens, Filter Baskets, Portafilters…), derived from the SKU with the same mapping as the E-commerce tab.",
   conv: 'Conversion rate: paid orders ÷ exposed sessions. The share of people who saw the module and ended up buying something it added.',
   rps: 'Revenue per session: attributed revenue ÷ exposed sessions. What each exposed visitor is worth — the best number for comparing modules with very different traffic.',
-  share: 'How much of the WHOLE store the upgrade modules account for in this window: % of all store orders that contain a module-added line, and % of all store net revenue that is module-attributed. This is the weight of the upgrade work in the business. Click for the full store context.',
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
-  trendChart: 'AUD revenue of module-added lines, day by day, inside the selected window. Sales come from Shopify via the fast sync (~5 min), so the current day is always partial.',
-  dropoff: 'The four funnel stages as fixed blocks with the STEP-TO-STEP conversion between them (views→clicks, clicks→adds, adds→paid orders). Green = best step of its kind across the four modules, red = worst. Proportional bars would render Orders invisible — 271 orders against 21,746 views is 1.2% of the track.',
 };
+
+// Definition tooltips (data-def): ~40 terms, written as explanations rather than
+// restatements. Lifted verbatim from the design mock. Rendered by a single
+// delegated floating card (see onDefOver in the component) so SVG hover targets
+// work too — Radix stays for the image tooltips (ModuleTip) and legacy HELP.
+const DEFS = {
+  storeImpact: 'How much of the whole store — not just upgrade traffic — runs through a module. Click to open the full store breakdown.',
+  exposed: 'Unique browsing sessions in which at least one upgrade module rendered on screen. Counted once per session, however many times the module appeared.',
+  directRevenue: 'Net revenue of the order lines a module placed — the customer clicked add inside the module. It excludes the rest of that basket.',
+  directOrders: 'Paid orders containing at least one line a module placed.',
+  assisted: 'Paid orders carrying a module attribution id whose lines were added somewhere else — the module was seen, the add happened later.',
+  trendChart: 'Net revenue of module-placed lines, by day. Hover a day for its numbers. The last day in the window is still filling.',
+  ranking: 'Modules ranked by attributed revenue per exposed session. Revenue alone rewards whichever module sits on the busiest page.',
+  insideTouched: 'Of the money those orders billed, how much the module put in the basket and how much the customer came for anyway.',
+  modulePlaced: 'Order lines added by a click inside a module — the accessory the module put in the basket.',
+  alreadyInBasket: 'Everything else in those same orders: the product the customer came for regardless of the module.',
+  growOrder: 'The two groups of orders compared. They are different customers, not an A/B test — someone using a compatibility finder already arrives with accessory intent.',
+  rps: 'Attributed revenue divided by exposed sessions. The only fair way to rank modules whose traffic differs by 20×.',
+  conversion: 'Share of exposed sessions that ended in a paid order containing a line from this module.',
+  aov: 'Average value of the paid orders this module contributed to — the whole order, not just the line the module placed.',
+  dropoff: 'The four funnel stages with the conversion of each step between them. The percentages, not the bar heights, are what to read.',
+  views: 'Times the module rendered on screen. One session can produce several.',
+  ctr: 'Views that became a click on something inside the module. Low CTR means the module is not being noticed or not being believed.',
+  clicks: 'Interactions with a product inside the module.',
+  add: 'Clicks that ended with the item actually in the cart. A gap here is a broken add, not a weak offer.',
+  adds: 'Successful add-to-cart events fired from inside the module.',
+  close: 'Cart adds that survived to a paid order.',
+  orders: 'Paid orders containing at least one line from this module.',
+  runRate: 'Units sold per week today against the weekly run rate frozen before the Jul 23 launch.',
+  family: 'SKU grouping derived from the product code prefix plus the detected size, the same rule the SKU table already uses.',
+  colAdds: 'Add-to-cart events fired from a module for the variants currently in view.',
+  colAttributed: 'Net revenue of the module-placed lines for the variants currently in view.',
+  colNow: 'Units sold per week in the selected window — from real completed orders.',
+  colBase: 'The weekly run rate frozen before Jul 23, used as the comparison baseline.',
+  colDelta: 'The average of the individual variant percentages currently in view. Change the filter and this changes: under Delta + a family averages only the variants that grew.',
+  avgOf: 'The average of every variant percentage currently in view — how much a typical product moved, not how the catalogue moved in units.',
+  byMachine: 'Attributed revenue grouped by the machine the customer selected in a module.',
+  rewards: 'Carts that crossed a free-shipping or discount threshold while a module was open. A cart milestone, not a sale.',
+  splitInTwo: 'Every paid order in the window lands on one side or the other: it either contains a module-placed line, or it does not.',
+  counterfactual: 'A plain arithmetic scenario, not a controlled test: the module orders repriced at the AOV of the orders with no module.',
+  dayByDay: 'Total store revenue per day, with the module-attributed part shaded underneath.',
+};
+
+// Dashed-underline definition term. The definition itself is shown by the
+// delegated data-def handler on the tab root.
+function D({ d, children }: { d: string; children: ReactNode }) {
+  return <span data-def={d} className="wu-def">{children}</span>;
+}
 
 // Real screenshots of each on-site module (captured from the live theme), shown
 // inside the module tooltips so the reader sees WHICH surface the row refers to.
@@ -117,6 +156,12 @@ const famOf = (sku0: string, title: string, withSize = true): string => {
   return fam + size;
 };
 
+// The Products view delta rule (deliberate, per the design handoff): a variant
+// with no baseline but sales counts as +100%; a family's delta is the MEAN of
+// its visible variants' percentages, never the sum-based ratio.
+const pctOf = (now: number, base: number) => (base > 0 ? (now - base) / base : now > 0 ? 1 : 0);
+const fmtPct = (x: number) => { const a = Math.abs(x * 100); return `${x < 0 ? '−' : '+'}${a < 10 ? a.toFixed(1) : Math.round(a)}%`; };
+
 function Info({ k }: { k: string }) {
   return (
     <Tooltip>
@@ -172,12 +217,31 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
       return LEGACY[s] ?? 'daily';
     } catch { return 'daily'; }
   });
-  const pickView = (v: View) => { setView(v); try { localStorage.setItem('wu-view', v); } catch { /* ignore */ } };
   const [data, setData] = useState<Dash | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [storeOpen, setStoreOpen] = useState(false);
   const [moduleSort, setModuleSort] = useState<'rps' | 'revenue' | 'conv'>('rps');
+
+  // Delegated data-def tooltip: one floating card for every dashed term,
+  // including the sparkline's SVG hover bands. Dismissal is unconditional
+  // (any mouseout + root mouseleave) and the tip clears on view change and on
+  // opening the modal — guarding the clear leaves it pinned over new content.
+  const wuRef = useRef<HTMLDivElement>(null);
+  const [def, setDef] = useState<{ text: string; x: number; y: number } | null>(null);
+  const onDefOver = (e: ReactMouseEvent) => {
+    const target = e.target as Element;
+    const el = target.closest ? (target.closest('[data-def]') as HTMLElement | null) : null;
+    if (!el || !wuRef.current) return;
+    const text = el.getAttribute('data-def') ?? '';
+    if (def?.text === text) return;
+    const r = el.getBoundingClientRect();
+    const h = wuRef.current.getBoundingClientRect();
+    setDef({ text, x: Math.max(10, Math.min(r.left - h.left, h.width - 322)), y: r.bottom - h.top + 9 });
+  };
+  const clearDef = () => setDef((d) => (d ? null : d));
+  const pickView = (v: View) => { setView(v); clearDef(); try { localStorage.setItem('wu-view', v); } catch { /* ignore */ } };
+  const openStore = () => { clearDef(); setStoreOpen(true); };
 
   // Manual range picked inside the tab wins over the app-wide range.
   // Default window: launch day → today. Earlier dates predate the tracking, so
@@ -250,28 +314,13 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const RPS_FLOOR = 0.5;
   const badModule = (m: Dash['modules'][number]) => rpsOf(m) < RPS_FLOOR && rpsOf(m) === Math.min(...mods.map(rpsOf));
 
-  // Family aggregation over byScreen (delta recomputed on group totals, never averaged).
-  const famAgg = useMemo(() => {
-    const map = new Map<string, Dash['byScreen']>();
-    for (const r of data?.byScreen ?? []) {
-      const k = famOf(r.sku, r.title);
-      map.set(k, [...(map.get(k) ?? []), r]);
-    }
-    return [...map.entries()].map(([key, members]) => {
-      const upw = members.reduce((a, b) => a + b.unitsPerWeek, 0);
-      const base = members.reduce((a, b) => a + b.baselineUnitsPerWeek, 0);
-      return {
-        key, members,
-        adds: members.reduce((a, b) => a + b.adds, 0),
-        attributedRevenue: members.reduce((a, b) => a + b.attributedRevenue, 0),
-        unitsPerWeek: Math.round(upw * 10) / 10,
-        baselineUnitsPerWeek: Math.round(base * 10) / 10,
-        deltaPct: base > 0 ? Math.round(((upw - base) / base) * 1000) / 10 : null,
-      };
-    }).sort((a, b) => b.attributedRevenue - a.attributedRevenue);
-  }, [data]);
-
-  const openStore = () => setStoreOpen(true);
+  // Store split numbers (strip, rail panel and modal share these).
+  const ss = data?.storeShare ?? null;
+  const uor = ss ? ss.upgradeOrderRevenue ?? (data?.orderImpact?.upgradeAov != null ? Math.round(data.orderImpact.upgradeAov * data.orderImpact.upgradeOrders) : null) : null;
+  const touchedPct = ss && uor != null && ss.storeRevenue > 0 ? Math.round((1000 * uor) / ss.storeRevenue) / 10 : null;
+  const restRev = ss && uor != null ? ss.storeRevenue - uor : null;
+  const insidePct = ss && uor != null && uor > 0 ? Math.round((1000 * ss.attributedRevenue) / uor) / 10 : null;
+  const rideRev = ss && uor != null ? Math.max(0, uor - ss.attributedRevenue) : null;
 
   const secGuide = t ? (
     <>
@@ -355,7 +404,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     </>
   ) : null;
 
-  // ——— Daily brief building blocks ———
+  // ——— Daily brief ———
   const daily = (() => {
     if (!t || !data) return null;
     const tr = data.trend ?? [];
@@ -368,35 +417,55 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     const heroDelta = avg > 0 ? Math.round((100 * (heroRev - avg)) / avg) : null;
     const heroWhen = hero ? (endsToday ? 'yesterday' : `on ${format(new Date(hero.d + 'T00:00:00'), 'MMM d')}`) : '';
 
-    // Area chart geometry (viewBox 320×74, x 10→310, baseline y=66, top y=8).
-    const revs = tr.map((d) => d.attributedRevenue ?? 0);
+    // Sparkline geometry: wide viewBox with UNIFORM scaling (no
+    // preserveAspectRatio="none" — that stretched the stroke and flattened the
+    // curve). x 20→880, baseline y=130.
+    const revs = tr.map((d2) => d2.attributedRevenue ?? 0);
     const maxRev = Math.max(...revs, 1);
-    const px = (i: number) => (tr.length > 1 ? 10 + (300 * i) / (tr.length - 1) : 160);
-    const py = (v: number) => 66 - (58 * v) / maxRev;
+    const bestIdx = revs.indexOf(Math.max(...(endsToday ? revs.slice(0, -1) : revs), 0));
+    const px = (i: number) => (tr.length > 1 ? 20 + (860 * i) / (tr.length - 1) : 450);
+    const py = (v: number) => 130 - (110 * v) / maxRev;
     const pts = revs.map((v, i) => `${px(i).toFixed(1)},${py(v).toFixed(1)}`);
     const labelStep = Math.max(1, Math.ceil(tr.length / 7));
+    const bandDef = (d2: Dash['trend'][number], i: number) => {
+      const store = d2.storeRevenue ?? 0;
+      const attr = d2.attributedRevenue ?? 0;
+      const share = store > 0 ? Math.round((100 * attr) / store) : null;
+      const dt = format(new Date(d2.d + 'T00:00:00'), 'MMM d');
+      const isLast = endsToday && i === tr.length - 1;
+      const bits = [`${dt} — ${money1(attr)}${isLast ? ' so far' : ' attributed'}`, store > 0 ? `${money1(store)} store that day` : null, share != null ? `${share}% of it` : null].filter(Boolean).join(' · ');
+      return bits + (isLast ? ' — the day is still filling' : i === bestIdx && tr.length > 1 ? ' — the best day so far' : '');
+    };
 
     const ranked = [...mods].sort((a, b) => rpsOf(b) - rpsOf(a));
 
-    // Families that moved the most: top |delta| plus always the worst family.
-    const famBaseMap = new Map<string, { upw: number; base: number }>();
+    // Families that moved (rail): sum-based deltas + a per-variant agreement note.
+    const famBaseMap = new Map<string, { upw: number; base: number; pcts: number[] }>();
     for (const r of data.byScreen) {
       const k = famOf(r.sku, r.title, false);
-      const cur = famBaseMap.get(k) ?? { upw: 0, base: 0 };
-      famBaseMap.set(k, { upw: cur.upw + r.unitsPerWeek, base: cur.base + r.baselineUnitsPerWeek });
+      const cur = famBaseMap.get(k) ?? { upw: 0, base: 0, pcts: [] };
+      cur.upw += r.unitsPerWeek; cur.base += r.baselineUnitsPerWeek; cur.pcts.push(pctOf(r.unitsPerWeek, r.baselineUnitsPerWeek));
+      famBaseMap.set(k, cur);
     }
     const famMoves = [...famBaseMap.entries()]
       .filter(([, v]) => v.base > 0)
-      .map(([k, v]) => ({ family: k, upw: Math.round(v.upw * 10) / 10, base: Math.round(v.base * 10) / 10, delta: Math.round((100 * (v.upw - v.base)) / v.base) }));
+      .map(([k, v]) => {
+        const ups = v.pcts.filter((p) => p > 0).length;
+        const downs = v.pcts.filter((p) => p < 0).length;
+        const note = v.pcts.length > 1 && downs === v.pcts.length ? `all ${v.pcts.length} variants down`
+          : v.pcts.length > 1 && ups > 0 && downs > 0 ? `mixed — ${ups} up, ${downs} down` : null;
+        return { family: k, upw: Math.round(v.upw * 10) / 10, base: Math.round(v.base * 10) / 10, delta: Math.round((100 * (v.upw - v.base)) / v.base), note };
+      });
     const byAbs = [...famMoves].sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
     const worst = [...famMoves].sort((a, b) => a.delta - b.delta)[0];
     let famCards = byAbs.slice(0, 4);
     if (worst && !famCards.some((f) => f.family === worst.family)) famCards = [...famCards.slice(0, 3), worst];
 
     const notes = signalNotes(data).slice(0, 3);
+    const oi = data.orderImpact;
 
     return (
-      <div className="wu-daily">
+      <div>
         <div className="wu-hero">
           <h2>Upgrades made <em>{money1(heroRev)}</em> {heroWhen}</h2>
           <div style={{ textAlign: 'right', flex: 'none' }}>
@@ -407,109 +476,156 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
           </div>
         </div>
 
-        <div className="wu-2up">
-          <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-              <span className="wu-kicker"><Tip content={HELP.trendChart}>Attributed revenue per day</Tip></span>
-              <span className="tnum" style={{ fontSize: 11, color: 'var(--wu-dim)' }}>{money(revs.reduce((a, b) => a + b, 0))} over {tr.length} day{tr.length === 1 ? '' : 's'}</span>
+        <div className="wu-dgrid">
+          {/* Left column */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+                <span className="wu-kicker"><D d={DEFS.trendChart}>Attributed revenue per day</D></span>
+                <span className="tnum" style={{ fontSize: 11, color: 'var(--wu-dim)' }}>{money1(revs.reduce((a, b) => a + b, 0))} over {tr.length} day{tr.length === 1 ? '' : 's'}{tr.length > 1 ? ' · hover for the day' : ''}</span>
+              </div>
+              {tr.length > 1 ? (
+                <>
+                  <svg viewBox="0 0 900 150" width="100%" height="150" style={{ marginTop: 8, display: 'block' }}>
+                    <path d={`M${pts.join(' L')} L880,130 L20,130 Z`} fill="rgba(201,138,41,.14)" />
+                    <polyline points={pts.join(' ')} fill="none" stroke="var(--wu-crema)" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+                    {revs.map((v, i) => {
+                      const last = endsToday && i === tr.length - 1;
+                      if (last) return <circle key={i} cx={px(i)} cy={py(v)} r={4.5} fill="var(--wu-ground)" stroke="var(--wu-crema)" strokeWidth={2} />;
+                      return <circle key={i} cx={px(i)} cy={py(v)} r={i === bestIdx ? 5.5 : 3.5} fill="var(--wu-crema)" />;
+                    })}
+                    <line x1={20} y1={130} x2={880} y2={130} stroke="var(--wu-line)" strokeWidth={1.5} />
+                    {tr.map((d2, i) => {
+                      const left = i === 0 ? 0 : (px(i - 1) + px(i)) / 2;
+                      const right = i === tr.length - 1 ? 900 : (px(i) + px(i + 1)) / 2;
+                      return <rect key={d2.d} x={left} y={0} width={right - left} height={150} fill="transparent" data-def={bandDef(d2, i)} />;
+                    })}
+                  </svg>
+                  <div className="tnum" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--wu-faint)', marginTop: 2 }}>
+                    {tr.filter((_, i) => i % labelStep === 0 || i === tr.length - 1).map((d2, i) => (
+                      <span key={d2.d}>{i === 0 ? format(new Date(d2.d + 'T00:00:00'), 'MMM d') : format(new Date(d2.d + 'T00:00:00'), 'd')}</span>
+                    ))}
+                  </div>
+                </>
+              ) : <div className="wu-muted" style={{ marginTop: 12 }}>One day of data — the line appears from day two.</div>}
             </div>
-            {tr.length > 1 ? (
-              <>
-                <svg viewBox="0 0 320 74" width="100%" height="74" style={{ marginTop: 10, display: 'block' }} preserveAspectRatio="none">
-                  <path d={`M${pts.join(' L')} L310,66 L10,66 Z`} fill="rgba(201,138,41,.14)" />
-                  <polyline points={pts.join(' ')} fill="none" stroke="var(--wu-crema)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-                  <circle cx={px(tr.length - 1)} cy={py(revs[revs.length - 1])} r={4} fill="var(--wu-crema)" />
-                  <line x1={10} y1={66} x2={310} y2={66} stroke="var(--wu-line)" strokeWidth={1} />
-                </svg>
-                <div className="tnum" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--wu-faint)', marginTop: 2 }}>
-                  {tr.filter((_, i) => i % labelStep === 0 || i === tr.length - 1).map((d, i) => (
-                    <span key={d.d}>{i === 0 ? format(new Date(d.d + 'T00:00:00'), 'MMM d') : format(new Date(d.d + 'T00:00:00'), 'd')}</span>
+
+            <div>
+              <div className="wu-h3row">
+                <h3><D d={DEFS.ranking}>What each exposed visitor is worth</D></h3>
+                <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>$/session</span>
+              </div>
+              {ranked.map((m, i) => {
+                const v = rpsOf(m);
+                const bad = v < RPS_FLOOR;
+                return (
+                  <div key={m.module} className="wu-rankrow">
+                    <span className="wu-rankchip" style={i === 0 ? { background: 'var(--wu-crema)', color: '#fff' } : undefined}>{i + 1}</span>
+                    <span style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, fontWeight: 600 }}>
+                      <ModuleTip module={m.module}>{m.module.replace(/ \((cart|product page)\)$/, '')}</ModuleTip>
+                      {/ \((cart|product page)\)$/.test(m.module) && <span style={{ fontWeight: 400, color: 'var(--wu-dim)' }}> ({m.module.includes('(cart)') ? 'cart' : 'PDP'})</span>}
+                    </span>
+                    <div style={{ height: 20, borderRadius: 3, background: bad ? 'rgba(198,81,58,.12)' : 'var(--wu-crema-soft)', overflow: 'hidden' }}>
+                      <span style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.round((100 * v) / bestRps))}%`, background: bad ? 'var(--wu-neg)' : 'linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))' }} />
+                    </div>
+                    <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: bad ? 'var(--wu-neg)' : undefined }}>${v.toFixed(2)}</b>
+                    <span className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)', textAlign: 'right' }}>{int(m.sessions)} sessions<br />{t.exposedSessions > 0 ? `${Math.round((100 * m.sessions) / t.exposedSessions)}% of traffic` : ''}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {notes.length > 0 && (
+              <div className="wu-ink" style={{ borderRadius: 14, padding: '18px 20px' }}>
+                <div className="wu-kicker" style={{ color: 'var(--wu-gold)', letterSpacing: '.14em' }}>What to move today</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
+                  {notes.map((n, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                      <span style={{ color: 'var(--wu-gold)', fontSize: 13, lineHeight: 1.5 }}>{i + 1}</span>
+                      <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--wu-inkfg2)' }}>{n}</p>
+                    </div>
                   ))}
                 </div>
-              </>
-            ) : <div className="wu-muted" style={{ marginTop: 12 }}>One day of data — the line appears from day two.</div>}
+              </div>
+            )}
           </div>
-          <div style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: 10 }}>
-            <div className="wu-card wu-minicard" role="button" tabIndex={0} onClick={openStore} style={{ borderLeft: '3px solid var(--wu-crema)' }}>
-              <div>
-                <div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, lineHeight: 1 }}>{data.storeShare?.revenueSharePct ?? '—'}%</div>
-                <div style={{ fontSize: 10.5, color: 'var(--wu-faint)', marginTop: 4 }}>of store revenue goes through a module</div>
-              </div>
-              <div style={{ width: 54, height: 54, borderRadius: '50%', flex: 'none', background: `conic-gradient(var(--wu-crema) 0 ${data.storeShare?.revenueSharePct ?? 0}%, var(--wu-crema-soft) ${data.storeShare?.revenueSharePct ?? 0}% 100%)` }} />
-            </div>
-            <div className="wu-card wu-minicard" style={{ borderLeft: '3px solid var(--wu-pos)' }}>
-              <div>
-                <div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, lineHeight: 1, color: 'var(--wu-pos)' }}>
-                  {data.orderImpact?.aovLiftPct == null ? '—' : `${data.orderImpact.aovLiftPct >= 0 ? '+' : ''}${data.orderImpact.aovLiftPct}%`}
-                </div>
-                <div style={{ fontSize: 10.5, color: 'var(--wu-faint)', marginTop: 4 }}>higher AOV when an upgrade is used ({money(data.orderImpact?.upgradeAov)} vs {money(data.orderImpact?.otherAov)})</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 44, flex: 'none' }}>
-                <div style={{ width: 14, height: 44, background: 'var(--wu-pos)', borderRadius: 2 }} />
-                <div style={{ width: 14, height: data.orderImpact?.upgradeAov ? Math.max(6, Math.round((44 * (data.orderImpact.otherAov ?? 0)) / data.orderImpact.upgradeAov)) : 34, background: 'rgba(120,106,83,.35)', borderRadius: 2 }} />
-              </div>
-            </div>
-          </div>
-        </div>
 
-        <div style={{ marginTop: 22 }}>
-          <div className="wu-h3row">
-            <h3><HelpTitle k="rps">What each exposed visitor is worth</HelpTitle></h3>
-            <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>$/session · the number that compares modules with different traffic</span>
-          </div>
-          {ranked.map((m, i) => {
-            const v = rpsOf(m);
-            const bad = v < RPS_FLOOR;
-            return (
-              <div key={m.module} className="wu-rankrow">
-                <span className="wu-rankchip" style={i === 0 ? { background: 'var(--wu-crema)', color: '#fff' } : undefined}>{i + 1}</span>
-                <span style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, fontWeight: 600 }}>
-                  <ModuleTip module={m.module}>{m.module.replace(/ \((cart|product page)\)$/, '')}</ModuleTip>
-                  {/ \((cart|product page)\)$/.test(m.module) && <span style={{ fontWeight: 400, color: 'var(--wu-dim)' }}> ({m.module.includes('(cart)') ? 'cart' : 'PDP'})</span>}
-                </span>
-                <div style={{ height: 20, borderRadius: 3, background: bad ? 'rgba(198,81,58,.12)' : 'var(--wu-crema-soft)', overflow: 'hidden' }}>
-                  <span style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.round((100 * v) / bestRps))}%`, background: bad ? 'var(--wu-neg)' : 'linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))' }} />
+          {/* Right rail — the store context, inline */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {ss && uor != null && touchedPct != null && (
+              <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                  <span className="wu-kicker" style={{ color: 'var(--wu-crema)' }}><D d={DEFS.storeImpact}>Store impact</D></span>
+                  <span className="tnum" style={{ fontSize: 11, color: 'var(--wu-dim)' }}>{money1(ss.storeRevenue)} · {int(ss.storeOrders)} orders</span>
                 </div>
-                <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: bad ? 'var(--wu-neg)' : undefined }}>${v.toFixed(2)}</b>
-                <span className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)', textAlign: 'right' }}>{int(m.sessions)} sessions<br />{t.exposedSessions > 0 ? `${Math.round((100 * m.sessions) / t.exposedSessions)}% of traffic` : ''}</span>
-              </div>
-            );
-          })}
-        </div>
-
-        {notes.length > 0 && (
-          <div className="wu-ink" style={{ marginTop: 22, borderRadius: 14, padding: '18px 20px' }}>
-            <div className="wu-kicker" style={{ color: 'var(--wu-gold)', letterSpacing: '.14em' }}>What to move today</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
-              {notes.map((n, i) => (
-                <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                  <span style={{ color: 'var(--wu-gold)', fontSize: 13, lineHeight: 1.5 }}>{i + 1}</span>
-                  <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--wu-inkfg2)' }}>{n}</p>
+                <div style={{ display: 'flex', height: 34, marginTop: 12, borderRadius: 3, overflow: 'hidden' }}>
+                  <span className="tnum" style={{ width: `${touchedPct}%`, background: 'linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))', display: 'flex', alignItems: 'center', paddingLeft: 12, color: '#fff', fontSize: 12, fontWeight: 600 }}>{touchedPct}%</span>
+                  <span className="tnum" style={{ width: `${100 - touchedPct}%`, background: 'rgba(120,106,83,.22)', display: 'flex', alignItems: 'center', paddingLeft: 12, color: 'var(--wu-dim)', fontSize: 12, fontWeight: 600 }}>{Math.round((100 - touchedPct) * 10) / 10}%</span>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {famCards.length > 0 && (
-          <div style={{ marginTop: 20 }}>
-            <div className="wu-h3row" style={{ marginBottom: 10 }}>
-              <h3><HelpTitle k="screen">Families that moved the most</HelpTitle></h3>
-              <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>units/week vs the Jul 21 baseline · full detail lives in Products</span>
-            </div>
-            <div className="wu-famcards">
-              {famCards.map((f) => (
-                <div key={f.family} className="wu-famcard" role="button" tabIndex={0} onClick={() => pickView('products')}>
-                  <div style={{ fontSize: 11.5, color: 'var(--wu-dim)', lineHeight: 1.35 }}>{f.family}</div>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6 }}>
-                    <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, color: f.delta >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{f.delta >= 0 ? '+' : ''}{f.delta}%</b>
-                    <span className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)' }}>{f.upw} / {f.base}</span>
+                <div style={{ display: 'grid', gridTemplateColumns: `${touchedPct}% 1fr`, marginTop: 9 }}>
+                  <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 19, fontWeight: 600, lineHeight: 1 }}>{money1(uor)}</div><div style={{ fontSize: 10.5, color: 'var(--wu-faint)', marginTop: 4 }}>{int(ss.upgradeOrders)} orders with a module</div></div>
+                  <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 19, fontWeight: 600, lineHeight: 1, color: 'var(--wu-dim)' }}>{money1(restRev)}</div><div style={{ fontSize: 10.5, color: 'var(--wu-faint)', marginTop: 4 }}>{int(ss.storeOrders - ss.upgradeOrders)} orders without</div></div>
+                </div>
+                {insidePct != null && (
+                  <div style={{ marginTop: 15, paddingTop: 13, borderTop: '1px solid var(--wu-line)' }}>
+                    <div className="wu-kicker"><D d={DEFS.insideTouched}>What is inside those {money1(uor)}</D></div>
+                    <div style={{ display: 'flex', height: 18, marginTop: 9, borderRadius: 3, overflow: 'hidden' }}><span style={{ width: `${insidePct}%`, background: 'var(--wu-crema)' }} /><span style={{ width: `${100 - insidePct}%`, background: 'rgba(120,106,83,.30)' }} /></div>
+                    <div style={{ display: 'flex', gap: 14, marginTop: 9 }}>
+                      <div style={{ flex: 1, display: 'flex', gap: 8 }}><span style={{ width: 8, height: 8, background: 'var(--wu-crema)', borderRadius: 2, flex: 'none', marginTop: 4 }} /><span style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--wu-dim)' }}><b className="tnum" style={{ color: 'var(--wu-text)' }}>{money1(ss.attributedRevenue)}</b> <D d={DEFS.modulePlaced}>the module placed</D><br /><span style={{ color: 'var(--wu-faint)' }}>{int(t.directLines)} lines</span></span></div>
+                      <div style={{ flex: 1, display: 'flex', gap: 8 }}><span style={{ width: 8, height: 8, background: 'rgba(120,106,83,.30)', borderRadius: 2, flex: 'none', marginTop: 4 }} /><span style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--wu-dim)' }}><b className="tnum" style={{ color: 'var(--wu-text)' }}>{money1(rideRev)}</b> <D d={DEFS.alreadyInBasket}>already in the basket</D><br /><span style={{ color: 'var(--wu-faint)' }}>base product</span></span></div>
+                    </div>
                   </div>
+                )}
+                <div role="button" tabIndex={0} onClick={openStore} style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--wu-line)', fontSize: 11.5, fontWeight: 600, color: 'var(--wu-crema)', cursor: 'pointer' }}>Day by day, and what the store would have made without it →</div>
+              </div>
+            )}
+
+            {oi && oi.upgradeOrders > 0 && (
+              <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
+                <div className="wu-kicker"><D d={DEFS.growOrder}>Does the module grow the order?</D></div>
+                <div className="wu-oigrid" style={{ marginTop: 12, fontSize: 9.5, fontWeight: 700, letterSpacing: '.09em', textTransform: 'uppercase', color: 'var(--wu-faint)' }}>
+                  <span /><span style={{ textAlign: 'right' }}>With</span><span style={{ textAlign: 'right' }}>Without</span><span style={{ textAlign: 'right' }}>Diff</span>
                 </div>
-              ))}
-            </div>
+                <div className="wu-oigrid" style={{ padding: '10px 0', borderTop: '1px solid var(--wu-line)', fontSize: 12.5, color: 'var(--wu-dim)', alignItems: 'baseline' }}>
+                  <span>Items per order</span>
+                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-text)' }}>{oi.upgradeItems ?? '—'}</b>
+                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-dim)' }}>{oi.otherItems ?? '—'}</b>
+                  <b className="tnum" style={{ textAlign: 'right', color: (oi.itemsLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{oi.itemsLiftPct == null ? '—' : `${oi.itemsLiftPct >= 0 ? '+' : ''}${oi.itemsLiftPct}%`}</b>
+                </div>
+                <div className="wu-oigrid" style={{ padding: '10px 0', borderTop: '1px solid var(--wu-line)', fontSize: 12.5, color: 'var(--wu-dim)', alignItems: 'baseline' }}>
+                  <span>Average order value</span>
+                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-text)' }}>{money(oi.upgradeAov)}</b>
+                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-dim)' }}>{money(oi.otherAov)}</b>
+                  <b className="tnum" style={{ textAlign: 'right', color: (oi.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{oi.aovLiftPct == null ? '—' : `${oi.aovLiftPct >= 0 ? '+' : ''}${oi.aovLiftPct}%`}</b>
+                </div>
+                {oi.itemsLiftPct != null && oi.aovLiftPct != null && oi.itemsLiftPct > oi.aovLiftPct && oi.itemsLiftPct > 0 && (
+                  <p style={{ margin: '11px 0 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--wu-faint)' }}>The module adds items, not expensive ones — the basket grows by {oi.itemsLiftPct}% but its value by only {oi.aovLiftPct}%.</p>
+                )}
+              </div>
+            )}
+
+            {famCards.length > 0 && (
+              <div>
+                <div className="wu-h3row" style={{ marginBottom: 10 }}>
+                  <h3><D d={DEFS.runRate}>Families that moved</D></h3>
+                  <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>u/week vs baseline</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  {famCards.map((f) => (
+                    <div key={f.family} className="wu-famcard" role="button" tabIndex={0} onClick={() => pickView('products')}>
+                      <div style={{ fontSize: 11.5, color: 'var(--wu-dim)', lineHeight: 1.35 }}>{f.family}</div>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6 }}>
+                        <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, color: Math.abs(f.delta) < 3 ? 'var(--wu-dim)' : f.delta >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{f.delta >= 0 ? '+' : ''}{f.delta}%</b>
+                        <span className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)' }}>{f.upw} / {f.base}</span>
+                      </div>
+                      {f.note && <div style={{ fontSize: 10, color: 'var(--wu-crema)', marginTop: 5 }}>{f.note}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     );
   })();
@@ -534,6 +650,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
       return 'var(--wu-crema)';
     };
     const fmtStep = (v: number | null) => (v == null ? '—' : v >= 10 ? `${Math.round(v)}%` : `${v.toFixed(1)}%`);
+    const STEP_DEFS = [[DEFS.ctr, 'CTR'], [DEFS.add, 'ADD'], [DEFS.close, 'CLOSE']] as const;
+    const STAGE_DEFS = [DEFS.views, DEFS.clicks, DEFS.adds] as const;
     return (
       <>
         <div className="wu-section-h">
@@ -573,19 +691,19 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 </div>
                 <div className="wu-mrates">
                   <div className="wu-mrate">
-                    <div className="wu-kicker"><Tip content={HELP.rps}>$ / session</Tip></div>
+                    <div className="wu-kicker"><D d={DEFS.rps}>$ / session</D></div>
                     <div className="tnum wu-mrate-v" style={bad ? { color: 'var(--wu-neg)' } : undefined}>${rpsOf(m).toFixed(2)}</div>
                     <div className="wu-mrate-bar" style={bad ? { background: 'rgba(198,81,58,.16)' } : undefined}><span style={{ width: `${Math.max(2, Math.round((100 * rpsOf(m)) / bestRps))}%`, background: bad ? 'var(--wu-neg)' : 'var(--wu-crema)' }} /></div>
                     <div className="wu-mrate-c">{rpsOf(m) === bestRps ? `best of the ${mods.length}` : `${Math.round((100 * rpsOf(m)) / bestRps)}% of the best`}</div>
                   </div>
                   <div className="wu-mrate">
-                    <div className="wu-kicker"><Tip content={HELP.conv}>Conversion</Tip></div>
+                    <div className="wu-kicker"><D d={DEFS.conversion}>Conversion</D></div>
                     <div className="tnum wu-mrate-v" style={bad ? { color: 'var(--wu-neg)' } : undefined}>{convOf(m).toFixed(1)}%</div>
                     <div className="wu-mrate-bar" style={bad ? { background: 'rgba(198,81,58,.16)' } : undefined}><span style={{ width: `${Math.max(2, Math.round((100 * convOf(m)) / bestConv))}%`, background: bad ? 'var(--wu-neg)' : 'var(--wu-crema)' }} /></div>
                     <div className="wu-mrate-c">session → paid order</div>
                   </div>
                   <div className="wu-mrate" style={{ borderRight: 'none' }}>
-                    <div className="wu-kicker"><Tip content="Average value of the WHOLE order (not just the added line) for orders that used this module.">AOV</Tip></div>
+                    <div className="wu-kicker"><D d={DEFS.aov}>AOV</D></div>
                     <div className="tnum wu-mrate-v">{m.aov != null ? `$${Math.round(m.aov)}` : '—'}</div>
                     <div className="wu-mrate-bar"><span style={{ width: `${m.aov != null ? Math.max(2, Math.round((100 * m.aov) / bestAov)) : 0}%`, background: 'var(--wu-crema)' }} /></div>
                     <div className="wu-mrate-c">{storeAov != null && <>store ${Math.round(storeAov)}{aovDelta != null && <> · <span style={{ fontWeight: 600, color: Math.abs(aovDelta) < 3 ? 'var(--wu-dim)' : aovDelta > 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{aovDelta > 0 ? '+' : ''}{aovDelta}%</span></>}</>}</div>
@@ -593,17 +711,17 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 </div>
                 <div style={{ padding: '14px 18px 16px' }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 9 }}>
-                    <span className="wu-kicker"><Tip content={HELP.dropoff}>Where it drops off</Tip></span>
+                    <span className="wu-kicker"><D d={DEFS.dropoff}>Where it drops off</D></span>
                     <span style={{ fontSize: 10.5, color: 'var(--wu-faint)' }}>{int(m.views)} views end as <b className="tnum" style={{ color: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>{int(m.orders)} orders</b>{endRate != null && <> · {endRate >= 10 ? Math.round(endRate) : endRate.toFixed(1)}%</>}</span>
                   </div>
                   <div className="wu-mfun">
                     {([['Views', m.views, 1], ['Clicks', m.clicks, 0.8], ['Adds', m.adds, 0.62]] as Array<[string, number, number]>).map(([lb, v, op], i) => (
                       <Fragment key={lb}>
-                        <div><div className="tnum wu-mstep-n">{int(v)}</div><div className="wu-mstep-l">{lb}</div><div className="wu-mstep-b" style={{ opacity: op }} /></div>
-                        <div className="wu-mconn" style={{ color: stepColor(s[i], i) }}>{fmtStep(s[i])}<div>›</div></div>
+                        <div><div className="tnum wu-mstep-n">{int(v)}</div><div className="wu-mstep-l"><D d={STAGE_DEFS[i]}>{lb}</D></div><div className="wu-mstep-b" style={{ opacity: op }} /></div>
+                        <div className="wu-mconn"><div className="wu-mconn-l"><D d={STEP_DEFS[i][0]}>{STEP_DEFS[i][1]}</D></div><div className="tnum wu-mconn-v" style={{ color: stepColor(s[i], i) }}>{fmtStep(s[i])}</div></div>
                       </Fragment>
                     ))}
-                    <div><div className="tnum wu-mstep-n" style={{ color: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>{int(m.orders)}</div><div className="wu-mstep-l">Orders</div><div className="wu-mstep-b" style={{ background: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }} /></div>
+                    <div><div className="tnum wu-mstep-n" style={{ color: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>{int(m.orders)}</div><div className="wu-mstep-l"><D d={DEFS.orders}>Orders</D></div><div className="wu-mstep-b" style={{ background: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }} /></div>
                   </div>
                 </div>
               </div>
@@ -615,96 +733,121 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     );
   })();
 
-  // ——— Products view: families first, variants inside ———
+  // ——— Products view: filter-driven family aggregation ———
+  // ⚠ The Delta rule (deliberate, per the handoff — do NOT "fix" back to sums):
+  // the filter chips define the population. Family numbers are computed only
+  // over the variants that pass the filter; Adds/Attributed/units are SUMS but
+  // Delta is the MEAN of the individual variant percentages. Families with no
+  // passing variants disappear; sort and bar scale change with the filter.
   const productsView = (() => {
     if (!t || !data) return null;
-    const filtered = famAgg.filter((g) =>
-      screenFilter === 'up' ? (g.deltaPct ?? 0) > 0
-      : screenFilter === 'down' ? (g.deltaPct ?? 0) < 0
-      : screenFilter === 'sold' ? g.attributedRevenue > 0
-      : true);
-    const sortedFams = screenFilter === 'up' ? [...filtered].sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0))
-      : screenFilter === 'down' ? [...filtered].sort((a, b) => (a.deltaPct ?? 0) - (b.deltaPct ?? 0))
-      : filtered;
-    const varFilter = (rows: Dash['byScreen']) =>
-      screenFilter === 'up' ? rows.filter((r) => (r.deltaPct ?? 0) > 0)
-      : screenFilter === 'down' ? rows.filter((r) => (r.deltaPct ?? 0) < 0)
-      : screenFilter === 'sold' ? rows.filter((r) => r.attributedRevenue > 0)
-      : rows;
-    const totUpw = Math.round(famAgg.reduce((a, b) => a + b.unitsPerWeek, 0) * 10) / 10;
-    const totBase = Math.round(famAgg.reduce((a, b) => a + b.baselineUnitsPerWeek, 0) * 10) / 10;
-    const totDelta = totBase > 0 ? Math.round((100 * (totUpw - totBase)) / totBase) : null;
-    const deltaBar = (d: number | null) => d == null ? null : (
-      <span style={{ flex: 1, height: 6, background: d >= 0 ? 'rgba(46,158,110,.14)' : 'rgba(198,81,58,.14)', overflow: 'hidden', borderRadius: 2 }}>
-        <span style={{ display: 'block', height: '100%', width: `${Math.min(100, Math.round(Math.abs(d) / 0.6))}%`, background: d >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }} />
-      </span>
-    );
+    const keeps = (r: Dash['byScreen'][number]) => {
+      const p = pctOf(r.unitsPerWeek, r.baselineUnitsPerWeek);
+      if (screenFilter === 'up') return p > 0;
+      if (screenFilter === 'down') return p < 0;
+      if (screenFilter === 'sold') return r.unitsPerWeek > 0;
+      return true;
+    };
+    const famMap = new Map<string, Dash['byScreen']>();
+    for (const r of data.byScreen) {
+      const k = famOf(r.sku, r.title);
+      famMap.set(k, [...(famMap.get(k) ?? []), r]);
+    }
+    let tAdds = 0, tRev = 0, tNow = 0, tBase = 0, pctSum = 0, n = 0;
+    const fams = [...famMap.entries()].map(([key, members]) => {
+      const rows = members.filter(keeps);
+      if (rows.length === 0) return null;
+      const adds = rows.reduce((a, b) => a + b.adds, 0);
+      const rev = rows.reduce((a, b) => a + b.attributedRevenue, 0);
+      const now = rows.reduce((a, b) => a + b.unitsPerWeek, 0);
+      const base = rows.reduce((a, b) => a + b.baselineUnitsPerWeek, 0);
+      const acc = rows.reduce((a, b) => a + pctOf(b.unitsPerWeek, b.baselineUnitsPerWeek), 0);
+      tAdds += adds; tRev += rev; tNow += now; tBase += base; pctSum += acc; n += rows.length;
+      return { key, rows, adds, rev, now, base, avg: acc / rows.length };
+    }).filter((f): f is NonNullable<typeof f> => f !== null).sort((a, b) => b.avg - a.avg);
+    const maxAbs = Math.max(0.01, ...fams.map((f) => Math.abs(f.avg)));
+    const totAvg = n > 0 ? pctSum / n : 0;
     return (
       <>
         <div className="wu-section-h">
           <div className="wu-eyebrow">Products</div>
-          <h2><HelpTitle k="screen">Against the pre-launch run rate</HelpTitle></h2>
+          <h2><D d={DEFS.runRate}>Against the pre-launch run rate</D></h2>
           <span className="wu-faint" style={{ fontSize: 12.5 }}>units/week today vs the frozen Jul 21 baseline · click a family to see its variants</span>
           <span className="wu-seg wu-seg-sm" style={{ marginLeft: 'auto' }} role="group" aria-label="Family filter">
             {([['all', 'All'], ['up', 'Delta +'], ['down', 'Delta −'], ['sold', 'With sales']] as Array<[typeof screenFilter, string]>).map(([k, lb]) => (
-              <button key={k} aria-pressed={screenFilter === k} onClick={() => setScreenFilter(k)}>{lb}</button>
+              <button key={k} aria-pressed={screenFilter === k} onClick={() => { setScreenFilter(k); clearDef(); }}>{lb}</button>
             ))}
           </span>
         </div>
         <div className="wu-card" style={{ padding: 0 }}>
           <div className="wu-famgrid wu-famhead">
-            <span>Family</span><span style={{ textAlign: 'right' }}>Adds</span><span style={{ textAlign: 'right' }}>Attributed</span><span style={{ textAlign: 'right' }}>u/wk now</span><span style={{ textAlign: 'right' }}>Pre-launch</span><span style={{ textAlign: 'right' }}>Delta</span>
+            <span><D d={DEFS.family}>Family</D></span>
+            <span style={{ textAlign: 'right' }}><D d={DEFS.colAdds}>Adds</D></span>
+            <span style={{ textAlign: 'right' }}><D d={DEFS.colAttributed}>Attributed</D></span>
+            <span style={{ textAlign: 'right' }}><D d={DEFS.colNow}>u/wk now</D></span>
+            <span style={{ textAlign: 'right' }}><D d={DEFS.colBase}>Pre-launch</D></span>
+            <span style={{ textAlign: 'right' }}><D d={DEFS.colDelta}>Delta</D></span>
           </div>
-          {sortedFams.length === 0 && <div className="wu-muted" style={{ padding: '14px 18px' }}>Nothing matches this filter in the window.</div>}
-          {sortedFams.map((g) => (
-            <Fragment key={g.key}>
-              <div className="wu-famgrid wu-famrow" onClick={() => setOpenFams((p) => ({ ...p, [g.key]: !p[g.key] }))}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <span className={cn('wu-chev', openFams[g.key] && 'open')} style={{ fontSize: 14 }}>›</span>
-                  <b style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14.5, fontWeight: 600 }}>{g.key}</b>
-                  <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>{g.members.length} variant{g.members.length === 1 ? '' : 's'}</span>
-                </span>
-                <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-dim)' }}>{int(g.adds)}</span>
-                <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, color: 'var(--wu-crema)' }}>{g.attributedRevenue > 0 ? money1(g.attributedRevenue) : '—'}</b>
-                <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14 }}>{g.unitsPerWeek}</b>
-                <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-faint)' }}>{g.baselineUnitsPerWeek || '—'}</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-                  {deltaBar(g.deltaPct)}
-                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, minWidth: 44, textAlign: 'right', color: g.deltaPct == null ? 'var(--wu-faint)' : g.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{g.deltaPct == null ? '—' : `${g.deltaPct >= 0 ? '+' : ''}${Math.round(g.deltaPct)}%`}</b>
-                </span>
-              </div>
-              {openFams[g.key] && (
-                <div style={{ background: 'rgba(201,138,41,.04)', borderBottom: '1px solid var(--wu-line)' }}>
-                  {varFilter(g.members).map((r) => (
-                    <div key={r.sku} className="wu-famgrid wu-varrow">
-                      <span style={{ color: 'var(--wu-dim)' }}>{r.title}<span className="tnum" style={{ display: 'block', fontFamily: 'ui-monospace,monospace', fontSize: 10, color: 'var(--wu-faint)', marginTop: 2 }}>{r.sku}{r.fitment ? ` · ${r.fitment}` : ''}</span></span>
-                      <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-faint)' }}>{int(r.adds)}</span>
-                      <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-dim)' }}>{r.attributedRevenue > 0 ? money1(r.attributedRevenue) : '—'}</span>
-                      <span className="tnum" style={{ textAlign: 'right' }}>{Math.round(r.unitsPerWeek * 10) / 10}</span>
-                      <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-faint)' }}>{r.baselineUnitsPerWeek || '—'}</span>
-                      <b className="tnum" style={{ textAlign: 'right', color: r.deltaPct == null ? 'var(--wu-faint)' : r.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{r.deltaPct == null ? '—' : `${r.deltaPct >= 0 ? '+' : ''}${r.deltaPct}%`}</b>
-                    </div>
-                  ))}
+          {fams.length === 0 && <div className="wu-muted" style={{ padding: '14px 18px' }}>Nothing matches this filter in the window.</div>}
+          {fams.map((g) => {
+            const up = g.avg >= 0;
+            return (
+              <Fragment key={g.key}>
+                <div className="wu-famgrid wu-famrow" onClick={() => setOpenFams((p) => ({ ...p, [g.key]: !p[g.key] }))}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                    <span className={cn('wu-chev', openFams[g.key] && 'open')} style={{ fontSize: 14 }}>›</span>
+                    <b style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14.5, fontWeight: 600 }}>{g.key}</b>
+                    <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>{g.rows.length} variant{g.rows.length === 1 ? '' : 's'}</span>
+                  </span>
+                  <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-dim)' }}>{int(g.adds)}</span>
+                  <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, color: 'var(--wu-crema)' }}>{g.rev > 0 ? money1(g.rev) : '—'}</b>
+                  <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14 }}>{g.now.toFixed(1)}</b>
+                  <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-faint)' }}>{g.base.toFixed(1)}</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 9, justifyContent: 'flex-end' }}>
+                    <span style={{ flex: 1, height: 6, overflow: 'hidden', borderRadius: 2, background: up ? 'rgba(46,158,110,.14)' : 'rgba(198,81,58,.14)' }}>
+                      <span style={{ display: 'block', height: '100%', width: `${Math.round((Math.abs(g.avg) / maxAbs) * 100)}%`, background: up ? 'var(--wu-pos)' : 'var(--wu-neg)' }} />
+                    </span>
+                    <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, minWidth: 50, textAlign: 'right', color: up ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtPct(g.avg)}</b>
+                  </span>
                 </div>
-              )}
-            </Fragment>
-          ))}
-          <div className="wu-famgrid wu-famtotal">
-            <b style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14.5, fontWeight: 600, paddingLeft: 23 }}>All families</b>
-            <b className="tnum" style={{ textAlign: 'right', fontSize: 12.5 }}>{int(famAgg.reduce((a, b) => a + b.adds, 0))}</b>
-            <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, color: 'var(--wu-crema)' }}>{money(famAgg.reduce((a, b) => a + b.attributedRevenue, 0))}</b>
-            <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14 }}>{totUpw}</b>
-            <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-dim)' }}>{totBase}</span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-              {deltaBar(totDelta)}
-              <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, minWidth: 44, textAlign: 'right', color: totDelta == null ? 'var(--wu-faint)' : totDelta >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{totDelta == null ? '—' : `${totDelta >= 0 ? '+' : ''}${totDelta}%`}</b>
-            </span>
-          </div>
+                {openFams[g.key] && (
+                  <div style={{ background: 'rgba(201,138,41,.04)', borderBottom: '1px solid var(--wu-line)' }}>
+                    {g.rows.map((r) => {
+                      const p = pctOf(r.unitsPerWeek, r.baselineUnitsPerWeek);
+                      return (
+                        <div key={r.sku} className="wu-famgrid wu-varrow">
+                          <span style={{ color: 'var(--wu-dim)' }}>{r.title}<span className="tnum" style={{ display: 'block', fontFamily: 'ui-monospace,monospace', fontSize: 10, color: 'var(--wu-faint)', marginTop: 2 }}>{r.sku}{r.fitment ? ` · ${r.fitment}` : ''}</span></span>
+                          <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-faint)' }}>{int(r.adds)}</span>
+                          <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-dim)' }}>{r.attributedRevenue > 0 ? money1(r.attributedRevenue) : '—'}</span>
+                          <span className="tnum" style={{ textAlign: 'right' }}>{(Math.round(r.unitsPerWeek * 10) / 10).toFixed(1)}</span>
+                          <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-faint)' }}>{r.baselineUnitsPerWeek > 0 ? r.baselineUnitsPerWeek.toFixed(2) : '—'}</span>
+                          <b className="tnum" style={{ textAlign: 'right', color: p >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtPct(p)}</b>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </Fragment>
+            );
+          })}
+          {fams.length > 0 && (
+            <div className="wu-famgrid wu-famtotal">
+              <b style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14.5, fontWeight: 600, paddingLeft: 23 }}>{fams.length} famil{fams.length === 1 ? 'y' : 'ies'}</b>
+              <b className="tnum" style={{ textAlign: 'right', fontSize: 12.5 }}>{int(tAdds)}</b>
+              <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, color: 'var(--wu-crema)' }}>{money(tRev)}</b>
+              <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14 }}>{tNow.toFixed(1)}</b>
+              <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-dim)' }}>{tBase.toFixed(1)}</span>
+              <span style={{ display: 'flex', alignItems: 'baseline', gap: 9, justifyContent: 'flex-end' }}>
+                <D d={DEFS.avgOf}><span style={{ fontSize: 10, color: 'var(--wu-faint)' }}>avg of {n}</span></D>
+                <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, minWidth: 50, textAlign: 'right', color: totAvg >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtPct(totAvg)}</b>
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="wu-two">
           <div className="wu-card">
-            <div className="wu-klabel wu-clickhead" onClick={headToggle('machines')}><HelpTitle k="machine">Sales by machine</HelpTitle>{!openS('machines') && data.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data.byMachine.length)} machines · {money(data.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
+            <div className="wu-klabel wu-clickhead" onClick={headToggle('machines')}><D d={DEFS.byMachine}>Sales by machine</D>{!openS('machines') && data.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data.byMachine.length)} machines · {money(data.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
             {openS('machines') && (data.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
               <div style={{ marginTop: 10 }}>
                 {data.byMachine.map((m) => (
@@ -725,7 +868,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             ))}
           </div>
           <div className="wu-card">
-            <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
+            <div className="wu-klabel"><D d={DEFS.rewards}>Reward unlocks</D></div>
             {data.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
               <div style={{ marginTop: 10 }}>
                 {data.rewards.map((rw) => (
@@ -750,18 +893,16 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 
   // ——— Store context modal ———
   const storeModal = (() => {
-    if (!data?.storeShare || !t) return null;
-    const ss = data.storeShare;
-    const uor = ss.upgradeOrderRevenue ?? (data.orderImpact?.upgradeAov != null ? Math.round(data.orderImpact.upgradeAov * data.orderImpact.upgradeOrders) : null);
-    const touchedPct = uor != null && ss.storeRevenue > 0 ? Math.round((1000 * uor) / ss.storeRevenue) / 10 : null;
-    const revPct = ss.revenueSharePct ?? 0;
-    const per100attr = Math.round(revPct);
-    const per100ride = touchedPct != null ? Math.max(0, Math.round(touchedPct - revPct)) : null;
-    const per100rest = touchedPct != null ? Math.max(0, Math.round(100 - touchedPct)) : null;
-    const days = (data.trend ?? []).filter((d) => (d.storeRevenue ?? 0) > 0);
-    const maxStore = Math.max(...days.map((d) => d.storeRevenue ?? 0), 1);
-    const oi = data.orderImpact;
-    const counterfactual = oi?.upgradeAov != null && oi.otherAov != null ? ss.storeRevenue - (oi.upgradeAov - oi.otherAov) * oi.upgradeOrders : null;
+    if (!ss || !t || uor == null || touchedPct == null) return null;
+    const oi = data!.orderImpact;
+    const days = (data!.trend ?? []).filter((d2) => (d2.storeRevenue ?? 0) > 0);
+    const maxStore = Math.max(...days.map((d2) => d2.storeRevenue ?? 0), 1);
+    const todayYmd = toYMD(new Date());
+    const wouldBill = oi?.otherAov != null ? oi.otherAov * ss.upgradeOrders : null;
+    const storeAlt = wouldBill != null && restRev != null ? restRev + wouldBill : null;
+    const per100attr = Math.round(ss.revenueSharePct ?? 0);
+    const per100ride = Math.max(0, Math.round(touchedPct - (ss.revenueSharePct ?? 0)));
+    const per100rest = Math.max(0, 100 - per100attr - per100ride);
     return (
       <Dialog open={storeOpen} onOpenChange={setStoreOpen}>
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
@@ -770,75 +911,97 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               <div className="wu-eyebrow">Context · {rangeLabel}</div>
               <DialogTitle asChild><h2 style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 24, fontWeight: 600, margin: '6px 0 0', borderBottom: '2px solid var(--wu-text)', paddingBottom: 12 }}>The whole store: <em style={{ fontStyle: 'italic', color: 'var(--wu-crema)' }}>{money1(ss.storeRevenue)}</em> across {int(ss.storeOrders)} orders</h2></DialogTitle>
             </DialogHeader>
+
             <div style={{ marginTop: 14 }}>
-              <div className="wu-kicker">From the store total, inwards</div>
-              <div style={{ marginTop: 14 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ fontSize: 12.5, color: 'var(--wu-dim)' }}>Store net revenue · {int(ss.storeOrders)} orders</span><b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17 }}>{money1(ss.storeRevenue)}</b></div>
-                <div style={{ height: 32, background: 'rgba(120,106,83,.22)', borderRadius: 3 }} />
+              <div className="wu-kicker"><Tip content={DEFS.splitInTwo}>The store, split in two</Tip></div>
+              <div style={{ display: 'flex', height: 38, marginTop: 11, borderRadius: 3, overflow: 'hidden' }}>
+                <span className="tnum" style={{ width: `${touchedPct}%`, background: 'linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))', display: 'flex', alignItems: 'center', paddingLeft: 14, color: '#fff', fontSize: 12.5, fontWeight: 600 }}>{money1(uor)} · {touchedPct}%</span>
+                <span className="tnum" style={{ width: `${100 - touchedPct}%`, background: 'rgba(120,106,83,.22)', display: 'flex', alignItems: 'center', paddingLeft: 14, color: 'var(--wu-dim)', fontSize: 12.5, fontWeight: 600 }}>{money1(restRev)} · {Math.round((100 - touchedPct) * 10) / 10}%</span>
               </div>
-              {uor != null && touchedPct != null && (
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ fontSize: 12.5, color: 'var(--wu-dim)' }}>Orders that touched a module · {int(ss.upgradeOrders)} orders · <b style={{ color: 'var(--wu-text)' }}>{touchedPct}%</b></span><b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17 }}>{money1(uor)}</b></div>
-                  <div style={{ height: 32, background: 'rgba(120,106,83,.10)', borderRadius: 3, overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${touchedPct}%`, background: 'linear-gradient(90deg,var(--wu-crema2),rgba(209,155,52,.55))' }} /></div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1.12fr .88fr', gap: 14, marginTop: 14, alignItems: 'start' }}>
+                <div style={{ background: 'rgba(201,138,41,.07)', border: '1px solid var(--wu-line)', borderRadius: 14, padding: '16px 18px' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+                    <span style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 15.5, fontWeight: 600 }}>Orders that touched a module</span>
+                    <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 21, fontWeight: 600, color: 'var(--wu-crema)' }}>{money1(uor)}</b>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginTop: 13, paddingTop: 12, borderTop: '1px solid var(--wu-line)' }}>
+                    <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, lineHeight: 1 }}>{int(ss.upgradeOrders)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>orders</div></div>
+                    <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, lineHeight: 1 }}>{money(oi?.upgradeAov)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>AOV</div></div>
+                    <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, lineHeight: 1 }}>{oi?.upgradeItems ?? '—'}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>items per order</div></div>
+                  </div>
+                  {insidePct != null && (
+                    <div style={{ marginTop: 15, paddingTop: 13, borderTop: '1px solid var(--wu-line)' }}>
+                      <div className="wu-kicker"><Tip content={DEFS.insideTouched}>What is inside those {money1(uor)}</Tip></div>
+                      <div style={{ display: 'flex', height: 20, marginTop: 9, borderRadius: 3, overflow: 'hidden' }}><span style={{ width: `${insidePct}%`, background: 'var(--wu-crema)' }} /><span style={{ width: `${100 - insidePct}%`, background: 'rgba(120,106,83,.30)' }} /></div>
+                      <div style={{ display: 'flex', gap: 14, marginTop: 9 }}>
+                        <div style={{ flex: 1, display: 'flex', gap: 8 }}><span style={{ width: 8, height: 8, background: 'var(--wu-crema)', borderRadius: 2, flex: 'none', marginTop: 4 }} /><span style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--wu-dim)' }}><b className="tnum" style={{ color: 'var(--wu-text)' }}>{money1(ss.attributedRevenue)}</b> <Tip content={DEFS.modulePlaced}>the module placed</Tip><br /><span style={{ color: 'var(--wu-faint)' }}>{int(t.directLines)} lines added by a module click</span></span></div>
+                        <div style={{ flex: 1, display: 'flex', gap: 8 }}><span style={{ width: 8, height: 8, background: 'rgba(120,106,83,.30)', borderRadius: 2, flex: 'none', marginTop: 4 }} /><span style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--wu-dim)' }}><b className="tnum" style={{ color: 'var(--wu-text)' }}>{money1(rideRev)}</b> <Tip content={DEFS.alreadyInBasket}>already in the basket</Tip><br /><span style={{ color: 'var(--wu-faint)' }}>base product the customer came for</span></span></div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-              <div style={{ marginTop: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ fontSize: 12.5, color: 'var(--wu-dim)' }}>Lines the module added · {int(t.directLines)} lines · <b style={{ color: 'var(--wu-text)' }}>{revPct}%</b></span><b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, color: 'var(--wu-crema)' }}>{money1(ss.attributedRevenue)}</b></div>
-                <div style={{ height: 32, background: 'rgba(120,106,83,.10)', borderRadius: 3, overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${revPct}%`, background: 'var(--wu-crema)' }} /></div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+                      <span style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 15.5, fontWeight: 600, color: 'var(--wu-dim)' }}>Orders with no module</span>
+                      <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 21, fontWeight: 600, color: 'var(--wu-dim)' }}>{money1(restRev)}</b>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginTop: 13, paddingTop: 12, borderTop: '1px solid var(--wu-line)' }}>
+                      <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, lineHeight: 1 }}>{int(ss.storeOrders - ss.upgradeOrders)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>orders</div></div>
+                      <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, lineHeight: 1 }}>{money(oi?.otherAov)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>AOV</div></div>
+                      <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, lineHeight: 1 }}>{oi?.otherItems ?? '—'}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>items per order</div></div>
+                    </div>
+                    {oi && (
+                      <div style={{ display: 'flex', gap: 16, marginTop: 13, paddingTop: 12, borderTop: '1px solid var(--wu-line)' }}>
+                        <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>vs the module group: <b className="tnum" style={{ color: (oi.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{oi.aovLiftPct == null ? '—' : `${oi.aovLiftPct >= 0 ? '+' : ''}${oi.aovLiftPct}%`}</b> AOV · <b className="tnum" style={{ color: (oi.itemsLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{oi.itemsLiftPct == null ? '—' : `${oi.itemsLiftPct >= 0 ? '+' : ''}${oi.itemsLiftPct}%`}</b> items</span>
+                      </div>
+                    )}
+                  </div>
+                  {wouldBill != null && storeAlt != null && (
+                    <div className="wu-ink" style={{ borderRadius: 14, padding: '15px 18px' }}>
+                      <div className="wu-kicker" style={{ color: 'var(--wu-gold)', letterSpacing: '.14em' }}><Tip content={DEFS.counterfactual}>If the module group behaved like the rest</Tip></div>
+                      <p style={{ margin: '9px 0 0', fontSize: 12, lineHeight: 1.6, color: 'var(--wu-inkfg2)' }}>At the same {money(oi!.otherAov)} AOV, those {int(ss.upgradeOrders)} orders would have billed {money1(wouldBill)} instead of {money1(uor)} — the store lands on <b className="tnum" style={{ color: 'var(--wu-gold)' }}>{money1(storeAlt)}</b> rather than {money1(ss.storeRevenue)}.</p>
+                    </div>
+                  )}
+                </div>
               </div>
-              {per100ride != null && per100rest != null && (
-                <p style={{ margin: '14px 0 0', fontSize: 12, lineHeight: 1.6, color: 'var(--wu-dim)' }}>Of every <b style={{ color: 'var(--wu-text)' }}>$100</b> the store bills, <b style={{ color: 'var(--wu-crema)' }}>${per100attr}</b> is a line a module added, <b style={{ color: 'var(--wu-text)' }}>${per100ride}</b> rides along in the same order as base product, and <b style={{ color: 'var(--wu-text)' }}>${per100rest}</b> never touched an upgrade at all.</p>
+            </div>
+
+            <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px', marginTop: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+                <span className="wu-kicker"><Tip content={DEFS.dayByDay}>Day by day — store vs module</Tip></span>
+                <span style={{ display: 'flex', gap: 14, fontSize: 10.5, color: 'var(--wu-dim)' }}><span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 9, height: 9, background: 'var(--wu-crema)', borderRadius: 2 }} />module</span><span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 9, height: 9, background: 'rgba(120,106,83,.25)', borderRadius: 2 }} />rest</span></span>
+              </div>
+              {days.length === 0 ? <div className="wu-muted" style={{ marginTop: 12 }}>No per-day store revenue in this window.</div> : (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${days.length},1fr)`, gap: Math.min(16, Math.max(4, Math.round(80 / days.length))), marginTop: 16, alignItems: 'end', height: 140 }}>
+                    {days.map((d2) => {
+                      const store = d2.storeRevenue ?? 0;
+                      const attr = Math.min(d2.attributedRevenue ?? 0, store);
+                      const total = Math.round((105 * store) / maxStore);
+                      const lower = store > 0 ? Math.round((total * attr) / store) : 0;
+                      const share = store > 0 ? Math.round((100 * attr) / store) : 0;
+                      return (
+                        <div key={d2.d} style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%' }}>
+                          <span className="tnum" style={{ fontSize: 11, color: 'var(--wu-crema)', fontWeight: 700, textAlign: 'center', marginBottom: 5 }}>{share}%</span>
+                          <div style={{ height: Math.max(0, total - lower), background: 'rgba(120,106,83,.22)', borderRadius: '3px 3px 0 0' }} />
+                          <div style={{ height: lower, background: 'var(--wu-crema)', borderRadius: '0 0 3px 3px' }} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${days.length},1fr)`, gap: 4, marginTop: 8, borderTop: '1px solid var(--wu-line)', paddingTop: 7 }}>
+                    {days.map((d2, i) => (
+                      <span key={d2.d} className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)', textAlign: 'center' }}>{format(new Date(d2.d + 'T00:00:00'), i === 0 ? 'MMM d' : 'd')}{d2.d === todayYmd && <span style={{ fontSize: 9 }}> (partial)</span>}<br /><b style={{ color: 'var(--wu-dim)' }}>{days.length <= 10 ? money1(d2.storeRevenue) : ''}</b></span>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 14, marginTop: 18 }}>
-              <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-                  <span className="wu-kicker">Day by day — store vs module</span>
-                  <span style={{ display: 'flex', gap: 14, fontSize: 10.5, color: 'var(--wu-dim)' }}><span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 9, height: 9, background: 'var(--wu-crema)', borderRadius: 2 }} />module</span><span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 9, height: 9, background: 'rgba(120,106,83,.25)', borderRadius: 2 }} />rest</span></span>
-                </div>
-                {days.length === 0 ? <div className="wu-muted" style={{ marginTop: 12 }}>No per-day store revenue in this window.</div> : (
-                  <>
-                    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${days.length},1fr)`, gap: Math.min(16, Math.max(4, Math.round(80 / days.length))), marginTop: 16, alignItems: 'end', height: 140 }}>
-                      {days.map((d) => {
-                        const store = d.storeRevenue ?? 0;
-                        const attr = Math.min(d.attributedRevenue ?? 0, store);
-                        const total = Math.round((105 * store) / maxStore);
-                        const lower = store > 0 ? Math.round((total * attr) / store) : 0;
-                        const share = store > 0 ? Math.round((100 * attr) / store) : 0;
-                        return (
-                          <div key={d.d} style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%' }}>
-                            <span className="tnum" style={{ fontSize: 11, color: 'var(--wu-crema)', fontWeight: 700, textAlign: 'center', marginBottom: 5 }}>{share}%</span>
-                            <div style={{ height: Math.max(0, total - lower), background: 'rgba(120,106,83,.22)', borderRadius: '3px 3px 0 0' }} />
-                            <div style={{ height: lower, background: 'var(--wu-crema)', borderRadius: '0 0 3px 3px' }} />
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${days.length},1fr)`, gap: 4, marginTop: 8, borderTop: '1px solid var(--wu-line)', paddingTop: 7 }}>
-                      {days.map((d, i) => (
-                        <span key={d.d} className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)', textAlign: 'center' }}>{format(new Date(d.d + 'T00:00:00'), i === 0 ? 'MMM d' : 'd')}<br /><b style={{ color: 'var(--wu-dim)' }}>{days.length <= 10 ? money1(d.storeRevenue) : ''}</b></span>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-              <div className="wu-ink" style={{ borderRadius: 14, padding: '16px 18px' }}>
-                <div className="wu-kicker" style={{ color: 'var(--wu-gold)', letterSpacing: '.14em' }}>The two groups of orders</div>
-                <div style={{ display: 'flex', height: 24, marginTop: 14, borderRadius: 3, overflow: 'hidden' }}><span style={{ width: `${ss.orderSharePct ?? 0}%`, background: 'var(--wu-gold)' }} /><span style={{ width: `${100 - (ss.orderSharePct ?? 0)}%`, background: 'rgba(242,234,223,.16)' }} /></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 9, fontSize: 11 }}><span style={{ color: 'var(--wu-inkfg2)' }}><b className="tnum" style={{ color: 'var(--wu-gold)' }}>{int(ss.upgradeOrders)}</b> with a module</span><span style={{ color: 'rgba(242,234,223,.5)' }}><b className="tnum">{int(ss.storeOrders - ss.upgradeOrders)}</b> without</span></div>
-                {oi && (
-                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid rgba(242,234,223,.14)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                    <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600 }}>{money(oi.upgradeAov)}</div><div style={{ fontSize: 10.5, color: 'rgba(242,234,223,.55)', marginTop: 3, lineHeight: 1.4 }}>AOV with a module<br />{oi.upgradeItems ?? '—'} items</div></div>
-                    <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, color: 'rgba(242,234,223,.6)' }}>{money(oi.otherAov)}</div><div style={{ fontSize: 10.5, color: 'rgba(242,234,223,.55)', marginTop: 3, lineHeight: 1.4 }}>AOV without<br />{oi.otherItems ?? '—'} items</div></div>
-                  </div>
-                )}
-                {counterfactual != null && (
-                  <div style={{ marginTop: 14, padding: '10px 12px', background: 'rgba(233,178,82,.12)', borderLeft: '2px solid var(--wu-gold)' }}><span style={{ fontSize: 11.5, lineHeight: 1.55, color: 'var(--wu-inkfg2)' }}>Had the {int(ss.upgradeOrders)} module orders billed like the rest, the store would have made <b style={{ color: 'var(--wu-gold)' }}>{money1(counterfactual)}</b> instead of {money1(ss.storeRevenue)}.</span></div>
-                )}
-              </div>
-            </div>
-            <p style={{ margin: '16px 0 0', fontSize: 11.5, lineHeight: 1.6, color: 'var(--wu-dim)', borderTop: '1px solid var(--wu-line)', paddingTop: 12 }}>The two groups are <b style={{ color: 'var(--wu-text)' }}>different customers</b>, not an A/B test: someone using a compatibility finder already arrives with accessory intent. What is solid: <b style={{ color: 'var(--wu-text)' }}>half of the store's billing now runs through a line a module added</b>.</p>
+            <p style={{ margin: '16px 0 0', fontSize: 11.5, lineHeight: 1.6, color: 'var(--wu-dim)', borderTop: '1px solid var(--wu-line)', paddingTop: 12 }}>Of every <b style={{ color: 'var(--wu-text)' }}>$100</b> the store bills: <b style={{ color: 'var(--wu-crema)' }}>${per100attr}</b> is a line a module placed, <b style={{ color: 'var(--wu-text)' }}>${per100ride}</b> is base product riding along in the same order, and <b style={{ color: 'var(--wu-text)' }}>${per100rest}</b> never touched a module. The two groups are <b style={{ color: 'var(--wu-text)' }}>different customers</b>, not an A/B test — someone using a compatibility finder already arrives with accessory intent, so part of the AOV gap is the shopper, not the module.</p>
           </div>
         </DialogContent>
       </Dialog>
@@ -848,7 +1011,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   return (
     <TooltipProvider delayDuration={120}>
       <style>{WU_CSS}</style>
-      <div className="wu">
+      <div className="wu" ref={wuRef} onMouseOver={onDefOver} onMouseOut={clearDef} onMouseLeave={clearDef}>
         <div className="wu-head">
           <div>
             <div className="wu-eyebrow">Pesado · Website upgrades</div>
@@ -888,8 +1051,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
           </div>
           <Info k="env" />
           <div className="wu-seg">
-            {[7, 30, 90].map((d) => (
-              <button key={d} onClick={() => { const now = new Date(); applyRange({ from: subDays(now, d), to: now }); }}>Last {d}d</button>
+            {[7, 30, 90].map((d2) => (
+              <button key={d2} onClick={() => { const now = new Date(); applyRange({ from: subDays(now, d2), to: now }); }}>Last {d2}d</button>
             ))}
           </div>
           <select className="wu-view" value={view} onChange={(e) => pickView(e.target.value as View)} aria-label="Layout view">
@@ -937,21 +1100,21 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 
         {t && (
           <>
-            {data!.storeShare && data!.storeShare.upgradeOrders > 0 && (
+            {ss && ss.upgradeOrders > 0 && (
               <div className="wu-share" role="button" tabIndex={0} onClick={openStore}>
-                <HelpTitle k="share">Store impact</HelpTitle>
-                <span className="wu-share-item"><b className="tnum">{data!.storeShare.orderSharePct ?? '—'}%</b> of all store orders ({int(data!.storeShare.upgradeOrders)} of {int(data!.storeShare.storeOrders)}) touched an upgrade module</span>
-                <span className="wu-share-item"><b className="tnum">{data!.storeShare.revenueSharePct ?? '—'}%</b> of store net revenue ({money(data!.storeShare.attributedRevenue)} of {money(data!.storeShare.storeRevenue)}) is module-attributed</span>
+                <D d={DEFS.storeImpact}><span className="wu-share-k">Store impact</span></D>
+                <span className="wu-share-item"><b className="tnum">{ss.orderSharePct ?? '—'}%</b> of all store orders ({int(ss.upgradeOrders)} of {int(ss.storeOrders)}) touched an upgrade module</span>
+                <span className="wu-share-item"><b className="tnum">{ss.revenueSharePct ?? '—'}%</b> of store net revenue ({money(ss.attributedRevenue)} of {money(ss.storeRevenue)}) is module-attributed</span>
                 <span className="wu-share-cta">See the whole store →</span>
               </div>
             )}
 
             {view !== 'daily' && (
               <div className="wu-kpis" style={{ marginTop: 14 }}>
-                <Kpi label="Exposed sessions" help="exposed" val={int(t.exposedSessions)} sub={`${int(t.totalEvents)} events`} accent />
-                <Kpi label="Direct revenue" help="directRevenue" val={money(t.directRevenue)} sub={`${int(t.directLines)} lines`} accent />
-                <Kpi label="Direct orders" help="directOrders" val={int(t.directOrders)} sub="with an upgrade line" />
-                <Kpi label="Assisted orders" help="assisted" val={int(t.assistedOrders)} sub="via attribution id" />
+                <Kpi label="Exposed sessions" def={DEFS.exposed} val={int(t.exposedSessions)} sub={`${int(t.totalEvents)} events`} accent />
+                <Kpi label="Direct revenue" def={DEFS.directRevenue} val={money(t.directRevenue)} sub={`${int(t.directLines)} lines`} accent />
+                <Kpi label="Direct orders" def={DEFS.directOrders} val={int(t.directOrders)} sub="with an upgrade line" />
+                <Kpi label="Assisted orders" def={DEFS.assisted} val={int(t.assistedOrders)} sub="via attribution id" />
               </div>
             )}
 
@@ -1152,7 +1315,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 {/* Direct sales — machine + family split */}
                 <div className="wu-two">
                   <div className="wu-card">
-                    <div className="wu-klabel wu-clickhead" onClick={headToggle('machines')}><HelpTitle k="machine">Sales by machine</HelpTitle>{!openS('machines') && data!.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byMachine.length)} machines · {money(data!.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data!.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
+                    <div className="wu-klabel wu-clickhead" onClick={headToggle('machines')}><D d={DEFS.byMachine}>Sales by machine</D>{!openS('machines') && data!.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byMachine.length)} machines · {money(data!.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data!.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
                     {openS('machines') && (data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                       <div style={{ marginTop: 10 }}>
                         {data!.byMachine.map((m) => (
@@ -1173,7 +1336,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     ))}
                   </div>
                   <div className="wu-card">
-                    <div className="wu-klabel wu-clickhead" onClick={headToggle('families')}><HelpTitle k="family">Sales by product family</HelpTitle>{!openS('families') && data!.byFamily.length > 0 && <span className="wu-coll-sum tnum">{money(data!.byFamily.reduce((a, b) => a + b.revenue, 0))} · top {data!.byFamily[0].family}</span>}<CollBtn id="families" /></div>
+                    <div className="wu-klabel wu-clickhead" onClick={headToggle('families')}><Tip content={HELP.screen}>Sales by product family</Tip>{!openS('families') && data!.byFamily.length > 0 && <span className="wu-coll-sum tnum">{money(data!.byFamily.reduce((a, b) => a + b.revenue, 0))} · top {data!.byFamily[0].family}</span>}<CollBtn id="families" /></div>
                     {openS('families') && (data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
                       <div style={{ marginTop: 10 }}>
                         {data!.byFamily.map((f) => (
@@ -1199,16 +1362,20 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
         {loading && !t && (
           <div className="flex items-center justify-center min-h-[220px] gap-2"><Loader2 className="h-5 w-5 animate-spin wu-faint" /><span className="wu-faint">Loading…</span></div>
         )}
+
+        {def && (
+          <div className="wu-defcard" style={{ left: def.x, top: def.y }}>{def.text}</div>
+        )}
       </div>
       {storeModal}
     </TooltipProvider>
   );
 }
 
-function Kpi({ label, help, val, sub, accent }: { label: string; help: string; val: string; sub: ReactNode; accent?: boolean }) {
+function Kpi({ label, def, val, sub, accent }: { label: string; def: string; val: string; sub: ReactNode; accent?: boolean }) {
   return (
     <div className={cn('wu-card wu-kpi', accent && 'accent')}>
-      <div className="wu-klabel"><HelpTitle k={help}>{label}</HelpTitle></div>
+      <div className="wu-klabel"><D d={def}>{label}</D></div>
       <div className="wu-val">{val}</div>
       <div className="wu-sub">{sub}</div>
     </div>
@@ -1249,6 +1416,29 @@ function signalNotes(data: Dash): ReactNode[] {
       if (rate < 20 && worst.module !== best.module) notes.push(<><b>{worst.module}</b> fills carts that don't close: {int(worst.adds)} adds became only {int(worst.orders)} paid orders ({rate.toFixed(0)}% cart-close, vs {((100 * best.orders) / best.adds).toFixed(0)}% for {best.module}). Worth checking what happens between its add and checkout.</>);
     }
   }
+
+  // A mixed family — calm total, disagreeing variants — is the most actionable
+  // thing on the page and is invisible everywhere else.
+  const famMap = new Map<string, Array<{ title: string; pct: number }>>();
+  for (const r of data.byScreen) {
+    if (r.baselineUnitsPerWeek <= 0) continue;
+    const k = famOf(r.sku, r.title, false);
+    famMap.set(k, [...(famMap.get(k) ?? []), { title: r.title, pct: pctOf(r.unitsPerWeek, r.baselineUnitsPerWeek) }]);
+  }
+  const mixed = [...famMap.entries()]
+    .map(([k, rows]) => {
+      const best = [...rows].sort((a, b) => b.pct - a.pct)[0];
+      const worst2 = [...rows].sort((a, b) => a.pct - b.pct)[0];
+      const mean = rows.reduce((a, b) => a + b.pct, 0) / rows.length;
+      return { family: k, rows, best, worst: worst2, mean };
+    })
+    .filter((f) => f.rows.length >= 2 && Math.abs(f.mean) < 0.12 && f.best.pct > 0.15 && f.worst.pct < -0.15)
+    .sort((a, b) => (b.best.pct - b.worst.pct) - (a.best.pct - a.worst.pct))[0];
+  if (mixed) {
+    const downs = mixed.rows.filter((r) => r.pct < 0).length;
+    notes.push(<><b>{mixed.family} looks flat at {fmtPct(mixed.mean)}, and it isn't</b>: {mixed.best.title} is up {fmtPct(mixed.best.pct)} while {downs === 1 ? `${mixed.worst.title} is down` : `${downs} items are down`} — {mixed.worst.title} lost {fmtPct(Math.abs(mixed.worst.pct))} of its run rate. Products are moving in opposite directions behind a calm number — check <b>View: Products</b>.</>);
+  }
+
   const screens = data.byScreen.filter((r) => r.baselineUnitsPerWeek > 0 && r.adds >= 3 && r.deltaPct != null);
   if (screens.length >= 2) {
     const up = [...screens].sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0))[0];
@@ -1288,15 +1478,15 @@ function Glossary() {
     ['Adds/session', 'adds ÷ sessions', 'An average (a session can add twice), not a percentage.'],
     ['Conversion rate', 'paid orders ÷ sessions × 100', 'The share of exposed visitors who ended up buying.'],
     ['$/session', 'attributed revenue ÷ sessions', 'What each exposed visitor is worth — best metric for comparing modules with different traffic.'],
-    ['Cart-close rate', 'paid orders ÷ adds × 100', 'Of what entered the cart, how much actually got paid for.'],
-    ['Step conversion (Where it drops off)', 'next stage ÷ this stage × 100', 'The percentage between two funnel stages (views→clicks, clicks→adds, adds→orders). Green = best of the four modules at that step, red = worst.'],
+    ['Cart-close rate (CLOSE)', 'paid orders ÷ adds × 100', 'Of what entered the cart, how much actually got paid for.'],
+    ['Step conversion (Where it drops off)', 'next stage ÷ this stage × 100', 'The percentage between two funnel stages — CTR (views→clicks), ADD (clicks→adds), CLOSE (adds→orders). Green = best of the four modules at that step, red = worst.'],
     ['Direct order / revenue', 'sum of module-added lines (AUD net)', "Orders and revenue of the specific lines a module added (the line carries _pesado_source) — only those lines, not the whole order."],
     ['Assisted order', '—', "An order linked to a previous module interaction via the attribution id the theme writes on the cart (__pesado_*) — the shopper interacted earlier, maybe another day, then bought."],
     ['AOV (per module)', 'sum(full order value) ÷ orders that used the module', 'The whole basket of those orders, not just the added line.'],
     ['Basket impact / upgrade lift', '(upgrade AOV − other AOV) ÷ other AOV × 100', 'Orders that used any module vs every other store order in the window. Observed difference between two groups, not a controlled test.'],
-    ['Store impact', 'module orders ÷ all store orders · attributed revenue ÷ all store net revenue', 'The weight of the upgrade work in the whole business for the window. Click the strip for the full store context: store total → orders that touched a module → the module-added lines.'],
-    ['Order revenue touched', 'sum(full order total of orders with a module line)', 'The middle layer of the store context: everything billed by orders that used a module — the module lines plus whatever rode along in the same order.'],
-    ['Pre-launch / Delta (Products)', '(units/wk now − baseline) ÷ baseline × 100', "Now vs the frozen run-rate captured before the new theme went live (2026-07-21). Family deltas are recomputed over the family's total units, never averaged. Directional — ad spend and seasonality move it too."],
+    ['Store impact', 'module orders ÷ all store orders · attributed revenue ÷ all store net revenue', 'The weight of the upgrade work in the whole business for the window. Three different percentages exist: orders share, attributed-revenue share, and (in the store context) the module-ORDER revenue share — each is labelled with its unit.'],
+    ['Order revenue touched', 'sum(full order total of orders with a module line)', 'Everything billed by orders that used a module — the module lines plus whatever rode along in the same order. The middle layer between attributed revenue and the store total.'],
+    ['Pre-launch / Delta (Products)', 'mean of variant percentages in view', "Each variant's units/week vs the frozen pre-launch run rate (2026-07-21); a variant with no baseline but sales counts as +100%. The family delta is the AVERAGE of the variant percentages currently passing the filter — how much a typical product moved, not how the catalogue moved in units. Directional — ad spend and seasonality move it too."],
     ['Reward carts → bought', '—', 'Carts that crossed a reward threshold (free shipping $100 / 10% $200 / 15% $300) and how many of those sessions completed a purchase. Crossing a tier is intent, not a sale.'],
     ['Preview vs Production', '—', 'preview = test traffic from the theme preview; production = live customers. Commercial numbers use production.'],
     ['Data cadence', '—', 'Funnel events are real-time (the pixel posts each one instantly). Sales refresh every ~5 minutes via the fast sync (interval configurable in Config → Connections), with a full reconciliation 3×/day.'],
@@ -1315,10 +1505,12 @@ function Glossary() {
 
 const WU_CSS = `
 .wu{--wu-ground:#F4EEE3;--wu-card:#FFFFFF;--wu-card2:#FBF6EC;--wu-line:#E8DFCC;--wu-text:#241B12;--wu-dim:#786A53;--wu-faint:#A2937C;--wu-crema:#B9812A;--wu-crema2:#D19B34;--wu-crema-soft:rgba(201,138,41,.10);--wu-pos:#2E9E6E;--wu-neg:#C6513A;--wu-shadow:0 1px 2px rgba(60,40,10,.06),0 10px 34px rgba(60,40,10,.07);--wu-inkbg:#241B12;--wu-inkfg:#F2EADF;--wu-inkfg2:rgba(242,234,223,.82);--wu-gold:#E9B252;
-  font-family:'Inter',system-ui,sans-serif;color:var(--wu-text);background:radial-gradient(1200px 500px at 12% -10%,var(--wu-crema-soft),transparent 60%),var(--wu-ground);padding:clamp(14px,2vw,22px);border-radius:16px}
+  position:relative;font-family:'Inter',system-ui,sans-serif;color:var(--wu-text);background:radial-gradient(1200px 500px at 12% -10%,var(--wu-crema-soft),transparent 60%),var(--wu-ground);padding:clamp(14px,2vw,22px);border-radius:16px}
 .dark .wu{--wu-ground:#17120E;--wu-card:#221B15;--wu-card2:#2A2119;--wu-line:#33291E;--wu-text:#F2EADF;--wu-dim:#B7A991;--wu-faint:#87795F;--wu-crema:#E9B252;--wu-crema2:#F0C877;--wu-crema-soft:rgba(233,178,82,.13);--wu-pos:#5BC08E;--wu-neg:#E0725A;--wu-shadow:0 1px 2px rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.28);--wu-inkbg:#1C1610}
 .wu h1,.wu h2{font-family:'Fraunces',Georgia,serif}
 .wu .tnum{font-variant-numeric:tabular-nums}.wu-faint{color:var(--wu-faint)}.wu-dim{color:var(--wu-dim)}.wu-mono{font-family:ui-monospace,monospace;font-size:12px}
+.wu-def{border-bottom:1px dashed var(--wu-faint);cursor:help}
+.wu-defcard{position:absolute;z-index:90;width:300px;background:var(--wu-card);border:1px solid var(--wu-line);border-radius:10px;padding:11px 14px;box-shadow:0 12px 34px rgba(60,40,10,.18);font-size:11.5px;line-height:1.55;color:var(--wu-dim);pointer-events:none}
 .wu-info{display:inline-grid;place-items:center;width:14px;height:14px;border-radius:50%;border:1px solid var(--wu-faint);color:var(--wu-faint);font-size:9px;font-weight:700;cursor:help;line-height:1;vertical-align:middle}
 .wu-info:hover,.wu-info:focus{border-color:var(--wu-crema);color:var(--wu-crema);outline:none}
 .wu-help{border-bottom:1px dashed var(--wu-faint);cursor:help;transition:border-color .15s,color .15s}
@@ -1332,7 +1524,7 @@ const WU_CSS = `
 .wu-gloss:hover{border-color:var(--wu-crema);color:var(--wu-crema)}
 .wu-share{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;background:linear-gradient(158deg,var(--wu-card),var(--wu-card2));border:1px solid var(--wu-line);border-left:3px solid var(--wu-crema);border-radius:12px;padding:12px 16px;font-size:13px;color:var(--wu-dim);box-shadow:var(--wu-shadow);cursor:pointer;transition:border-color .15s}
 .wu-share:hover{border-color:var(--wu-crema)}
-.wu-share .wu-help{font-weight:700;color:var(--wu-crema);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.wu-share-k{font-weight:700;color:var(--wu-crema);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
 .wu-share-item b{color:var(--wu-text);font-family:'Fraunces',Georgia,serif;font-size:15px}
 .wu-share-cta{margin-left:auto;font-size:11.5px;font-weight:600;color:var(--wu-crema);white-space:nowrap}
 .wu-signals ul{margin:10px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:8px}
@@ -1415,23 +1607,19 @@ const WU_CSS = `
 .wu-block-bar b{text-align:right}
 .wu-chev{color:var(--wu-faint);transition:transform .15s;display:inline-block}
 .wu-chev.open{transform:rotate(90deg)}
-.wu-daily{max-width:1000px}
 .wu-hero{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:2px solid var(--wu-text);padding-bottom:10px;margin-top:22px}
 .wu-hero h2{font-size:26px;font-weight:600;margin:0;letter-spacing:-.01em}
 .wu-hero h2 em{font-style:italic;color:var(--wu-crema)}
-.wu-2up{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;margin-top:16px}
+.wu-dgrid{display:grid;grid-template-columns:1.5fr 1fr;gap:18px;margin-top:16px;align-items:start}
 .wu-kicker{font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--wu-faint)}
-.wu-minicard{border-radius:12px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
-.wu-minicard[role="button"]{cursor:pointer;transition:border-color .15s}
-.wu-minicard[role="button"]:hover{border-color:var(--wu-crema)}
 .wu-h3row{display:flex;align-items:baseline;gap:10px;border-bottom:1px solid var(--wu-line);padding-bottom:7px}
 .wu-h3row h3{font-family:'Fraunces',Georgia,serif;font-size:15px;font-weight:600;margin:0}
-.wu-rankrow{display:grid;grid-template-columns:22px 210px 1fr 76px 96px;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--wu-line)}
+.wu-rankrow{display:grid;grid-template-columns:22px 1fr 1.1fr 76px 100px;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--wu-line)}
 .wu-rankchip{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:5px;background:rgba(36,27,18,.12);color:var(--wu-text);font-size:10px;font-weight:700}
 .dark .wu-rankchip{background:rgba(242,234,223,.16);color:var(--wu-text)}
 .wu-ink{background:var(--wu-inkbg);color:var(--wu-inkfg)}
 .dark .wu-ink{border:1px solid var(--wu-line)}
-.wu-famcards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.wu-oigrid{display:grid;grid-template-columns:1fr 76px 76px 56px;gap:10px;align-items:center}
 .wu-famcard{border:1px solid var(--wu-line);border-radius:12px;padding:12px 14px;background:var(--wu-card);cursor:pointer;transition:border-color .15s}
 .wu-famcard:hover{border-color:var(--wu-crema)}
 .wu-mcard{padding:0}
@@ -1444,17 +1632,18 @@ const WU_CSS = `
 .wu-mrate-bar{height:3px;border-radius:999px;background:rgba(201,138,41,.16);margin-top:7px;overflow:hidden}
 .wu-mrate-bar span{display:block;height:100%}
 .wu-mrate-c{font-size:10px;color:var(--wu-faint);margin-top:5px}
-.wu-mfun{display:grid;grid-template-columns:1fr 30px 1fr 30px 1fr 30px 1fr;align-items:center}
+.wu-mfun{display:grid;grid-template-columns:1fr 48px 1fr 48px 1fr 48px 1fr;align-items:end;gap:0 8px}
 .wu-mstep-n{font-family:'Fraunces',Georgia,serif;font-size:17px;font-weight:600}
 .wu-mstep-l{font-size:10px;color:var(--wu-faint);margin-top:2px}
-.wu-mstep-b{height:22px;margin-top:6px;border-radius:3px;background:linear-gradient(180deg,var(--wu-crema2),var(--wu-crema))}
-.wu-mconn{text-align:center;font-size:10px;font-weight:700;padding-bottom:14px}
-.wu-mconn div{color:var(--wu-faint);font-weight:400;font-size:13px;line-height:1}
-.wu-famgrid{display:grid;grid-template-columns:1fr 82px 96px 90px 90px 132px;gap:12px;align-items:center;padding:13px 18px}
+.wu-mstep-b{height:22px;margin-top:9px;border-radius:3px;background:linear-gradient(180deg,var(--wu-crema2),var(--wu-crema))}
+.wu-mconn{text-align:center;padding-bottom:1px}
+.wu-mconn-l{font-size:8.5px;font-weight:700;letter-spacing:.04em;color:var(--wu-faint)}
+.wu-mconn-v{font-size:11px;font-weight:700;line-height:1.25}
+.wu-famgrid{display:grid;grid-template-columns:1fr 74px 92px 84px 84px 158px;gap:12px;align-items:center;padding:13px 18px}
 .wu-famhead{padding:11px 18px;border-bottom:2px solid var(--wu-text);font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--wu-faint)}
 .wu-famrow{border-bottom:1px solid var(--wu-line);cursor:pointer}
 .wu-famrow:hover{background:rgba(201,138,41,.06)}
 .wu-varrow{padding:9px 18px 9px 40px;font-size:12px}
 .wu-famtotal{background:rgba(201,138,41,.07)}
-@media (max-width:900px){.wu-kpis{grid-template-columns:repeat(2,1fr)}.wu-two{grid-template-columns:1fr}.wu-blocks{grid-template-columns:1fr}.wu-2up{grid-template-columns:1fr}.wu-famcards{grid-template-columns:repeat(2,1fr)}.wu-rankrow{grid-template-columns:22px 1fr 60px;grid-template-rows:auto auto}.wu-famgrid{grid-template-columns:1fr 60px 70px 60px}}
+@media (max-width:900px){.wu-kpis{grid-template-columns:repeat(2,1fr)}.wu-two{grid-template-columns:1fr}.wu-blocks{grid-template-columns:1fr}.wu-dgrid{grid-template-columns:1fr}.wu-rankrow{grid-template-columns:22px 1fr 60px;grid-template-rows:auto auto}.wu-famgrid{grid-template-columns:1fr 60px 70px 60px}}
 `;
