@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
 interface DateRange { from?: Date; to?: Date; }
 interface WebUpgradeTabProps { dateRange?: DateRange; setDateRange?: (r: DateRange) => void; }
 type Env = 'production' | 'preview' | 'all';
-type View = 'current' | 'blocks' | 'zones' | 'summary';
+type View = 'daily' | 'modules' | 'products' | 'blocks';
 
 interface Dash {
   params: { from: string; to: string; environment: string };
@@ -24,12 +24,12 @@ interface Dash {
   byModel: Array<{ brand: string; model: string; selects: number; addClicks: number; adds: number }>;
   byScreen: Array<{ sku: string; fitment: string | null; title: string; clicks: number; adds: number; attributedRevenue: number; unitsPerWeek: number; baselineUnitsPerWeek: number; deltaPct: number | null }>;
   rewards: Array<{ name: string; unlocks: number; sessions: number; bought: number }>;
-  storeShare: { storeOrders: number; storeRevenue: number; upgradeOrders: number; attributedRevenue: number; orderSharePct: number | null; revenueSharePct: number | null } | null;
+  storeShare: { storeOrders: number; storeRevenue: number; upgradeOrders: number; upgradeOrderRevenue?: number; attributedRevenue: number; orderSharePct: number | null; revenueSharePct: number | null } | null;
   orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
   bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
   byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number; variants: Array<{ label: string; orders: number; lines: number; revenue: number }> | null }>;
   byFamily: Array<{ family: string; lines: number; revenue: number }>;
-  trend: Array<{ d: string; events: number; sessions: number }>;
+  trend: Array<{ d: string; events: number; sessions: number; attributedRevenue?: number; storeRevenue?: number }>;
 }
 
 const HELP: Record<string, string> = {
@@ -39,7 +39,6 @@ const HELP: Record<string, string> = {
   assisted: 'Orders linked to a prior module interaction via the order-level attribution id (from note_attributes). Requires the theme to write __pesado_* cart attributes. Like all sales here, refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day.',
   module: 'Each module end to end: sessions exposed → views → clicks → adds (into the cart) → ORDERS (actually paid for) and the revenue behind them. The funnel columns are real-time from the pixel; the Orders/Revenue columns come from the Shopify sales sync — refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day — so they can lag a few minutes. Adding to a cart is not a purchase — Orders is the real bottom line.',
   rewards: 'Reward tiers shoppers crossed IN THEIR CART, listed lowest tier first (free shipping $100 → 10% off $200 → 15% off $300). "carts" = distinct sessions whose basket reached that threshold; "bought" = how many of those sessions actually completed a purchase. Crossing a tier is intent, not a sale — expect far more unlocks than orders, because most carts are abandoned. A tier only appears once a basket actually reached it.',
-  source: 'Direct sales grouped by the module that added the line (_pesado_source). AOV and items are the WHOLE basket of those orders, not just the added line. An order that used two modules is counted under each, so these rows do not sum to the totals.',
   impact: 'A simple question: do people who use an upgrade module end up buying MORE per order than everyone else? It takes every paid order in the window, splits them into "used an upgrade module" vs "did not", and compares the average order value (AOV) and the average number of items. The difference is the lift. It is an observed gap between two groups of shoppers, not a controlled test — people who engage with an upgrade may already be bigger spenders.',
   machine: "Direct sales grouped by the customer's espresso machine. Each module writes the machine name in its own style, so the bold row is the machine TOTAL and the indented rows underneath split it by which module recorded the sale: “The X” = the Find-your-machine tool on the product page; “Compatible with your X” = the Complete-your-setup panel in the cart. Same machine, different door in.",
   compat: 'Activity on the standalone Compatibility Guide page (/pages/compatibility-guide) — where a shopper browses by machine brand → model to find compatible parts. This is that page\'s funnel, end to end: landed on the page → picked their machine → clicked add → add confirmed. It stays empty until someone uses that page (adds made on a normal product page show up under the other sections, not here).',
@@ -48,8 +47,10 @@ const HELP: Record<string, string> = {
   family: "Direct sales grouped by the purchased product's family (Shower Screens, Filter Baskets, Portafilters…), derived from the SKU with the same mapping as the E-commerce tab.",
   conv: 'Conversion rate: paid orders ÷ exposed sessions. The share of people who saw the module and ended up buying something it added.',
   rps: 'Revenue per session: attributed revenue ÷ exposed sessions. What each exposed visitor is worth — the best number for comparing modules with very different traffic.',
-  share: 'How much of the WHOLE store the upgrade modules account for in this window: % of all store orders that contain a module-added line, and % of all store net revenue that is module-attributed. This is the weight of the upgrade work in the business.',
+  share: 'How much of the WHOLE store the upgrade modules account for in this window: % of all store orders that contain a module-added line, and % of all store net revenue that is module-attributed. This is the weight of the upgrade work in the business. Click for the full store context.',
   env: 'preview = test traffic (theme preview). production = live customers. Commercial stats use production.',
+  trendChart: 'AUD revenue of module-added lines, day by day, inside the selected window. Sales come from Shopify via the fast sync (~5 min), so the current day is always partial.',
+  dropoff: 'The four funnel stages as fixed blocks with the STEP-TO-STEP conversion between them (views→clicks, clicks→adds, adds→paid orders). Green = best step of its kind across the four modules, red = worst. Proportional bars would render Orders invisible — 271 orders against 21,746 views is 1.2% of the track.',
 };
 
 // Real screenshots of each on-site module (captured from the live theme), shown
@@ -64,23 +65,21 @@ const MODULE_IMG: Record<string, string> = {
 };
 
 // Plain-language explanation of each on-site module, keyed by the exact label the
-// RPC emits. Shown on hover of the module name in the By-module table.
+// RPC emits. Shown on hover of the module name.
 const MODULE_HELP: Record<string, string> = {
   'Compatibility Guide': 'The dedicated Compatibility Guide page. The shopper browses by machine brand → model to find the parts that fit their machine, and can add them straight from the guide.',
-  'Machine finder (product page)': 'The "Find your machine" tool built into a product page: the shopper picks their espresso machine and it shows — and adds — the exact shower screen that fits it. Screens added here appear under "By screen & product".',
+  'Machine finder (product page)': 'The "Find your machine" tool built into a product page: the shopper picks their espresso machine and it shows — and adds — the exact shower screen that fits it. Screens added here appear under the Products view.',
   'Compatible Additions (product page)': 'The "Complete your setup" recommendations rendered ON the product page itself, while the shopper is still looking at the product (before opening the cart). Same look as the cart one — different place and different code, so we count them apart to see which surface actually converts.',
-  'Compatible Additions (cart)': 'The "Complete your setup" recommendations that appear INSIDE the cart / mini-cart drawer (the panel in your screenshot), as the shopper reviews the basket right before checkout.',
+  'Compatible Additions (cart)': 'The "Complete your setup" recommendations that appear INSIDE the cart / mini-cart drawer, as the shopper reviews the basket right before checkout.',
   'Other': 'Events that did not match a known module (e.g. a new event name the theme started sending).',
 };
 
-// Plain-language explanation of each _pesado_source tag, shown on hover of the
-// source name in the "By module source" table.
-const SOURCE_HELP: Record<string, string> = {
-  product_machine_finder: 'Added via the "Find your machine" tool on a product page — the shopper picked their machine and it added the matching screen.',
-  compatibility_guide: 'Added from the Compatibility Guide page as a single item.',
-  compatibility_complete_kit: 'Added from the Compatibility Guide as a complete kit — several items in one click.',
-  product_compatible_additions: 'Added from the "Complete your setup" recommendations shown on the product page.',
-  compatible_additions: 'Added from the "Complete your setup" recommendations inside the cart / mini-cart drawer.',
+// Where each module lives on the site — the "what it is" line of its card.
+const MODULE_SURFACE: Record<string, string> = {
+  'Compatibility Guide': 'Own page',
+  'Machine finder (product page)': 'Product page',
+  'Compatible Additions (product page)': 'Product page',
+  'Compatible Additions (cart)': 'Cart drawer',
 };
 
 // Which module wrote a raw machine label — inferred from the label style each
@@ -96,9 +95,27 @@ const variantOrigin = (label: string): string =>
 const LAUNCH = new Date('2026-07-23T00:21:48Z');
 
 const REWARD_LABEL: Record<string, string> = { free_shipping: 'Free shipping', discount_10: '10% off', discount_15: '15% off' };
+const REWARD_TIER: Record<string, string> = { free_shipping: '$100', discount_10: '$200', discount_15: '$300' };
 const money = (v: number | null | undefined) => { const n = Number(v) || 0; return Math.abs(n) >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : Math.abs(n) >= 1000 ? `$${Math.round(n / 1000)}K` : `$${Math.round(n)}`; };
+const money1 = (v: number | null | undefined) => { const n = Number(v) || 0; return Math.abs(n) >= 1000 ? `$${(n / 1000).toFixed(1)}K` : `$${Math.round(n)}`; };
 const int = (v: number | null | undefined) => (Number(v) || 0).toLocaleString('en-US');
 const toYMD = (d: Date) => format(d, 'yyyy-MM-dd');
+
+// Family (+ detected size) a product belongs to, derived from its SKU. The same
+// mapping the E-commerce tab uses, plus the 54/58 mm size read from SKU/title.
+const famOf = (sku0: string, title: string, withSize = true): string => {
+  const sku = sku0.toUpperCase(); const blob = (sku0 + ' ' + title).toUpperCase();
+  const fam = sku.startsWith('PSD-HD') || sku.startsWith('PSDBREVILLE') ? 'Shower Screens'
+    : sku.startsWith('PSD-PUCK') ? 'Puck Screens'
+    : sku.startsWith('PSD-HE') || sku.startsWith('EP-') || sku.startsWith('EP_') ? 'Filter Baskets'
+    : sku.startsWith('PF') ? 'Portafilters'
+    : sku.startsWith('EXT') || sku.startsWith('PRE') ? 'Bundles'
+    : /DISTRIBUT|TAMP|RING|CRUSHER|DOSING/.test(blob) ? 'Distribution & Prep'
+    : 'Accessories';
+  if (!withSize) return fam;
+  const size = /58/.test(blob) ? ' · 58mm' : /(54|53\.5)/.test(blob) ? ' · 54mm' : '';
+  return fam + size;
+};
 
 function Info({ k }: { k: string }) {
   return (
@@ -137,27 +154,6 @@ function ModuleTip({ module, children }: { module: string; children?: ReactNode 
     </Tooltip>
   );
 }
-// Source tag tooltip: screenshot of the module that writes this _pesado_source.
-const SOURCE_MODULE: Record<string, string> = {
-  product_machine_finder: 'Machine finder (product page)',
-  compatibility_guide: 'Compatibility Guide',
-  compatibility_complete_kit: 'Compatibility Guide',
-  product_compatible_additions: 'Compatible Additions (product page)',
-  compatible_additions: 'Compatible Additions (cart)',
-};
-function SourceTip({ source }: { source: string }) {
-  const img = MODULE_IMG[SOURCE_MODULE[source] ?? ''];
-  const text = SOURCE_HELP[source];
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild><span className="wu-help">{source}</span></TooltipTrigger>
-      <TooltipContent className="max-w-[340px] p-2">
-        {img && <img src={img} alt={source} style={{ width: '100%', borderRadius: 6, border: '1px solid rgba(0,0,0,.12)', marginBottom: 6 }} />}
-        <div className="text-xs leading-relaxed px-1 pb-1">{text}</div>
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 // Hoverable table-column header: the header text itself explains the column.
 function Th({ children, tip, right }: { children: ReactNode; tip: string; right?: boolean }) {
@@ -166,14 +162,22 @@ function Th({ children, tip, right }: { children: ReactNode; tip: string; right?
 
 export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTabProps) {
   const [env, setEnv] = useState<Env>('production');
-  // Layout view selector; persisted so the pick sticks across sessions.
+  // Purposeful views (daily brief / modules / products) + the legacy Module
+  // blocks layout, kept for now. Stale stored picks migrate to the closest new view.
   const [view, setView] = useState<View>(() => {
-    try { return (localStorage.getItem('wu-view') as View) || 'current'; } catch { return 'current'; }
+    try {
+      const LEGACY: Record<string, View> = { current: 'modules', zones: 'products', summary: 'modules' };
+      const s = localStorage.getItem('wu-view') ?? '';
+      if (['daily', 'modules', 'products', 'blocks'].includes(s)) return s as View;
+      return LEGACY[s] ?? 'daily';
+    } catch { return 'daily'; }
   });
   const pickView = (v: View) => { setView(v); try { localStorage.setItem('wu-view', v); } catch { /* ignore */ } };
   const [data, setData] = useState<Dash | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [storeOpen, setStoreOpen] = useState(false);
+  const [moduleSort, setModuleSort] = useState<'rps' | 'revenue' | 'conv'>('rps');
 
   // Manual range picked inside the tab wins over the app-wide range.
   // Default window: launch day → today. Earlier dates predate the tracking, so
@@ -187,6 +191,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const [screenFilter, setScreenFilter] = useState<'all' | 'up' | 'down' | 'sold'>('all');
   const [screenGroup, setScreenGroup] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const [openFams, setOpenFams] = useState<Record<string, boolean>>({});
   // Per-card collapse, persisted. openS(id) says whether a card body is shown.
   const [closedCards, setClosedCards] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem('wu-closed2') || '{}'); } catch { return {}; }
@@ -232,6 +237,41 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 
   const t = data?.totals;
   const noData = !!data && (data.totals.totalEvents === 0);
+  const rangeLabel = `${range.from ? format(range.from, 'MMM d') : ''} – ${range.to ? format(range.to, 'MMM d, yyyy') : ''}`;
+
+  // Module maths shared by Daily brief + Modules view.
+  const rpsOf = (m: Dash['modules'][number]) => (m.sessions > 0 ? m.revenue / m.sessions : 0);
+  const convOf = (m: Dash['modules'][number]) => (m.sessions > 0 ? (100 * m.orders) / m.sessions : 0);
+  const mods = useMemo(() => (data?.modules ?? []).filter((m) => m.module !== 'Other'), [data]);
+  const bestRps = Math.max(...mods.map(rpsOf), 0.01);
+  const bestConv = Math.max(...mods.map(convOf), 0.01);
+  const bestAov = Math.max(...mods.map((m) => m.aov ?? 0), 1);
+  const storeAov = data?.storeShare && data.storeShare.storeOrders > 0 ? data.storeShare.storeRevenue / data.storeShare.storeOrders : null;
+  const RPS_FLOOR = 0.5;
+  const badModule = (m: Dash['modules'][number]) => rpsOf(m) < RPS_FLOOR && rpsOf(m) === Math.min(...mods.map(rpsOf));
+
+  // Family aggregation over byScreen (delta recomputed on group totals, never averaged).
+  const famAgg = useMemo(() => {
+    const map = new Map<string, Dash['byScreen']>();
+    for (const r of data?.byScreen ?? []) {
+      const k = famOf(r.sku, r.title);
+      map.set(k, [...(map.get(k) ?? []), r]);
+    }
+    return [...map.entries()].map(([key, members]) => {
+      const upw = members.reduce((a, b) => a + b.unitsPerWeek, 0);
+      const base = members.reduce((a, b) => a + b.baselineUnitsPerWeek, 0);
+      return {
+        key, members,
+        adds: members.reduce((a, b) => a + b.adds, 0),
+        attributedRevenue: members.reduce((a, b) => a + b.attributedRevenue, 0),
+        unitsPerWeek: Math.round(upw * 10) / 10,
+        baselineUnitsPerWeek: Math.round(base * 10) / 10,
+        deltaPct: base > 0 ? Math.round(((upw - base) / base) * 1000) / 10 : null,
+      };
+    }).sort((a, b) => b.attributedRevenue - a.attributedRevenue);
+  }, [data]);
+
+  const openStore = () => setStoreOpen(true);
 
   const secGuide = t ? (
     <>
@@ -315,6 +355,496 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     </>
   ) : null;
 
+  // ——— Daily brief building blocks ———
+  const daily = (() => {
+    if (!t || !data) return null;
+    const tr = data.trend ?? [];
+    const todayYmd = toYMD(new Date());
+    const endsToday = tr.length > 0 && tr[tr.length - 1].d === todayYmd;
+    const hero = endsToday && tr.length > 1 ? tr[tr.length - 2] : tr[tr.length - 1];
+    const completeDays = endsToday ? tr.slice(0, -1) : tr;
+    const avg = completeDays.length > 0 ? completeDays.reduce((a, b) => a + (b.attributedRevenue ?? 0), 0) / completeDays.length : 0;
+    const heroRev = hero?.attributedRevenue ?? 0;
+    const heroDelta = avg > 0 ? Math.round((100 * (heroRev - avg)) / avg) : null;
+    const heroWhen = hero ? (endsToday ? 'yesterday' : `on ${format(new Date(hero.d + 'T00:00:00'), 'MMM d')}`) : '';
+
+    // Area chart geometry (viewBox 320×74, x 10→310, baseline y=66, top y=8).
+    const revs = tr.map((d) => d.attributedRevenue ?? 0);
+    const maxRev = Math.max(...revs, 1);
+    const px = (i: number) => (tr.length > 1 ? 10 + (300 * i) / (tr.length - 1) : 160);
+    const py = (v: number) => 66 - (58 * v) / maxRev;
+    const pts = revs.map((v, i) => `${px(i).toFixed(1)},${py(v).toFixed(1)}`);
+    const labelStep = Math.max(1, Math.ceil(tr.length / 7));
+
+    const ranked = [...mods].sort((a, b) => rpsOf(b) - rpsOf(a));
+
+    // Families that moved the most: top |delta| plus always the worst family.
+    const famBaseMap = new Map<string, { upw: number; base: number }>();
+    for (const r of data.byScreen) {
+      const k = famOf(r.sku, r.title, false);
+      const cur = famBaseMap.get(k) ?? { upw: 0, base: 0 };
+      famBaseMap.set(k, { upw: cur.upw + r.unitsPerWeek, base: cur.base + r.baselineUnitsPerWeek });
+    }
+    const famMoves = [...famBaseMap.entries()]
+      .filter(([, v]) => v.base > 0)
+      .map(([k, v]) => ({ family: k, upw: Math.round(v.upw * 10) / 10, base: Math.round(v.base * 10) / 10, delta: Math.round((100 * (v.upw - v.base)) / v.base) }));
+    const byAbs = [...famMoves].sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    const worst = [...famMoves].sort((a, b) => a.delta - b.delta)[0];
+    let famCards = byAbs.slice(0, 4);
+    if (worst && !famCards.some((f) => f.family === worst.family)) famCards = [...famCards.slice(0, 3), worst];
+
+    const notes = signalNotes(data).slice(0, 3);
+
+    return (
+      <div className="wu-daily">
+        <div className="wu-hero">
+          <h2>Upgrades made <em>{money1(heroRev)}</em> {heroWhen}</h2>
+          <div style={{ textAlign: 'right', flex: 'none' }}>
+            <div style={{ fontSize: 10.5, color: 'var(--wu-faint)' }}>vs daily average since launch</div>
+            <div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, lineHeight: 1.1, color: heroDelta == null ? 'var(--wu-faint)' : heroDelta >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+              {heroDelta == null ? '—' : `${heroDelta >= 0 ? '+' : ''}${heroDelta}%`}
+            </div>
+          </div>
+        </div>
+
+        <div className="wu-2up">
+          <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+              <span className="wu-kicker"><Tip content={HELP.trendChart}>Attributed revenue per day</Tip></span>
+              <span className="tnum" style={{ fontSize: 11, color: 'var(--wu-dim)' }}>{money(revs.reduce((a, b) => a + b, 0))} over {tr.length} day{tr.length === 1 ? '' : 's'}</span>
+            </div>
+            {tr.length > 1 ? (
+              <>
+                <svg viewBox="0 0 320 74" width="100%" height="74" style={{ marginTop: 10, display: 'block' }} preserveAspectRatio="none">
+                  <path d={`M${pts.join(' L')} L310,66 L10,66 Z`} fill="rgba(201,138,41,.14)" />
+                  <polyline points={pts.join(' ')} fill="none" stroke="var(--wu-crema)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+                  <circle cx={px(tr.length - 1)} cy={py(revs[revs.length - 1])} r={4} fill="var(--wu-crema)" />
+                  <line x1={10} y1={66} x2={310} y2={66} stroke="var(--wu-line)" strokeWidth={1} />
+                </svg>
+                <div className="tnum" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--wu-faint)', marginTop: 2 }}>
+                  {tr.filter((_, i) => i % labelStep === 0 || i === tr.length - 1).map((d, i) => (
+                    <span key={d.d}>{i === 0 ? format(new Date(d.d + 'T00:00:00'), 'MMM d') : format(new Date(d.d + 'T00:00:00'), 'd')}</span>
+                  ))}
+                </div>
+              </>
+            ) : <div className="wu-muted" style={{ marginTop: 12 }}>One day of data — the line appears from day two.</div>}
+          </div>
+          <div style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: 10 }}>
+            <div className="wu-card wu-minicard" role="button" tabIndex={0} onClick={openStore} style={{ borderLeft: '3px solid var(--wu-crema)' }}>
+              <div>
+                <div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, lineHeight: 1 }}>{data.storeShare?.revenueSharePct ?? '—'}%</div>
+                <div style={{ fontSize: 10.5, color: 'var(--wu-faint)', marginTop: 4 }}>of store revenue goes through a module</div>
+              </div>
+              <div style={{ width: 54, height: 54, borderRadius: '50%', flex: 'none', background: `conic-gradient(var(--wu-crema) 0 ${data.storeShare?.revenueSharePct ?? 0}%, var(--wu-crema-soft) ${data.storeShare?.revenueSharePct ?? 0}% 100%)` }} />
+            </div>
+            <div className="wu-card wu-minicard" style={{ borderLeft: '3px solid var(--wu-pos)' }}>
+              <div>
+                <div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 22, fontWeight: 600, lineHeight: 1, color: 'var(--wu-pos)' }}>
+                  {data.orderImpact?.aovLiftPct == null ? '—' : `${data.orderImpact.aovLiftPct >= 0 ? '+' : ''}${data.orderImpact.aovLiftPct}%`}
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--wu-faint)', marginTop: 4 }}>higher AOV when an upgrade is used ({money(data.orderImpact?.upgradeAov)} vs {money(data.orderImpact?.otherAov)})</div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 44, flex: 'none' }}>
+                <div style={{ width: 14, height: 44, background: 'var(--wu-pos)', borderRadius: 2 }} />
+                <div style={{ width: 14, height: data.orderImpact?.upgradeAov ? Math.max(6, Math.round((44 * (data.orderImpact.otherAov ?? 0)) / data.orderImpact.upgradeAov)) : 34, background: 'rgba(120,106,83,.35)', borderRadius: 2 }} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 22 }}>
+          <div className="wu-h3row">
+            <h3><HelpTitle k="rps">What each exposed visitor is worth</HelpTitle></h3>
+            <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>$/session · the number that compares modules with different traffic</span>
+          </div>
+          {ranked.map((m, i) => {
+            const v = rpsOf(m);
+            const bad = v < RPS_FLOOR;
+            return (
+              <div key={m.module} className="wu-rankrow">
+                <span className="wu-rankchip" style={i === 0 ? { background: 'var(--wu-crema)', color: '#fff' } : undefined}>{i + 1}</span>
+                <span style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, fontWeight: 600 }}>
+                  <ModuleTip module={m.module}>{m.module.replace(/ \((cart|product page)\)$/, '')}</ModuleTip>
+                  {/ \((cart|product page)\)$/.test(m.module) && <span style={{ fontWeight: 400, color: 'var(--wu-dim)' }}> ({m.module.includes('(cart)') ? 'cart' : 'PDP'})</span>}
+                </span>
+                <div style={{ height: 20, borderRadius: 3, background: bad ? 'rgba(198,81,58,.12)' : 'var(--wu-crema-soft)', overflow: 'hidden' }}>
+                  <span style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.round((100 * v) / bestRps))}%`, background: bad ? 'var(--wu-neg)' : 'linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))' }} />
+                </div>
+                <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: bad ? 'var(--wu-neg)' : undefined }}>${v.toFixed(2)}</b>
+                <span className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)', textAlign: 'right' }}>{int(m.sessions)} sessions<br />{t.exposedSessions > 0 ? `${Math.round((100 * m.sessions) / t.exposedSessions)}% of traffic` : ''}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {notes.length > 0 && (
+          <div className="wu-ink" style={{ marginTop: 22, borderRadius: 14, padding: '18px 20px' }}>
+            <div className="wu-kicker" style={{ color: 'var(--wu-gold)', letterSpacing: '.14em' }}>What to move today</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
+              {notes.map((n, i) => (
+                <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                  <span style={{ color: 'var(--wu-gold)', fontSize: 13, lineHeight: 1.5 }}>{i + 1}</span>
+                  <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--wu-inkfg2)' }}>{n}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {famCards.length > 0 && (
+          <div style={{ marginTop: 20 }}>
+            <div className="wu-h3row" style={{ marginBottom: 10 }}>
+              <h3><HelpTitle k="screen">Families that moved the most</HelpTitle></h3>
+              <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>units/week vs the Jul 21 baseline · full detail lives in Products</span>
+            </div>
+            <div className="wu-famcards">
+              {famCards.map((f) => (
+                <div key={f.family} className="wu-famcard" role="button" tabIndex={0} onClick={() => pickView('products')}>
+                  <div style={{ fontSize: 11.5, color: 'var(--wu-dim)', lineHeight: 1.35 }}>{f.family}</div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6 }}>
+                    <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, color: f.delta >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{f.delta >= 0 ? '+' : ''}{f.delta}%</b>
+                    <span className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)' }}>{f.upw} / {f.base}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  })();
+
+  // ——— Modules view: the three-band module card ———
+  const modulesView = (() => {
+    if (!t || !data) return null;
+    const sorted = [...mods].sort((a, b) => moduleSort === 'revenue' ? b.revenue - a.revenue : moduleSort === 'conv' ? convOf(b) - convOf(a) : rpsOf(b) - rpsOf(a));
+    // Step-to-step conversion rates, with best/worst per step across modules.
+    const steps = (m: Dash['modules'][number]) => [
+      m.views > 0 ? (100 * m.clicks) / m.views : null,
+      m.clicks > 0 ? (100 * m.adds) / m.clicks : null,
+      m.adds > 0 ? (100 * m.orders) / m.adds : null,
+    ];
+    const stepMatrix = mods.map(steps);
+    const stepBest = [0, 1, 2].map((i) => Math.max(...stepMatrix.map((s) => s[i] ?? -1)));
+    const stepWorst = [0, 1, 2].map((i) => Math.min(...stepMatrix.map((s) => s[i] ?? 1e9)));
+    const stepColor = (v: number | null, i: number) => {
+      if (v == null || mods.length < 2 || stepBest[i] === stepWorst[i]) return 'var(--wu-crema)';
+      if (v === stepBest[i]) return 'var(--wu-pos)';
+      if (v === stepWorst[i]) return 'var(--wu-neg)';
+      return 'var(--wu-crema)';
+    };
+    const fmtStep = (v: number | null) => (v == null ? '—' : v >= 10 ? `${Math.round(v)}%` : `${v.toFixed(1)}%`);
+    return (
+      <>
+        <div className="wu-section-h">
+          <div className="wu-eyebrow">Funnel</div>
+          <h2><HelpTitle k="module">By module</HelpTitle></h2>
+          <span className="wu-faint" style={{ fontSize: 12.5 }}>ranked by what each exposed visitor is worth</span>
+          <span className="wu-seg wu-seg-sm" style={{ marginLeft: 'auto' }} role="group" aria-label="Sort modules">
+            {([['rps', '$/session'], ['revenue', 'Revenue'], ['conv', 'Conversion']] as Array<[typeof moduleSort, string]>).map(([k, lb]) => (
+              <button key={k} aria-pressed={moduleSort === k} onClick={() => setModuleSort(k)}>{lb}</button>
+            ))}
+          </span>
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--wu-faint)', margin: '0 2px 14px' }}>Each card answers three things, always in the same order: <b style={{ color: 'var(--wu-dim)' }}>what it is</b> · <b style={{ color: 'var(--wu-dim)' }}>what it brings</b> · <b style={{ color: 'var(--wu-dim)' }}>where it drops off</b>.</div>
+        <div className="wu-blocks">
+          {sorted.map((m, rank) => {
+            const s = steps(m);
+            const bad = badModule(m);
+            const revShare = t.directRevenue > 0 ? Math.round((100 * m.revenue) / t.directRevenue) : 0;
+            const aovDelta = storeAov && m.aov != null ? Math.round((100 * (m.aov - storeAov)) / storeAov) : null;
+            const endRate = m.views > 0 ? (100 * m.orders) / m.views : null;
+            return (
+              <div key={m.module} className="wu-card wu-mcard">
+                <div className="wu-mband1">
+                  {MODULE_IMG[m.module] && <img className="wu-block-thumb wu-mthumb" src={MODULE_IMG[m.module]} alt={m.module} />}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span className="wu-rankchip" style={{ background: rank === sorted.length - 1 ? 'var(--wu-faint)' : 'var(--wu-crema)', color: '#fff', flex: 'none' }}>{rank + 1}</span>
+                      <span style={{ fontFamily: "'Fraunces',Georgia,serif", fontWeight: 600, fontSize: 16, lineHeight: 1.15 }}><ModuleTip module={m.module}>{m.module}</ModuleTip></span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--wu-faint)', marginTop: 6 }}>{MODULE_SURFACE[m.module] ?? '—'} · {int(m.sessions)} exposed sessions · {t.exposedSessions > 0 ? Math.round((100 * m.sessions) / t.exposedSessions) : 0}% of traffic</div>
+                  </div>
+                  <div style={{ textAlign: 'right', flex: 'none' }}>
+                    <div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontWeight: 600, fontSize: 26, color: 'var(--wu-crema)', lineHeight: 1 }}>{money(m.revenue)}</div>
+                    <div style={{ fontSize: 10.5, color: 'var(--wu-faint)', marginTop: 5 }}>{revShare}% of attributed revenue</div>
+                    <div style={{ width: 96, height: 4, borderRadius: 999, background: 'var(--wu-crema-soft)', marginTop: 5, marginLeft: 'auto', overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${revShare}%`, background: 'var(--wu-crema)' }} /></div>
+                  </div>
+                </div>
+                <div className="wu-mrates">
+                  <div className="wu-mrate">
+                    <div className="wu-kicker"><Tip content={HELP.rps}>$ / session</Tip></div>
+                    <div className="tnum wu-mrate-v" style={bad ? { color: 'var(--wu-neg)' } : undefined}>${rpsOf(m).toFixed(2)}</div>
+                    <div className="wu-mrate-bar" style={bad ? { background: 'rgba(198,81,58,.16)' } : undefined}><span style={{ width: `${Math.max(2, Math.round((100 * rpsOf(m)) / bestRps))}%`, background: bad ? 'var(--wu-neg)' : 'var(--wu-crema)' }} /></div>
+                    <div className="wu-mrate-c">{rpsOf(m) === bestRps ? `best of the ${mods.length}` : `${Math.round((100 * rpsOf(m)) / bestRps)}% of the best`}</div>
+                  </div>
+                  <div className="wu-mrate">
+                    <div className="wu-kicker"><Tip content={HELP.conv}>Conversion</Tip></div>
+                    <div className="tnum wu-mrate-v" style={bad ? { color: 'var(--wu-neg)' } : undefined}>{convOf(m).toFixed(1)}%</div>
+                    <div className="wu-mrate-bar" style={bad ? { background: 'rgba(198,81,58,.16)' } : undefined}><span style={{ width: `${Math.max(2, Math.round((100 * convOf(m)) / bestConv))}%`, background: bad ? 'var(--wu-neg)' : 'var(--wu-crema)' }} /></div>
+                    <div className="wu-mrate-c">session → paid order</div>
+                  </div>
+                  <div className="wu-mrate" style={{ borderRight: 'none' }}>
+                    <div className="wu-kicker"><Tip content="Average value of the WHOLE order (not just the added line) for orders that used this module.">AOV</Tip></div>
+                    <div className="tnum wu-mrate-v">{m.aov != null ? `$${Math.round(m.aov)}` : '—'}</div>
+                    <div className="wu-mrate-bar"><span style={{ width: `${m.aov != null ? Math.max(2, Math.round((100 * m.aov) / bestAov)) : 0}%`, background: 'var(--wu-crema)' }} /></div>
+                    <div className="wu-mrate-c">{storeAov != null && <>store ${Math.round(storeAov)}{aovDelta != null && <> · <span style={{ fontWeight: 600, color: Math.abs(aovDelta) < 3 ? 'var(--wu-dim)' : aovDelta > 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{aovDelta > 0 ? '+' : ''}{aovDelta}%</span></>}</>}</div>
+                  </div>
+                </div>
+                <div style={{ padding: '14px 18px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 9 }}>
+                    <span className="wu-kicker"><Tip content={HELP.dropoff}>Where it drops off</Tip></span>
+                    <span style={{ fontSize: 10.5, color: 'var(--wu-faint)' }}>{int(m.views)} views end as <b className="tnum" style={{ color: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>{int(m.orders)} orders</b>{endRate != null && <> · {endRate >= 10 ? Math.round(endRate) : endRate.toFixed(1)}%</>}</span>
+                  </div>
+                  <div className="wu-mfun">
+                    {([['Views', m.views, 1], ['Clicks', m.clicks, 0.8], ['Adds', m.adds, 0.62]] as Array<[string, number, number]>).map(([lb, v, op], i) => (
+                      <Fragment key={lb}>
+                        <div><div className="tnum wu-mstep-n">{int(v)}</div><div className="wu-mstep-l">{lb}</div><div className="wu-mstep-b" style={{ opacity: op }} /></div>
+                        <div className="wu-mconn" style={{ color: stepColor(s[i], i) }}>{fmtStep(s[i])}<div>›</div></div>
+                      </Fragment>
+                    ))}
+                    <div><div className="tnum wu-mstep-n" style={{ color: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>{int(m.orders)}</div><div className="wu-mstep-l">Orders</div><div className="wu-mstep-b" style={{ background: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }} /></div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {secGuide}
+      </>
+    );
+  })();
+
+  // ——— Products view: families first, variants inside ———
+  const productsView = (() => {
+    if (!t || !data) return null;
+    const filtered = famAgg.filter((g) =>
+      screenFilter === 'up' ? (g.deltaPct ?? 0) > 0
+      : screenFilter === 'down' ? (g.deltaPct ?? 0) < 0
+      : screenFilter === 'sold' ? g.attributedRevenue > 0
+      : true);
+    const sortedFams = screenFilter === 'up' ? [...filtered].sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0))
+      : screenFilter === 'down' ? [...filtered].sort((a, b) => (a.deltaPct ?? 0) - (b.deltaPct ?? 0))
+      : filtered;
+    const varFilter = (rows: Dash['byScreen']) =>
+      screenFilter === 'up' ? rows.filter((r) => (r.deltaPct ?? 0) > 0)
+      : screenFilter === 'down' ? rows.filter((r) => (r.deltaPct ?? 0) < 0)
+      : screenFilter === 'sold' ? rows.filter((r) => r.attributedRevenue > 0)
+      : rows;
+    const totUpw = Math.round(famAgg.reduce((a, b) => a + b.unitsPerWeek, 0) * 10) / 10;
+    const totBase = Math.round(famAgg.reduce((a, b) => a + b.baselineUnitsPerWeek, 0) * 10) / 10;
+    const totDelta = totBase > 0 ? Math.round((100 * (totUpw - totBase)) / totBase) : null;
+    const deltaBar = (d: number | null) => d == null ? null : (
+      <span style={{ flex: 1, height: 6, background: d >= 0 ? 'rgba(46,158,110,.14)' : 'rgba(198,81,58,.14)', overflow: 'hidden', borderRadius: 2 }}>
+        <span style={{ display: 'block', height: '100%', width: `${Math.min(100, Math.round(Math.abs(d) / 0.6))}%`, background: d >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }} />
+      </span>
+    );
+    return (
+      <>
+        <div className="wu-section-h">
+          <div className="wu-eyebrow">Products</div>
+          <h2><HelpTitle k="screen">Against the pre-launch run rate</HelpTitle></h2>
+          <span className="wu-faint" style={{ fontSize: 12.5 }}>units/week today vs the frozen Jul 21 baseline · click a family to see its variants</span>
+          <span className="wu-seg wu-seg-sm" style={{ marginLeft: 'auto' }} role="group" aria-label="Family filter">
+            {([['all', 'All'], ['up', 'Delta +'], ['down', 'Delta −'], ['sold', 'With sales']] as Array<[typeof screenFilter, string]>).map(([k, lb]) => (
+              <button key={k} aria-pressed={screenFilter === k} onClick={() => setScreenFilter(k)}>{lb}</button>
+            ))}
+          </span>
+        </div>
+        <div className="wu-card" style={{ padding: 0 }}>
+          <div className="wu-famgrid wu-famhead">
+            <span>Family</span><span style={{ textAlign: 'right' }}>Adds</span><span style={{ textAlign: 'right' }}>Attributed</span><span style={{ textAlign: 'right' }}>u/wk now</span><span style={{ textAlign: 'right' }}>Pre-launch</span><span style={{ textAlign: 'right' }}>Delta</span>
+          </div>
+          {sortedFams.length === 0 && <div className="wu-muted" style={{ padding: '14px 18px' }}>Nothing matches this filter in the window.</div>}
+          {sortedFams.map((g) => (
+            <Fragment key={g.key}>
+              <div className="wu-famgrid wu-famrow" onClick={() => setOpenFams((p) => ({ ...p, [g.key]: !p[g.key] }))}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                  <span className={cn('wu-chev', openFams[g.key] && 'open')} style={{ fontSize: 14 }}>›</span>
+                  <b style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14.5, fontWeight: 600 }}>{g.key}</b>
+                  <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>{g.members.length} variant{g.members.length === 1 ? '' : 's'}</span>
+                </span>
+                <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-dim)' }}>{int(g.adds)}</span>
+                <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, color: 'var(--wu-crema)' }}>{g.attributedRevenue > 0 ? money1(g.attributedRevenue) : '—'}</b>
+                <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14 }}>{g.unitsPerWeek}</b>
+                <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-faint)' }}>{g.baselineUnitsPerWeek || '—'}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+                  {deltaBar(g.deltaPct)}
+                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, minWidth: 44, textAlign: 'right', color: g.deltaPct == null ? 'var(--wu-faint)' : g.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{g.deltaPct == null ? '—' : `${g.deltaPct >= 0 ? '+' : ''}${Math.round(g.deltaPct)}%`}</b>
+                </span>
+              </div>
+              {openFams[g.key] && (
+                <div style={{ background: 'rgba(201,138,41,.04)', borderBottom: '1px solid var(--wu-line)' }}>
+                  {varFilter(g.members).map((r) => (
+                    <div key={r.sku} className="wu-famgrid wu-varrow">
+                      <span style={{ color: 'var(--wu-dim)' }}>{r.title}<span className="tnum" style={{ display: 'block', fontFamily: 'ui-monospace,monospace', fontSize: 10, color: 'var(--wu-faint)', marginTop: 2 }}>{r.sku}{r.fitment ? ` · ${r.fitment}` : ''}</span></span>
+                      <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-faint)' }}>{int(r.adds)}</span>
+                      <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-dim)' }}>{r.attributedRevenue > 0 ? money1(r.attributedRevenue) : '—'}</span>
+                      <span className="tnum" style={{ textAlign: 'right' }}>{Math.round(r.unitsPerWeek * 10) / 10}</span>
+                      <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-faint)' }}>{r.baselineUnitsPerWeek || '—'}</span>
+                      <b className="tnum" style={{ textAlign: 'right', color: r.deltaPct == null ? 'var(--wu-faint)' : r.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{r.deltaPct == null ? '—' : `${r.deltaPct >= 0 ? '+' : ''}${r.deltaPct}%`}</b>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Fragment>
+          ))}
+          <div className="wu-famgrid wu-famtotal">
+            <b style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14.5, fontWeight: 600, paddingLeft: 23 }}>All families</b>
+            <b className="tnum" style={{ textAlign: 'right', fontSize: 12.5 }}>{int(famAgg.reduce((a, b) => a + b.adds, 0))}</b>
+            <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, color: 'var(--wu-crema)' }}>{money(famAgg.reduce((a, b) => a + b.attributedRevenue, 0))}</b>
+            <b className="tnum" style={{ textAlign: 'right', fontFamily: "'Fraunces',Georgia,serif", fontSize: 14 }}>{totUpw}</b>
+            <span className="tnum" style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--wu-dim)' }}>{totBase}</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+              {deltaBar(totDelta)}
+              <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 14, minWidth: 44, textAlign: 'right', color: totDelta == null ? 'var(--wu-faint)' : totDelta >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{totDelta == null ? '—' : `${totDelta >= 0 ? '+' : ''}${totDelta}%`}</b>
+            </span>
+          </div>
+        </div>
+
+        <div className="wu-two">
+          <div className="wu-card">
+            <div className="wu-klabel wu-clickhead" onClick={headToggle('machines')}><HelpTitle k="machine">Sales by machine</HelpTitle>{!openS('machines') && data.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data.byMachine.length)} machines · {money(data.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
+            {openS('machines') && (data.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+              <div style={{ marginTop: 10 }}>
+                {data.byMachine.map((m) => (
+                  <Fragment key={m.machine}>
+                    <div className="wu-row">
+                      <span>{m.machine}</span>
+                      <b className="tnum">{money(m.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(m.orders)} ord</span></b>
+                    </div>
+                    {(m.variants ?? []).map((v) => (
+                      <div key={m.machine + '·' + v.label} className="wu-row wu-machine-variant">
+                        <span className="wu-model-name"><Tip content={variantOrigin(v.label)}>{v.label}</Tip></span>
+                        <b className="tnum" style={{ fontWeight: 400, color: 'var(--wu-dim)' }}>{money(v.revenue)} <span className="wu-faint">· {int(v.orders)} ord</span></b>
+                      </div>
+                    ))}
+                  </Fragment>
+                ))}
+              </div>
+            ))}
+          </div>
+          <div className="wu-card">
+            <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
+            {data.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
+              <div style={{ marginTop: 10 }}>
+                {data.rewards.map((rw) => (
+                  <div key={rw.name} className="wu-row">
+                    <span>{REWARD_LABEL[rw.name] ?? rw.name}{REWARD_TIER[rw.name] && <span className="wu-faint"> · {REWARD_TIER[rw.name]}</span>}</span>
+                    <b className="tnum">
+                      {int(rw.sessions)} <span className="wu-faint" style={{ fontWeight: 400 }}>carts</span>
+                      <span style={{ color: rw.bought > 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}> → {int(rw.bought)} bought</span>
+                    </b>
+                  </div>
+                ))}
+                <div className="wu-muted" style={{ marginTop: 10 }}>
+                  Crossing a tier is a <b>cart</b> milestone, not a sale — most of these carts are never paid for.
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </>
+    );
+  })();
+
+  // ——— Store context modal ———
+  const storeModal = (() => {
+    if (!data?.storeShare || !t) return null;
+    const ss = data.storeShare;
+    const uor = ss.upgradeOrderRevenue ?? (data.orderImpact?.upgradeAov != null ? Math.round(data.orderImpact.upgradeAov * data.orderImpact.upgradeOrders) : null);
+    const touchedPct = uor != null && ss.storeRevenue > 0 ? Math.round((1000 * uor) / ss.storeRevenue) / 10 : null;
+    const revPct = ss.revenueSharePct ?? 0;
+    const per100attr = Math.round(revPct);
+    const per100ride = touchedPct != null ? Math.max(0, Math.round(touchedPct - revPct)) : null;
+    const per100rest = touchedPct != null ? Math.max(0, Math.round(100 - touchedPct)) : null;
+    const days = (data.trend ?? []).filter((d) => (d.storeRevenue ?? 0) > 0);
+    const maxStore = Math.max(...days.map((d) => d.storeRevenue ?? 0), 1);
+    const oi = data.orderImpact;
+    const counterfactual = oi?.upgradeAov != null && oi.otherAov != null ? ss.storeRevenue - (oi.upgradeAov - oi.otherAov) * oi.upgradeOrders : null;
+    return (
+      <Dialog open={storeOpen} onOpenChange={setStoreOpen}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+          <div className="wu">
+            <DialogHeader>
+              <div className="wu-eyebrow">Context · {rangeLabel}</div>
+              <DialogTitle asChild><h2 style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 24, fontWeight: 600, margin: '6px 0 0', borderBottom: '2px solid var(--wu-text)', paddingBottom: 12 }}>The whole store: <em style={{ fontStyle: 'italic', color: 'var(--wu-crema)' }}>{money1(ss.storeRevenue)}</em> across {int(ss.storeOrders)} orders</h2></DialogTitle>
+            </DialogHeader>
+            <div style={{ marginTop: 14 }}>
+              <div className="wu-kicker">From the store total, inwards</div>
+              <div style={{ marginTop: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ fontSize: 12.5, color: 'var(--wu-dim)' }}>Store net revenue · {int(ss.storeOrders)} orders</span><b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17 }}>{money1(ss.storeRevenue)}</b></div>
+                <div style={{ height: 32, background: 'rgba(120,106,83,.22)', borderRadius: 3 }} />
+              </div>
+              {uor != null && touchedPct != null && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ fontSize: 12.5, color: 'var(--wu-dim)' }}>Orders that touched a module · {int(ss.upgradeOrders)} orders · <b style={{ color: 'var(--wu-text)' }}>{touchedPct}%</b></span><b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17 }}>{money1(uor)}</b></div>
+                  <div style={{ height: 32, background: 'rgba(120,106,83,.10)', borderRadius: 3, overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${touchedPct}%`, background: 'linear-gradient(90deg,var(--wu-crema2),rgba(209,155,52,.55))' }} /></div>
+                </div>
+              )}
+              <div style={{ marginTop: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ fontSize: 12.5, color: 'var(--wu-dim)' }}>Lines the module added · {int(t.directLines)} lines · <b style={{ color: 'var(--wu-text)' }}>{revPct}%</b></span><b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, color: 'var(--wu-crema)' }}>{money1(ss.attributedRevenue)}</b></div>
+                <div style={{ height: 32, background: 'rgba(120,106,83,.10)', borderRadius: 3, overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${revPct}%`, background: 'var(--wu-crema)' }} /></div>
+              </div>
+              {per100ride != null && per100rest != null && (
+                <p style={{ margin: '14px 0 0', fontSize: 12, lineHeight: 1.6, color: 'var(--wu-dim)' }}>Of every <b style={{ color: 'var(--wu-text)' }}>$100</b> the store bills, <b style={{ color: 'var(--wu-crema)' }}>${per100attr}</b> is a line a module added, <b style={{ color: 'var(--wu-text)' }}>${per100ride}</b> rides along in the same order as base product, and <b style={{ color: 'var(--wu-text)' }}>${per100rest}</b> never touched an upgrade at all.</p>
+              )}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 14, marginTop: 18 }}>
+              <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+                  <span className="wu-kicker">Day by day — store vs module</span>
+                  <span style={{ display: 'flex', gap: 14, fontSize: 10.5, color: 'var(--wu-dim)' }}><span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 9, height: 9, background: 'var(--wu-crema)', borderRadius: 2 }} />module</span><span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 9, height: 9, background: 'rgba(120,106,83,.25)', borderRadius: 2 }} />rest</span></span>
+                </div>
+                {days.length === 0 ? <div className="wu-muted" style={{ marginTop: 12 }}>No per-day store revenue in this window.</div> : (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${days.length},1fr)`, gap: Math.min(16, Math.max(4, Math.round(80 / days.length))), marginTop: 16, alignItems: 'end', height: 140 }}>
+                      {days.map((d) => {
+                        const store = d.storeRevenue ?? 0;
+                        const attr = Math.min(d.attributedRevenue ?? 0, store);
+                        const total = Math.round((105 * store) / maxStore);
+                        const lower = store > 0 ? Math.round((total * attr) / store) : 0;
+                        const share = store > 0 ? Math.round((100 * attr) / store) : 0;
+                        return (
+                          <div key={d.d} style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%' }}>
+                            <span className="tnum" style={{ fontSize: 11, color: 'var(--wu-crema)', fontWeight: 700, textAlign: 'center', marginBottom: 5 }}>{share}%</span>
+                            <div style={{ height: Math.max(0, total - lower), background: 'rgba(120,106,83,.22)', borderRadius: '3px 3px 0 0' }} />
+                            <div style={{ height: lower, background: 'var(--wu-crema)', borderRadius: '0 0 3px 3px' }} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${days.length},1fr)`, gap: 4, marginTop: 8, borderTop: '1px solid var(--wu-line)', paddingTop: 7 }}>
+                      {days.map((d, i) => (
+                        <span key={d.d} className="tnum" style={{ fontSize: 10.5, color: 'var(--wu-faint)', textAlign: 'center' }}>{format(new Date(d.d + 'T00:00:00'), i === 0 ? 'MMM d' : 'd')}<br /><b style={{ color: 'var(--wu-dim)' }}>{days.length <= 10 ? money1(d.storeRevenue) : ''}</b></span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="wu-ink" style={{ borderRadius: 14, padding: '16px 18px' }}>
+                <div className="wu-kicker" style={{ color: 'var(--wu-gold)', letterSpacing: '.14em' }}>The two groups of orders</div>
+                <div style={{ display: 'flex', height: 24, marginTop: 14, borderRadius: 3, overflow: 'hidden' }}><span style={{ width: `${ss.orderSharePct ?? 0}%`, background: 'var(--wu-gold)' }} /><span style={{ width: `${100 - (ss.orderSharePct ?? 0)}%`, background: 'rgba(242,234,223,.16)' }} /></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 9, fontSize: 11 }}><span style={{ color: 'var(--wu-inkfg2)' }}><b className="tnum" style={{ color: 'var(--wu-gold)' }}>{int(ss.upgradeOrders)}</b> with a module</span><span style={{ color: 'rgba(242,234,223,.5)' }}><b className="tnum">{int(ss.storeOrders - ss.upgradeOrders)}</b> without</span></div>
+                {oi && (
+                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid rgba(242,234,223,.14)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                    <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600 }}>{money(oi.upgradeAov)}</div><div style={{ fontSize: 10.5, color: 'rgba(242,234,223,.55)', marginTop: 3, lineHeight: 1.4 }}>AOV with a module<br />{oi.upgradeItems ?? '—'} items</div></div>
+                    <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, color: 'rgba(242,234,223,.6)' }}>{money(oi.otherAov)}</div><div style={{ fontSize: 10.5, color: 'rgba(242,234,223,.55)', marginTop: 3, lineHeight: 1.4 }}>AOV without<br />{oi.otherItems ?? '—'} items</div></div>
+                  </div>
+                )}
+                {counterfactual != null && (
+                  <div style={{ marginTop: 14, padding: '10px 12px', background: 'rgba(233,178,82,.12)', borderLeft: '2px solid var(--wu-gold)' }}><span style={{ fontSize: 11.5, lineHeight: 1.55, color: 'var(--wu-inkfg2)' }}>Had the {int(ss.upgradeOrders)} module orders billed like the rest, the store would have made <b style={{ color: 'var(--wu-gold)' }}>{money1(counterfactual)}</b> instead of {money1(ss.storeRevenue)}.</span></div>
+                )}
+              </div>
+            </div>
+            <p style={{ margin: '16px 0 0', fontSize: 11.5, lineHeight: 1.6, color: 'var(--wu-dim)', borderTop: '1px solid var(--wu-line)', paddingTop: 12 }}>The two groups are <b style={{ color: 'var(--wu-text)' }}>different customers</b>, not an A/B test: someone using a compatibility finder already arrives with accessory intent. What is solid: <b style={{ color: 'var(--wu-text)' }}>half of the store's billing now runs through a line a module added</b>.</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  })();
+
   return (
     <TooltipProvider delayDuration={120}>
       <style>{WU_CSS}</style>
@@ -332,7 +862,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               </DialogTrigger>
               <DialogContent className="max-w-xl max-h-[80vh] overflow-y-auto">
                 <DialogHeader><DialogTitle>What stands out</DialogTitle></DialogHeader>
-                {data ? <Signals data={data} windowLabel={`${range.from ? format(range.from, 'MMM d') : ''} – ${range.to ? format(range.to, 'MMM d, yyyy') : ''} · ${env}`} /> : <div className="wu-muted">Loading…</div>}
+                {data ? <Signals data={data} windowLabel={`${rangeLabel} · ${env}`} /> : <div className="wu-muted">Loading…</div>}
               </DialogContent>
             </Dialog>
             <Dialog>
@@ -363,10 +893,10 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             ))}
           </div>
           <select className="wu-view" value={view} onChange={(e) => pickView(e.target.value as View)} aria-label="Layout view">
-            <option value="current">View: Classic</option>
+            <option value="daily">View: Daily brief</option>
+            <option value="modules">View: Modules</option>
+            <option value="products">View: Products</option>
             <option value="blocks">View: Module blocks</option>
-            <option value="zones">View: Two zones</option>
-            <option value="summary">View: Summary</option>
           </select>
           {/* Manual calendar — same picker as the rest of the dashboard */}
           <Popover open={pickerOpen} onOpenChange={(o) => { setPickerOpen(o); if (!o) setDraft(undefined); }} modal>
@@ -407,27 +937,33 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 
         {t && (
           <>
-            <div className="wu-kpis">
-              <Kpi label="Exposed sessions" help="exposed" val={int(t.exposedSessions)} sub={`${int(t.totalEvents)} events`} accent />
-              <Kpi label="Direct revenue" help="directRevenue" val={money(t.directRevenue)} sub={`${int(t.directLines)} lines`} accent />
-              <Kpi label="Direct orders" help="directOrders" val={int(t.directOrders)} sub="with an upgrade line" />
-              <Kpi label="Assisted orders" help="assisted" val={int(t.assistedOrders)} sub="via attribution id" />
-            </div>
-
             {data!.storeShare && data!.storeShare.upgradeOrders > 0 && (
-              <div className="wu-share">
+              <div className="wu-share" role="button" tabIndex={0} onClick={openStore}>
                 <HelpTitle k="share">Store impact</HelpTitle>
                 <span className="wu-share-item"><b className="tnum">{data!.storeShare.orderSharePct ?? '—'}%</b> of all store orders ({int(data!.storeShare.upgradeOrders)} of {int(data!.storeShare.storeOrders)}) touched an upgrade module</span>
                 <span className="wu-share-item"><b className="tnum">{data!.storeShare.revenueSharePct ?? '—'}%</b> of store net revenue ({money(data!.storeShare.attributedRevenue)} of {money(data!.storeShare.storeRevenue)}) is module-attributed</span>
+                <span className="wu-share-cta">See the whole store →</span>
               </div>
             )}
 
+            {view !== 'daily' && (
+              <div className="wu-kpis" style={{ marginTop: 14 }}>
+                <Kpi label="Exposed sessions" help="exposed" val={int(t.exposedSessions)} sub={`${int(t.totalEvents)} events`} accent />
+                <Kpi label="Direct revenue" help="directRevenue" val={money(t.directRevenue)} sub={`${int(t.directLines)} lines`} accent />
+                <Kpi label="Direct orders" help="directOrders" val={int(t.directOrders)} sub="with an upgrade line" />
+                <Kpi label="Assisted orders" help="assisted" val={int(t.assistedOrders)} sub="via attribution id" />
+              </div>
+            )}
 
             {noData && (
-              <div className="wu-empty">
+              <div className="wu-empty" style={{ marginTop: 14 }}>
                 No <b>{env}</b> events in this window.{env === 'production' ? ' Switch to Preview (test) to see the test session, or wait for the theme to go live.' : ''}
               </div>
             )}
+
+            {view === 'daily' && daily}
+            {view === 'modules' && modulesView}
+            {view === 'products' && productsView}
 
             {view === 'blocks' && (
               <>
@@ -462,296 +998,197 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     );
                   })}
                 </div>
-              </>
-            )}
-            {view === 'summary' && (
-              <>
-                <SectionH eyebrow="Funnel" title="By module" help="module" note="one row per module — click to expand its detail" />
-                <div className="wu-card" style={{ padding: 0 }}>
-                  {data!.modules.map((m) => <SummaryRow key={m.module} m={m} />)}
-                </div>
-              </>
-            )}
-            {view === 'zones' && <div className="wu-zone">Engagement — what visitors do</div>}
-            {(view === 'current' || view === 'zones') && (<>
-            {/* Module funnel */}
-            <SectionH eyebrow="Funnel" title="By module" help="module" note="sessions → views → clicks → adds" />
-            <div className="wu-card">
-              {data!.modules.length === 0 ? <div className="wu-muted">No module events.</div> : (
-                <table className="wu-table">
-                  <thead><tr>
-                    <Th tip="The on-site upgrade surface. Hover the name for what it is.">Module</Th>
-                    <Th right tip="Distinct anonymous sessions that saw this module at least once.">Sessions</Th>
-                    <Th right tip="Times the module was shown on screen (its panel or nudge appeared).">Views</Th>
-                    <Th right tip="Times a shopper engaged the middle step — picked their machine, or opened a recommendation to look at it.">Picks</Th>
-                    <Th right tip="Times a shopper clicked 'add' on something the module offered.">Clicks</Th>
-                    <Th right tip="Times an add was confirmed by the cart — the item actually went in.">Adds</Th>
-                    <Th right tip="Click-through rate: clicks ÷ views.">CTR</Th>
-                    <Th right tip="Average confirmed adds per session. A session can add more than once, so this is an average, not a percentage.">Adds/sess</Th>
-                    <Th right tip="THE END OF THE FUNNEL: orders actually PAID FOR that contain an item this module added. An 'add' only means it went into the cart — this column is the purchase. Comes from the fast sales sync (~5 min), so it can lag the funnel columns by a few minutes.">Orders</Th>
-                    <Th right tip="AUD revenue of the module-added lines inside those paid orders.">Revenue</Th>
-                  </tr></thead>
-                  <tbody>
-                    {data!.modules.map((m) => (
-                      <tr key={m.module}>
-                        <td className="wu-mod"><ModuleTip module={m.module}>{m.module}</ModuleTip></td>
-                        <td className="r tnum">{int(m.sessions)}</td>
-                        <td className="r tnum wu-dim">{int(m.views)}</td>
-                        <td className="r tnum wu-dim">{int(m.selects)}</td>
-                        <td className="r tnum wu-dim">{int(m.clicks)}</td>
-                        <td className="r tnum">{int(m.adds)}</td>
-                        <td className="r tnum">{m.ctr != null ? `${m.ctr}%` : '—'}</td>
-                        <td className="r tnum">{m.addsPerSession != null ? m.addsPerSession.toFixed(2) : '—'}</td>
-                        <td className="r tnum" style={{ color: m.orders > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)', fontWeight: 700 }}>{int(m.orders)}</td>
-                        <td className="r tnum" style={{ color: m.revenue > 0 ? 'var(--wu-crema)' : 'var(--wu-faint)', fontWeight: 600 }}>{m.revenue > 0 ? money(m.revenue) : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
 
-            </>)}
-            {view === 'zones' && secGuide}
-            <>
-            {/* Rewards — full width */}
-            <div className="wu-card">
-              <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
-              {data!.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
-                <div style={{ marginTop: 10 }}>
-                  {data!.rewards.map((rw) => (
-                    <div key={rw.name} className="wu-row">
-                      <span>{REWARD_LABEL[rw.name] ?? rw.name}</span>
-                      <b className="tnum">
-                        {int(rw.sessions)} <span className="wu-faint" style={{ fontWeight: 400 }}>carts</span>
-                        <span style={{ color: rw.bought > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}> → {int(rw.bought)} bought</span>
-                      </b>
-                    </div>
-                  ))}
-                  <div className="wu-muted" style={{ marginTop: 10 }}>
-                    Unlocking a tier is a <b>cart</b> milestone, not a sale — most of these carts are never paid for.
-                  </div>
-                </div>
-              )}
-            </div>
-
-            </>
-            {view === 'zones' && <div className="wu-zone">Revenue — what sold</div>}
-            {(view === 'current' || view === 'zones') && (<>
-            {/* Sales per module source — moved directly below Reward unlocks (key table) */}
-            <SectionH eyebrow="Sales" title="By module source" help="source" note="which module drove the sale · attributed value + the full basket of those orders" />
-            <div className="wu-card">
-              {data!.bySource.length === 0 ? <div className="wu-muted">No attributed sales yet — populates as real orders come in.</div> : (
-                <table className="wu-table">
-                  <thead><tr>
-                    <Th tip="The _pesado_source tag the theme wrote on the added line — which module put the item in the cart. Hover a source name for what it is.">Source</Th>
-                    <Th right tip="Distinct orders that used this source.">Orders</Th>
-                    <Th right tip="Order lines this source added.">Lines</Th>
-                    <Th right tip="AUD revenue of just the lines this source added.">Attributed</Th>
-                    <Th right tip="Average items this source added per order.">Added/order</Th>
-                    <Th right tip="Average value of the WHOLE order (not just the added line) for orders that used this source.">AOV</Th>
-                    <Th right tip="Average total items in those whole orders.">Items/order</Th>
-                  </tr></thead>
-                  <tbody>
-                    {data!.bySource.map((s) => (
-                      <tr key={s.source}>
-                        <td className="wu-mono">{SOURCE_HELP[s.source] ? <SourceTip source={s.source} /> : s.source}</td>
-                        <td className="r tnum">{int(s.orders)}</td>
-                        <td className="r tnum wu-dim">{int(s.lines)}</td>
-                        <td className="r tnum" style={{ color: 'var(--wu-crema)', fontWeight: 600 }}>{money(s.revenue)}</td>
-                        <td className="r tnum">{s.addedPerOrder ?? '—'}</td>
-                        <td className="r tnum">{s.aov != null ? money(s.aov) : '—'}</td>
-                        <td className="r tnum">{s.itemsPerOrder ?? '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            </>)}
-            <>
-            {/* Basket impact — reworked to answer one plain question */}
-            <div className="wu-card" style={{ marginTop: 14 }}>
-              <div className="wu-klabel"><HelpTitle k="impact">Do upgrades grow the order?</HelpTitle></div>
-              <div className="wu-muted" style={{ marginTop: 6 }}>
-                Average order value and items — orders that used an upgrade module vs everyone else.
-              </div>
-              {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
-                <div className="wu-muted" style={{ marginTop: 10 }}>
-                  No upgrade orders yet in this window. All other orders so far: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders · AOV ${money(data!.orderImpact.otherAov)} · ${data!.orderImpact.otherItems} items` : '—'}.
-                </div>
-              ) : (
-                <div style={{ marginTop: 10 }}>
-                  <div className="wu-row"><span>Orders that used an upgrade</span><b className="tnum">{money(data!.orderImpact.upgradeAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.upgradeItems} items · {int(data!.orderImpact.upgradeOrders)} ord</span></b></div>
-                  <div className="wu-row"><span>All other orders</span><b className="tnum">{money(data!.orderImpact.otherAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.otherItems} items · {int(data!.orderImpact.otherOrders)} ord</span></b></div>
-                  <div className="wu-row"><span><b>Upgrade lift</b></span>
-                    <b className="tnum" style={{ color: (data!.orderImpact.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
-                      {data!.orderImpact.aovLiftPct == null ? '—' : `${data!.orderImpact.aovLiftPct > 0 ? '+' : ''}${data!.orderImpact.aovLiftPct}% AOV`}
-                      {data!.orderImpact.itemsLiftPct != null && <span className="wu-faint" style={{ fontWeight: 400 }}> · {data!.orderImpact.itemsLiftPct > 0 ? '+' : ''}{data!.orderImpact.itemsLiftPct}% items</span>}
-                    </b>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            </>
-            {view !== 'zones' && secGuide}
-            <>
-            {/* Per product: module engagement + sales vs the pre-launch baseline */}
-            <SectionH eyebrow="Products" title="By screen &amp; product" help="screen" note="engagement + sales vs pre-launch run rate" />
-            <div className="wu-card">
-              <div className="wu-klabel wu-clickhead" style={{ display: 'flex' }} onClick={headToggle('screens')}>
-                {openS('screens') && (
-                  <>
-                    <span className="wu-seg wu-seg-sm" role="group" aria-label="Screen filter">
-                      {([['all', 'All'], ['up', 'Delta +'], ['down', 'Delta −'], ['sold', 'With sales']] as Array<[typeof screenFilter, string]>).map(([k, lb]) => (
-                        <button key={k} aria-pressed={screenFilter === k} onClick={() => setScreenFilter(k)}>{lb}</button>
-                      ))}
-                    </span>
-                    <span className="wu-seg wu-seg-sm" role="group" aria-label="Grouping">
-                      <button aria-pressed={!screenGroup} onClick={() => setScreenGroup(false)}>Flat</button>
-                      <button aria-pressed={screenGroup} onClick={() => setScreenGroup(true)}>Group by family</button>
-                    </span>
-                  </>
-                )}
-                {!openS('screens') && data!.byScreen.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byScreen.length)} products · {money(data!.byScreen.reduce((a, b) => a + b.attributedRevenue, 0))} attributed</span>}
-                <CollBtn id="screens" />
-              </div>
-              {openS('screens') && (() => {
-                type Row = Dash['byScreen'][number];
-                const famOf = (r: Row): string => {
-                  const sku = r.sku.toUpperCase(); const blob = (r.sku + ' ' + r.title).toUpperCase();
-                  const fam = sku.startsWith('PSD-HD') || sku.startsWith('PSDBREVILLE') ? 'Shower Screens'
-                    : sku.startsWith('PSD-PUCK') ? 'Puck Screens'
-                    : sku.startsWith('PSD-HE') || sku.startsWith('EP-') || sku.startsWith('EP_') ? 'Filter Baskets'
-                    : sku.startsWith('PF') ? 'Portafilters'
-                    : sku.startsWith('EXT') || sku.startsWith('PRE') ? 'Bundles'
-                    : /DISTRIBUT|TAMP|RING|CRUSHER|DOSING/.test(blob) ? 'Distribution & Prep'
-                    : 'Accessories';
-                  const size = /58/.test(blob) ? ' · 58mm' : /(54|53\.5)/.test(blob) ? ' · 54mm' : '';
-                  return fam + size;
-                };
-                const applyFilter = <T extends { deltaPct: number | null; attributedRevenue: number }>(rows: T[]): T[] => {
-                  if (screenFilter === 'up') return rows.filter((r) => (r.deltaPct ?? 0) > 0).sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0));
-                  if (screenFilter === 'down') return rows.filter((r) => (r.deltaPct ?? 0) < 0).sort((a, b) => (a.deltaPct ?? 0) - (b.deltaPct ?? 0));
-                  if (screenFilter === 'sold') return rows.filter((r) => r.attributedRevenue > 0).sort((a, b) => b.attributedRevenue - a.attributedRevenue);
-                  return rows;
-                };
-                const head = (
-                  <thead><tr>
-                    <Th tip="The product (or, grouped, the product family) a shopper engaged with through an upgrade module. Grouped mode: click a family to unfold its variants.">Product</Th>
-                    <Th tip="Which machine the screen fits, read from the SKU. For fitments shared by many brands, the SKU can't say the machine brand — that only comes from the machine the customer picked.">Fitment</Th>
-                    <Th right tip="Module 'add' clicks.">Clicks</Th>
-                    <Th right tip="Confirmed adds through a module.">Adds</Th>
-                    <Th right tip="AUD revenue from real completed orders where the line was module-added.">Attributed</Th>
-                    <Th right tip="Units sold per week in the selected window — from real completed orders.">Units/wk now</Th>
-                    <Th right tip="The frozen pre-launch weekly run-rate (old-theme baseline).">Pre-launch</Th>
-                    <Th right tip="Change of units/week vs the pre-launch run-rate. Grouped mode recomputes it over the whole family's units. Observational — ad spend and seasonality move it too.">Delta</Th>
-                  </tr></thead>
-                );
-                const rowTr = (r: Row, indent = false) => (
-                  <tr key={r.sku} className={indent ? 'wu-model-row' : undefined}>
-                    <td className={indent ? 'wu-model-name' : 'wu-mod'}>{r.title}<div className="wu-mono wu-faint">{r.sku}</div></td>
-                    <td className="wu-dim" style={{ fontSize: 12 }}>{r.fitment ?? '—'}</td>
-                    <td className="r tnum">{int(r.clicks)}</td>
-                    <td className="r tnum">{int(r.adds)}</td>
-                    <td className="r tnum">{r.attributedRevenue > 0 ? money(r.attributedRevenue) : '—'}</td>
-                    <td className="r tnum">{Math.round(r.unitsPerWeek * 10) / 10}</td>
-                    <td className="r tnum wu-dim">{r.baselineUnitsPerWeek || '—'}</td>
-                    <td className="r tnum" style={{ fontWeight: 600, color: r.deltaPct == null ? 'var(--wu-faint)' : r.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
-                      {r.deltaPct == null ? '—' : `${r.deltaPct > 0 ? '+' : ''}${r.deltaPct}%`}
-                    </td>
-                  </tr>
-                );
-                if (!screenGroup) {
-                  const rows = applyFilter(data!.byScreen);
-                  if (rows.length === 0) return <div className="wu-muted" style={{ marginTop: 10 }}>Nothing matches this filter in the window.</div>;
-                  return <table className="wu-table" style={{ marginTop: 6 }}>{head}<tbody>{rows.map((r) => rowTr(r))}</tbody></table>;
-                }
-                // Grouped: aggregate per family (+ detected size); delta recomputed on the group totals.
-                const groupsMap = new Map<string, Row[]>();
-                for (const r of data!.byScreen) {
-                  const k = famOf(r);
-                  groupsMap.set(k, [...(groupsMap.get(k) ?? []), r]);
-                }
-                const groups = applyFilter([...groupsMap.entries()].map(([k, members]) => {
-                  const upw = members.reduce((a, b) => a + b.unitsPerWeek, 0);
-                  const base = members.reduce((a, b) => a + b.baselineUnitsPerWeek, 0);
-                  return {
-                    key: k, members,
-                    clicks: members.reduce((a, b) => a + b.clicks, 0),
-                    adds: members.reduce((a, b) => a + b.adds, 0),
-                    attributedRevenue: members.reduce((a, b) => a + b.attributedRevenue, 0),
-                    unitsPerWeek: Math.round(upw * 10) / 10,
-                    baselineUnitsPerWeek: Math.round(base * 100) / 100,
-                    deltaPct: base > 0 ? Math.round(((upw - base) / base) * 1000) / 10 : null,
-                  };
-                }));
-                if (groups.length === 0) return <div className="wu-muted" style={{ marginTop: 10 }}>Nothing matches this filter in the window.</div>;
-                return (
-                  <table className="wu-table" style={{ marginTop: 6 }}>{head}<tbody>
-                    {groups.map((g) => (
-                      <Fragment key={g.key}>
-                        <tr className="wu-group-row" onClick={() => setOpenGroups((prev) => ({ ...prev, [g.key]: !prev[g.key] }))}>
-                          <td className="wu-mod"><span className={cn('wu-chev', openGroups[g.key] && 'open')}>›</span> {g.key}<span className="wu-faint" style={{ fontWeight: 400 }}> · {g.members.length} variant{g.members.length > 1 ? 's' : ''}</span></td>
-                          <td className="wu-dim" style={{ fontSize: 12 }}>—</td>
-                          <td className="r tnum">{int(g.clicks)}</td>
-                          <td className="r tnum">{int(g.adds)}</td>
-                          <td className="r tnum">{g.attributedRevenue > 0 ? money(g.attributedRevenue) : '—'}</td>
-                          <td className="r tnum">{g.unitsPerWeek}</td>
-                          <td className="r tnum wu-dim">{g.baselineUnitsPerWeek || '—'}</td>
-                          <td className="r tnum" style={{ fontWeight: 700, color: g.deltaPct == null ? 'var(--wu-faint)' : g.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
-                            {g.deltaPct == null ? '—' : `${g.deltaPct > 0 ? '+' : ''}${g.deltaPct}%`}
-                          </td>
-                        </tr>
-                        {openGroups[g.key] && g.members.map((r) => rowTr(r, true))}
-                      </Fragment>
-                    ))}
-                  </tbody></table>
-                );
-              })()}
-            </div>
-
-            {/* Direct sales — machine + family split */}
-            <div className="wu-two">
-              <div className="wu-card">
-                <div className="wu-klabel wu-clickhead" onClick={headToggle('machines')}><HelpTitle k="machine">Sales by machine</HelpTitle>{!openS('machines') && data!.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byMachine.length)} machines · {money(data!.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data!.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
-                {openS('machines') && (data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
-                  <div style={{ marginTop: 10 }}>
-                    {data!.byMachine.map((m) => (
-                      <Fragment key={m.machine}>
-                        <div className="wu-row">
-                          <span>{m.machine}</span>
-                          <b className="tnum">{money(m.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(m.orders)} ord</span></b>
+                {/* Rewards — full width */}
+                <div className="wu-card" style={{ marginTop: 14 }}>
+                  <div className="wu-klabel"><HelpTitle k="rewards">Reward unlocks</HelpTitle></div>
+                  {data!.rewards.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No rewards unlocked.</div> : (
+                    <div style={{ marginTop: 10 }}>
+                      {data!.rewards.map((rw) => (
+                        <div key={rw.name} className="wu-row">
+                          <span>{REWARD_LABEL[rw.name] ?? rw.name}</span>
+                          <b className="tnum">
+                            {int(rw.sessions)} <span className="wu-faint" style={{ fontWeight: 400 }}>carts</span>
+                            <span style={{ color: rw.bought > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}> → {int(rw.bought)} bought</span>
+                          </b>
                         </div>
-                        {(m.variants ?? []).map((v) => (
-                          <div key={m.machine + '·' + v.label} className="wu-row wu-machine-variant">
-                            <span className="wu-model-name"><Tip content={variantOrigin(v.label)}>{v.label}</Tip></span>
-                            <b className="tnum" style={{ fontWeight: 400, color: 'var(--wu-dim)' }}>{money(v.revenue)} <span className="wu-faint">· {int(v.orders)} ord</span></b>
-                          </div>
-                        ))}
-                      </Fragment>
-                    ))}
+                      ))}
+                      <div className="wu-muted" style={{ marginTop: 10 }}>
+                        Unlocking a tier is a <b>cart</b> milestone, not a sale — most of these carts are never paid for.
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Basket impact — one plain question */}
+                <div className="wu-card" style={{ marginTop: 14 }}>
+                  <div className="wu-klabel"><HelpTitle k="impact">Do upgrades grow the order?</HelpTitle></div>
+                  <div className="wu-muted" style={{ marginTop: 6 }}>
+                    Average order value and items — orders that used an upgrade module vs everyone else.
                   </div>
-                ))}
-              </div>
-              <div className="wu-card">
-                <div className="wu-klabel wu-clickhead" onClick={headToggle('families')}><HelpTitle k="family">Sales by product family</HelpTitle>{!openS('families') && data!.byFamily.length > 0 && <span className="wu-coll-sum tnum">{money(data!.byFamily.reduce((a, b) => a + b.revenue, 0))} · top {data!.byFamily[0].family}</span>}<CollBtn id="families" /></div>
-                {openS('families') && (data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
-                  <div style={{ marginTop: 10 }}>
-                    {data!.byFamily.map((f) => (
-                      <div key={f.family} className="wu-row">
-                        <span>{f.family}</span>
-                        <b className="tnum">{money(f.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(f.lines)}</span></b>
+                  {!data!.orderImpact || data!.orderImpact.upgradeOrders === 0 ? (
+                    <div className="wu-muted" style={{ marginTop: 10 }}>
+                      No upgrade orders yet in this window. All other orders so far: {data!.orderImpact ? `${int(data!.orderImpact.otherOrders)} orders · AOV ${money(data!.orderImpact.otherAov)} · ${data!.orderImpact.otherItems} items` : '—'}.
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 10 }}>
+                      <div className="wu-row"><span>Orders that used an upgrade</span><b className="tnum">{money(data!.orderImpact.upgradeAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.upgradeItems} items · {int(data!.orderImpact.upgradeOrders)} ord</span></b></div>
+                      <div className="wu-row"><span>All other orders</span><b className="tnum">{money(data!.orderImpact.otherAov)} <span className="wu-faint" style={{ fontWeight: 400 }}>AOV · {data!.orderImpact.otherItems} items · {int(data!.orderImpact.otherOrders)} ord</span></b></div>
+                      <div className="wu-row"><span><b>Upgrade lift</b></span>
+                        <b className="tnum" style={{ color: (data!.orderImpact.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                          {data!.orderImpact.aovLiftPct == null ? '—' : `${data!.orderImpact.aovLiftPct > 0 ? '+' : ''}${data!.orderImpact.aovLiftPct}% AOV`}
+                          {data!.orderImpact.itemsLiftPct != null && <span className="wu-faint" style={{ fontWeight: 400 }}> · {data!.orderImpact.itemsLiftPct > 0 ? '+' : ''}{data!.orderImpact.itemsLiftPct}% items</span>}
+                        </b>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {secGuide}
+
+                {/* Per product: module engagement + sales vs the pre-launch baseline */}
+                <SectionH eyebrow="Products" title="By screen &amp; product" help="screen" note="engagement + sales vs pre-launch run rate" />
+                <div className="wu-card">
+                  <div className="wu-klabel wu-clickhead" style={{ display: 'flex' }} onClick={headToggle('screens')}>
+                    {openS('screens') && (
+                      <>
+                        <span className="wu-seg wu-seg-sm" role="group" aria-label="Screen filter">
+                          {([['all', 'All'], ['up', 'Delta +'], ['down', 'Delta −'], ['sold', 'With sales']] as Array<[typeof screenFilter, string]>).map(([k, lb]) => (
+                            <button key={k} aria-pressed={screenFilter === k} onClick={() => setScreenFilter(k)}>{lb}</button>
+                          ))}
+                        </span>
+                        <span className="wu-seg wu-seg-sm" role="group" aria-label="Grouping">
+                          <button aria-pressed={!screenGroup} onClick={() => setScreenGroup(false)}>Flat</button>
+                          <button aria-pressed={screenGroup} onClick={() => setScreenGroup(true)}>Group by family</button>
+                        </span>
+                      </>
+                    )}
+                    {!openS('screens') && data!.byScreen.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byScreen.length)} products · {money(data!.byScreen.reduce((a, b) => a + b.attributedRevenue, 0))} attributed</span>}
+                    <CollBtn id="screens" />
+                  </div>
+                  {openS('screens') && (() => {
+                    type Row = Dash['byScreen'][number];
+                    const applyFilter = <T extends { deltaPct: number | null; attributedRevenue: number }>(rows: T[]): T[] => {
+                      if (screenFilter === 'up') return rows.filter((r) => (r.deltaPct ?? 0) > 0).sort((a, b) => (b.deltaPct ?? 0) - (a.deltaPct ?? 0));
+                      if (screenFilter === 'down') return rows.filter((r) => (r.deltaPct ?? 0) < 0).sort((a, b) => (a.deltaPct ?? 0) - (b.deltaPct ?? 0));
+                      if (screenFilter === 'sold') return rows.filter((r) => r.attributedRevenue > 0).sort((a, b) => b.attributedRevenue - a.attributedRevenue);
+                      return rows;
+                    };
+                    const head = (
+                      <thead><tr>
+                        <Th tip="The product (or, grouped, the product family) a shopper engaged with through an upgrade module. Grouped mode: click a family to unfold its variants.">Product</Th>
+                        <Th tip="Which machine the screen fits, read from the SKU. For fitments shared by many brands, the SKU can't say the machine brand — that only comes from the machine the customer picked.">Fitment</Th>
+                        <Th right tip="Module 'add' clicks.">Clicks</Th>
+                        <Th right tip="Confirmed adds through a module.">Adds</Th>
+                        <Th right tip="AUD revenue from real completed orders where the line was module-added.">Attributed</Th>
+                        <Th right tip="Units sold per week in the selected window — from real completed orders.">Units/wk now</Th>
+                        <Th right tip="The frozen pre-launch weekly run-rate (old-theme baseline).">Pre-launch</Th>
+                        <Th right tip="Change of units/week vs the pre-launch run-rate. Grouped mode recomputes it over the whole family's units. Observational — ad spend and seasonality move it too.">Delta</Th>
+                      </tr></thead>
+                    );
+                    const rowTr = (r: Row, indent = false) => (
+                      <tr key={r.sku} className={indent ? 'wu-model-row' : undefined}>
+                        <td className={indent ? 'wu-model-name' : 'wu-mod'}>{r.title}<div className="wu-mono wu-faint">{r.sku}</div></td>
+                        <td className="wu-dim" style={{ fontSize: 12 }}>{r.fitment ?? '—'}</td>
+                        <td className="r tnum">{int(r.clicks)}</td>
+                        <td className="r tnum">{int(r.adds)}</td>
+                        <td className="r tnum">{r.attributedRevenue > 0 ? money(r.attributedRevenue) : '—'}</td>
+                        <td className="r tnum">{Math.round(r.unitsPerWeek * 10) / 10}</td>
+                        <td className="r tnum wu-dim">{r.baselineUnitsPerWeek || '—'}</td>
+                        <td className="r tnum" style={{ fontWeight: 600, color: r.deltaPct == null ? 'var(--wu-faint)' : r.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                          {r.deltaPct == null ? '—' : `${r.deltaPct > 0 ? '+' : ''}${r.deltaPct}%`}
+                        </td>
+                      </tr>
+                    );
+                    if (!screenGroup) {
+                      const rows = applyFilter(data!.byScreen);
+                      if (rows.length === 0) return <div className="wu-muted" style={{ marginTop: 10 }}>Nothing matches this filter in the window.</div>;
+                      return <table className="wu-table" style={{ marginTop: 6 }}>{head}<tbody>{rows.map((r) => rowTr(r))}</tbody></table>;
+                    }
+                    // Grouped: aggregate per family (+ detected size); delta recomputed on the group totals.
+                    const groupsMap = new Map<string, Row[]>();
+                    for (const r of data!.byScreen) {
+                      const k = famOf(r.sku, r.title);
+                      groupsMap.set(k, [...(groupsMap.get(k) ?? []), r]);
+                    }
+                    const groups = applyFilter([...groupsMap.entries()].map(([k, members]) => {
+                      const upw = members.reduce((a, b) => a + b.unitsPerWeek, 0);
+                      const base = members.reduce((a, b) => a + b.baselineUnitsPerWeek, 0);
+                      return {
+                        key: k, members,
+                        clicks: members.reduce((a, b) => a + b.clicks, 0),
+                        adds: members.reduce((a, b) => a + b.adds, 0),
+                        attributedRevenue: members.reduce((a, b) => a + b.attributedRevenue, 0),
+                        unitsPerWeek: Math.round(upw * 10) / 10,
+                        baselineUnitsPerWeek: Math.round(base * 100) / 100,
+                        deltaPct: base > 0 ? Math.round(((upw - base) / base) * 1000) / 10 : null,
+                      };
+                    }));
+                    if (groups.length === 0) return <div className="wu-muted" style={{ marginTop: 10 }}>Nothing matches this filter in the window.</div>;
+                    return (
+                      <table className="wu-table" style={{ marginTop: 6 }}>{head}<tbody>
+                        {groups.map((g) => (
+                          <Fragment key={g.key}>
+                            <tr className="wu-group-row" onClick={() => setOpenGroups((prev) => ({ ...prev, [g.key]: !prev[g.key] }))}>
+                              <td className="wu-mod"><span className={cn('wu-chev', openGroups[g.key] && 'open')}>›</span> {g.key}<span className="wu-faint" style={{ fontWeight: 400 }}> · {g.members.length} variant{g.members.length > 1 ? 's' : ''}</span></td>
+                              <td className="wu-dim" style={{ fontSize: 12 }}>—</td>
+                              <td className="r tnum">{int(g.clicks)}</td>
+                              <td className="r tnum">{int(g.adds)}</td>
+                              <td className="r tnum">{g.attributedRevenue > 0 ? money(g.attributedRevenue) : '—'}</td>
+                              <td className="r tnum">{g.unitsPerWeek}</td>
+                              <td className="r tnum wu-dim">{g.baselineUnitsPerWeek || '—'}</td>
+                              <td className="r tnum" style={{ fontWeight: 700, color: g.deltaPct == null ? 'var(--wu-faint)' : g.deltaPct >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>
+                                {g.deltaPct == null ? '—' : `${g.deltaPct > 0 ? '+' : ''}${g.deltaPct}%`}
+                              </td>
+                            </tr>
+                            {openGroups[g.key] && g.members.map((r) => rowTr(r, true))}
+                          </Fragment>
+                        ))}
+                      </tbody></table>
+                    );
+                  })()}
+                </div>
+
+                {/* Direct sales — machine + family split */}
+                <div className="wu-two">
+                  <div className="wu-card">
+                    <div className="wu-klabel wu-clickhead" onClick={headToggle('machines')}><HelpTitle k="machine">Sales by machine</HelpTitle>{!openS('machines') && data!.byMachine.length > 0 && <span className="wu-coll-sum tnum">{int(data!.byMachine.length)} machines · {money(data!.byMachine.reduce((a, b) => a + b.revenue, 0))} · top {data!.byMachine[0].machine}</span>}<CollBtn id="machines" /></div>
+                    {openS('machines') && (data!.byMachine.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+                      <div style={{ marginTop: 10 }}>
+                        {data!.byMachine.map((m) => (
+                          <Fragment key={m.machine}>
+                            <div className="wu-row">
+                              <span>{m.machine}</span>
+                              <b className="tnum">{money(m.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(m.orders)} ord</span></b>
+                            </div>
+                            {(m.variants ?? []).map((v) => (
+                              <div key={m.machine + '·' + v.label} className="wu-row wu-machine-variant">
+                                <span className="wu-model-name"><Tip content={variantOrigin(v.label)}>{v.label}</Tip></span>
+                                <b className="tnum" style={{ fontWeight: 400, color: 'var(--wu-dim)' }}>{money(v.revenue)} <span className="wu-faint">· {int(v.orders)} ord</span></b>
+                              </div>
+                            ))}
+                          </Fragment>
+                        ))}
                       </div>
                     ))}
                   </div>
-                ))}
-              </div>
-            </div>
+                  <div className="wu-card">
+                    <div className="wu-klabel wu-clickhead" onClick={headToggle('families')}><HelpTitle k="family">Sales by product family</HelpTitle>{!openS('families') && data!.byFamily.length > 0 && <span className="wu-coll-sum tnum">{money(data!.byFamily.reduce((a, b) => a + b.revenue, 0))} · top {data!.byFamily[0].family}</span>}<CollBtn id="families" /></div>
+                    {openS('families') && (data!.byFamily.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No attributed sales yet — populates as real orders come in.</div> : (
+                      <div style={{ marginTop: 10 }}>
+                        {data!.byFamily.map((f) => (
+                          <div key={f.family} className="wu-row">
+                            <span>{f.family}</span>
+                            <b className="tnum">{money(f.revenue)} <span className="wu-faint" style={{ fontWeight: 400 }}>· {int(f.lines)}</span></b>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
 
-            </>
             <div className="wu-foot">
               <b>Data cadence:</b> the funnel (sessions, views, clicks, adds, rewards) updates in <b>real time</b> — the pixel sends each event instantly, so a refresh shows it. <b>Sales</b> (direct &amp; assisted) come from Shopify orders via the fast sales sync — refreshed <b>every ~5 minutes</b> (interval configurable in Config → Connections), with a full reconciliation 3×/day — reaching checkout is not an order, only a completed purchase counts.<br />
               <b>Preview</b> = test traffic · <b>Production</b> = live customers. Assisted attribution lands once the theme's <b>__pesado_*</b> cart attributes reach the orders.
@@ -763,6 +1200,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
           <div className="flex items-center justify-center min-h-[220px] gap-2"><Loader2 className="h-5 w-5 animate-spin wu-faint" /><span className="wu-faint">Loading…</span></div>
         )}
       </div>
+      {storeModal}
     </TooltipProvider>
   );
 }
@@ -787,35 +1225,11 @@ function SectionH({ eyebrow, title, help, note, href, linkLabel }: { eyebrow: st
   );
 }
 
-function SummaryRow({ m }: { m: Dash['modules'][number] }) {
-  const [open, setOpen] = useState(false);
-  const top = Math.max(m.views, 1);
-  return (
-    <div className="wu-sumrow">
-      <button type="button" onClick={() => setOpen((o) => !o)}>
-        <span className={cn('wu-chev', open && 'open')}>›</span>
-        <span className="wu-mod"><ModuleTip module={m.module}>{m.module}</ModuleTip></span>
-        <span className="wu-sum-meta tnum">{int(m.sessions)} sess · {int(m.adds)} adds · <b style={{ color: m.orders > 0 ? 'var(--wu-pos)' : 'var(--wu-faint)' }}>{int(m.orders)} ord · {m.revenue > 0 ? money(m.revenue) : '$0'}</b></span>
-      </button>
-      {open && (
-        <div className="wu-sum-detail">
-          {([['Views', m.views], ['Picks', m.selects], ['Clicks', m.clicks], ['Adds', m.adds], ['Orders (paid)', m.orders]] as Array<[string, number]>).map(([lb, v]) => (
-            <div key={lb} className="wu-block-bar">
-              <span>{lb}</span>
-              <div className="wu-bar"><span style={{ width: `${(100 * v) / top}%` }} /></div>
-              <b className="tnum">{int(v)}</b>
-            </div>
-          ))}
-          <div className="wu-sub" style={{ marginTop: 6 }}>CTR {m.ctr != null ? `${m.ctr}%` : '—'} · {m.addsPerSession != null ? m.addsPerSession.toFixed(2) : '—'} adds/session</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Dynamic reading of the data — the comparisons a marketer would make by hand.
 // Pure client-side arithmetic over the RPC payload; recomputed on every fetch.
-function Signals({ data, windowLabel }: { data: Dash; windowLabel: string }) {
+// Used by the "What stands out" dialog (full list) and the Daily brief's
+// "What to move today" card (top three).
+function signalNotes(data: Dash): ReactNode[] {
   const mods = data.modules.filter((m) => m.module !== 'Other' && m.sessions >= 30);
   const conv = (m: Dash['modules'][number]) => (m.sessions > 0 ? (100 * m.orders) / m.sessions : 0);
   const rps = (m: Dash['modules'][number]) => (m.sessions > 0 ? m.revenue / m.sessions : 0);
@@ -848,6 +1262,11 @@ function Signals({ data, windowLabel }: { data: Dash; windowLabel: string }) {
     const l = data.orderImpact.aovLiftPct;
     notes.push(<>Orders that used an upgrade average <b>{l > 0 ? '+' : ''}{l}%</b> AOV vs everyone else ({money(data.orderImpact.upgradeAov)} vs {money(data.orderImpact.otherAov)}). Observed difference, not a controlled test.</>);
   }
+  return notes;
+}
+
+function Signals({ data, windowLabel }: { data: Dash; windowLabel: string }) {
+  const notes = signalNotes(data);
   return (
     <div className="wu-signals">
       <div className="wu-muted" style={{ marginBottom: 4 }}>Computed live from the numbers currently on the page — window <b>{windowLabel}</b>. Change the dates or environment and these re-rank.</div>
@@ -870,12 +1289,14 @@ function Glossary() {
     ['Conversion rate', 'paid orders ÷ sessions × 100', 'The share of exposed visitors who ended up buying.'],
     ['$/session', 'attributed revenue ÷ sessions', 'What each exposed visitor is worth — best metric for comparing modules with different traffic.'],
     ['Cart-close rate', 'paid orders ÷ adds × 100', 'Of what entered the cart, how much actually got paid for.'],
+    ['Step conversion (Where it drops off)', 'next stage ÷ this stage × 100', 'The percentage between two funnel stages (views→clicks, clicks→adds, adds→orders). Green = best of the four modules at that step, red = worst.'],
     ['Direct order / revenue', 'sum of module-added lines (AUD net)', "Orders and revenue of the specific lines a module added (the line carries _pesado_source) — only those lines, not the whole order."],
     ['Assisted order', '—', "An order linked to a previous module interaction via the attribution id the theme writes on the cart (__pesado_*) — the shopper interacted earlier, maybe another day, then bought."],
     ['AOV (per module)', 'sum(full order value) ÷ orders that used the module', 'The whole basket of those orders, not just the added line.'],
     ['Basket impact / upgrade lift', '(upgrade AOV − other AOV) ÷ other AOV × 100', 'Orders that used any module vs every other store order in the window. Observed difference between two groups, not a controlled test.'],
-    ['Store impact', 'module orders ÷ all store orders · attributed revenue ÷ all store net revenue', 'The weight of the upgrade work in the whole business for the window.'],
-    ['Pre-launch / Delta (By screen)', '(units/wk now − baseline) ÷ baseline × 100', "Now vs the frozen run-rate captured before the new theme went live (2026-07-21). Directional — ad spend and seasonality move it too."],
+    ['Store impact', 'module orders ÷ all store orders · attributed revenue ÷ all store net revenue', 'The weight of the upgrade work in the whole business for the window. Click the strip for the full store context: store total → orders that touched a module → the module-added lines.'],
+    ['Order revenue touched', 'sum(full order total of orders with a module line)', 'The middle layer of the store context: everything billed by orders that used a module — the module lines plus whatever rode along in the same order.'],
+    ['Pre-launch / Delta (Products)', '(units/wk now − baseline) ÷ baseline × 100', "Now vs the frozen run-rate captured before the new theme went live (2026-07-21). Family deltas are recomputed over the family's total units, never averaged. Directional — ad spend and seasonality move it too."],
     ['Reward carts → bought', '—', 'Carts that crossed a reward threshold (free shipping $100 / 10% $200 / 15% $300) and how many of those sessions completed a purchase. Crossing a tier is intent, not a sale.'],
     ['Preview vs Production', '—', 'preview = test traffic from the theme preview; production = live customers. Commercial numbers use production.'],
     ['Data cadence', '—', 'Funnel events are real-time (the pixel posts each one instantly). Sales refresh every ~5 minutes via the fast sync (interval configurable in Config → Connections), with a full reconciliation 3×/day.'],
@@ -893,9 +1314,9 @@ function Glossary() {
 }
 
 const WU_CSS = `
-.wu{--wu-ground:#F4EEE3;--wu-card:#FFFFFF;--wu-card2:#FBF6EC;--wu-line:#E8DFCC;--wu-text:#241B12;--wu-dim:#786A53;--wu-faint:#A2937C;--wu-crema:#B9812A;--wu-crema2:#D19B34;--wu-crema-soft:rgba(201,138,41,.10);--wu-pos:#2E9E6E;--wu-neg:#C6513A;--wu-shadow:0 1px 2px rgba(60,40,10,.06),0 10px 34px rgba(60,40,10,.07);
+.wu{--wu-ground:#F4EEE3;--wu-card:#FFFFFF;--wu-card2:#FBF6EC;--wu-line:#E8DFCC;--wu-text:#241B12;--wu-dim:#786A53;--wu-faint:#A2937C;--wu-crema:#B9812A;--wu-crema2:#D19B34;--wu-crema-soft:rgba(201,138,41,.10);--wu-pos:#2E9E6E;--wu-neg:#C6513A;--wu-shadow:0 1px 2px rgba(60,40,10,.06),0 10px 34px rgba(60,40,10,.07);--wu-inkbg:#241B12;--wu-inkfg:#F2EADF;--wu-inkfg2:rgba(242,234,223,.82);--wu-gold:#E9B252;
   font-family:'Inter',system-ui,sans-serif;color:var(--wu-text);background:radial-gradient(1200px 500px at 12% -10%,var(--wu-crema-soft),transparent 60%),var(--wu-ground);padding:clamp(14px,2vw,22px);border-radius:16px}
-.dark .wu{--wu-ground:#17120E;--wu-card:#221B15;--wu-card2:#2A2119;--wu-line:#33291E;--wu-text:#F2EADF;--wu-dim:#B7A991;--wu-faint:#87795F;--wu-crema:#E9B252;--wu-crema2:#F0C877;--wu-crema-soft:rgba(233,178,82,.13);--wu-pos:#5BC08E;--wu-neg:#E0725A;--wu-shadow:0 1px 2px rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.28)}
+.dark .wu{--wu-ground:#17120E;--wu-card:#221B15;--wu-card2:#2A2119;--wu-line:#33291E;--wu-text:#F2EADF;--wu-dim:#B7A991;--wu-faint:#87795F;--wu-crema:#E9B252;--wu-crema2:#F0C877;--wu-crema-soft:rgba(233,178,82,.13);--wu-pos:#5BC08E;--wu-neg:#E0725A;--wu-shadow:0 1px 2px rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.28);--wu-inkbg:#1C1610}
 .wu h1,.wu h2{font-family:'Fraunces',Georgia,serif}
 .wu .tnum{font-variant-numeric:tabular-nums}.wu-faint{color:var(--wu-faint)}.wu-dim{color:var(--wu-dim)}.wu-mono{font-family:ui-monospace,monospace;font-size:12px}
 .wu-info{display:inline-grid;place-items:center;width:14px;height:14px;border-radius:50%;border:1px solid var(--wu-faint);color:var(--wu-faint);font-size:9px;font-weight:700;cursor:help;line-height:1;vertical-align:middle}
@@ -909,9 +1330,11 @@ const WU_CSS = `
 .wu-live{width:7px;height:7px;border-radius:50%;background:var(--wu-pos)}
 .wu-gloss{cursor:pointer;gap:6px}
 .wu-gloss:hover{border-color:var(--wu-crema);color:var(--wu-crema)}
-.wu-share{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;background:linear-gradient(158deg,var(--wu-card),var(--wu-card2));border:1px solid var(--wu-line);border-left:3px solid var(--wu-crema);border-radius:12px;padding:12px 16px;font-size:13px;color:var(--wu-dim);box-shadow:var(--wu-shadow)}
+.wu-share{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;background:linear-gradient(158deg,var(--wu-card),var(--wu-card2));border:1px solid var(--wu-line);border-left:3px solid var(--wu-crema);border-radius:12px;padding:12px 16px;font-size:13px;color:var(--wu-dim);box-shadow:var(--wu-shadow);cursor:pointer;transition:border-color .15s}
+.wu-share:hover{border-color:var(--wu-crema)}
 .wu-share .wu-help{font-weight:700;color:var(--wu-crema);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
 .wu-share-item b{color:var(--wu-text);font-family:'Fraunces',Georgia,serif;font-size:15px}
+.wu-share-cta{margin-left:auto;font-size:11.5px;font-weight:600;color:var(--wu-crema);white-space:nowrap}
 .wu-signals ul{margin:10px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:8px}
 .wu-signals li{font-size:13px;line-height:1.55;color:var(--wu-dim)}
 .wu-signals li b{color:var(--wu-text)}
@@ -930,7 +1353,7 @@ const WU_CSS = `
 .wu-coll-sum{margin-left:auto;font-size:12.5px;color:var(--wu-dim);font-weight:600;font-family:'Fraunces',Georgia,serif}
 .wu-coll-sum + .wu-collbtn{margin-left:8px}
 .wu-clickhead{cursor:pointer}
-.wu-clickhead:hover .wu-chev{color:var(--wu-ink)}
+.wu-clickhead:hover .wu-chev{color:var(--wu-crema)}
 .wu-scrollbody{max-height:290px;overflow-y:auto;margin-top:10px;scrollbar-width:thin;scrollbar-color:var(--wu-faint) transparent}
 .wu-scrollbody::-webkit-scrollbar{width:8px}
 .wu-scrollbody::-webkit-scrollbar-thumb{background:var(--wu-line);border-radius:99px}
@@ -976,9 +1399,8 @@ const WU_CSS = `
 .wu-bar{height:7px;border-radius:999px;background:var(--wu-crema-soft);overflow:hidden}
 .wu-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))}
 .wu-foot{margin-top:24px;padding-top:16px;border-top:1px solid var(--wu-line);font-size:12px;color:var(--wu-faint);line-height:1.7}.wu-foot b{color:var(--wu-dim);font-weight:600}
-.wu-view{height:30px;border-radius:999px;border:1px solid var(--wu-line);background:var(--wu-card);color:var(--wu-dim);font-size:12px;padding:0 12px;cursor:pointer}
-.wu-view:hover{border-color:var(--wu-crema)}
-.wu-zone{margin:26px 2px 2px;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--wu-crema);border-bottom:2px solid var(--wu-crema);padding-bottom:6px}
+.wu-view{height:32px;border-radius:999px;border:1.5px solid var(--wu-crema);background:var(--wu-card);color:var(--wu-text);font-size:12px;font-weight:600;padding:0 12px;cursor:pointer}
+.wu-view:hover{border-color:var(--wu-crema2)}
 .wu-blocks{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
 .wu-block-thumb{width:104px;height:60px;object-fit:cover;object-position:left top;border-radius:6px;border:1px solid var(--wu-line);flex-shrink:0;transition:transform .18s ease;transform-origin:top left;position:relative;cursor:zoom-in}
 .wu-block-thumb:hover{transform:scale(3.2);z-index:40;box-shadow:0 12px 40px rgba(0,0,0,.25)}
@@ -991,13 +1413,48 @@ const WU_CSS = `
 .wu-block-bars{margin-top:12px;display:flex;flex-direction:column;gap:6px}
 .wu-block-bar{display:grid;grid-template-columns:76px 1fr 52px;gap:8px;align-items:center;font-size:11.5px;color:var(--wu-dim)}
 .wu-block-bar b{text-align:right}
-.wu-sumrow{border-bottom:1px solid var(--wu-line)}
-.wu-sumrow:last-child{border-bottom:none}
-.wu-sumrow>button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;padding:12px 16px;cursor:pointer;font:inherit;color:var(--wu-text);text-align:left}
-.wu-sumrow>button:hover{background:var(--wu-crema-soft)}
 .wu-chev{color:var(--wu-faint);transition:transform .15s;display:inline-block}
 .wu-chev.open{transform:rotate(90deg)}
-.wu-sum-meta{margin-left:auto;font-size:12.5px;color:var(--wu-dim)}
-.wu-sum-detail{padding:4px 16px 14px 36px}
-@media (max-width:900px){.wu-kpis{grid-template-columns:repeat(2,1fr)}.wu-two{grid-template-columns:1fr}.wu-blocks{grid-template-columns:1fr}}
+.wu-daily{max-width:1000px}
+.wu-hero{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:2px solid var(--wu-text);padding-bottom:10px;margin-top:22px}
+.wu-hero h2{font-size:26px;font-weight:600;margin:0;letter-spacing:-.01em}
+.wu-hero h2 em{font-style:italic;color:var(--wu-crema)}
+.wu-2up{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;margin-top:16px}
+.wu-kicker{font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--wu-faint)}
+.wu-minicard{border-radius:12px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.wu-minicard[role="button"]{cursor:pointer;transition:border-color .15s}
+.wu-minicard[role="button"]:hover{border-color:var(--wu-crema)}
+.wu-h3row{display:flex;align-items:baseline;gap:10px;border-bottom:1px solid var(--wu-line);padding-bottom:7px}
+.wu-h3row h3{font-family:'Fraunces',Georgia,serif;font-size:15px;font-weight:600;margin:0}
+.wu-rankrow{display:grid;grid-template-columns:22px 210px 1fr 76px 96px;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--wu-line)}
+.wu-rankchip{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:5px;background:rgba(36,27,18,.12);color:var(--wu-text);font-size:10px;font-weight:700}
+.dark .wu-rankchip{background:rgba(242,234,223,.16);color:var(--wu-text)}
+.wu-ink{background:var(--wu-inkbg);color:var(--wu-inkfg)}
+.dark .wu-ink{border:1px solid var(--wu-line)}
+.wu-famcards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.wu-famcard{border:1px solid var(--wu-line);border-radius:12px;padding:12px 14px;background:var(--wu-card);cursor:pointer;transition:border-color .15s}
+.wu-famcard:hover{border-color:var(--wu-crema)}
+.wu-mcard{padding:0}
+.wu-mband1{display:flex;gap:14px;padding:16px 18px 14px;align-items:flex-start}
+.wu-mthumb{width:112px;height:66px;border-radius:8px}
+.wu-card.wu-mcard{overflow:visible}
+.wu-mrates{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--wu-line);border-bottom:1px solid var(--wu-line);background:rgba(201,138,41,.045)}
+.wu-mrate{padding:11px 14px;border-right:1px solid var(--wu-line)}
+.wu-mrate-v{font-family:'Fraunces',Georgia,serif;font-size:21px;font-weight:600;margin-top:4px;line-height:1}
+.wu-mrate-bar{height:3px;border-radius:999px;background:rgba(201,138,41,.16);margin-top:7px;overflow:hidden}
+.wu-mrate-bar span{display:block;height:100%}
+.wu-mrate-c{font-size:10px;color:var(--wu-faint);margin-top:5px}
+.wu-mfun{display:grid;grid-template-columns:1fr 30px 1fr 30px 1fr 30px 1fr;align-items:center}
+.wu-mstep-n{font-family:'Fraunces',Georgia,serif;font-size:17px;font-weight:600}
+.wu-mstep-l{font-size:10px;color:var(--wu-faint);margin-top:2px}
+.wu-mstep-b{height:22px;margin-top:6px;border-radius:3px;background:linear-gradient(180deg,var(--wu-crema2),var(--wu-crema))}
+.wu-mconn{text-align:center;font-size:10px;font-weight:700;padding-bottom:14px}
+.wu-mconn div{color:var(--wu-faint);font-weight:400;font-size:13px;line-height:1}
+.wu-famgrid{display:grid;grid-template-columns:1fr 82px 96px 90px 90px 132px;gap:12px;align-items:center;padding:13px 18px}
+.wu-famhead{padding:11px 18px;border-bottom:2px solid var(--wu-text);font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--wu-faint)}
+.wu-famrow{border-bottom:1px solid var(--wu-line);cursor:pointer}
+.wu-famrow:hover{background:rgba(201,138,41,.06)}
+.wu-varrow{padding:9px 18px 9px 40px;font-size:12px}
+.wu-famtotal{background:rgba(201,138,41,.07)}
+@media (max-width:900px){.wu-kpis{grid-template-columns:repeat(2,1fr)}.wu-two{grid-template-columns:1fr}.wu-blocks{grid-template-columns:1fr}.wu-2up{grid-template-columns:1fr}.wu-famcards{grid-template-columns:repeat(2,1fr)}.wu-rankrow{grid-template-columns:22px 1fr 60px;grid-template-rows:auto auto}.wu-famgrid{grid-template-columns:1fr 60px 70px 60px}}
 `;
