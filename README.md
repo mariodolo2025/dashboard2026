@@ -146,6 +146,28 @@ El front recibe `assembledProductSKUs` y `bomComponents` en la respuesta del das
 
 ---
 
+## Web Upgrade performance (Pesado)
+
+Panel modal (`src/components/WebUpgradeTab.tsx`, abierto desde `App.tsx`) que mide los módulos del theme nuevo de **pesado585.com** en vivo desde el **2026-07-23 10:21 Brisbane** (primer evento de producción).
+
+**Cadena de datos**: theme → `Shopify.analytics.publish("pesado_upgrade")` → Custom Pixel → edge `upgrade-events-ingest` → tabla `upgrade_events` → RPC **`web_upgrade_performance(p_from, p_to, p_environment)`** (un solo jsonb). Las ventas se cruzan por `_pesado_source` (line item property) y `__pesado_attribution_id` (cart attribute → note_attribute de la orden).
+
+| Pieza | Detalle |
+|---|---|
+| Vistas | `Daily brief` (default) · `Modules` · `Products` · `Module blocks` (legacy). El valor se persiste en `localStorage['wu-view']`, con migración de valores viejos. |
+| Baseline | Tabla **`web_upgrade_baseline`** — run-rate por SKU congelado el 2026-07-22 con datos hasta el 2026-07-21 (ventana de 84 días). **Nunca regenerar.** |
+| Contrafactual | `storeShare.preLaunchAov` = AOV de toda la tienda en esa misma ventana pre-launch; el modal de contexto compara contra eso, no contra los compradores sin módulo de hoy. |
+| Delta de familias | Regla deliberada: el filtro define la población y el delta de familia es el **promedio** de los % de sus variantes visibles (no el ratio de sumas). Documentada en el código y en el tooltip de la columna. |
+| Tooltips | ~36 definiciones `data-def` con una sola tarjeta flotante delegada en la raíz del panel (funciona sobre SVG). |
+| Frescura | Cron `shopify-sales-fast` cada ~5 min (configurable en Config → Connections) + reconciliación completa 3×/día. |
+| Estilos | Todo en el bloque `WU_CSS` al final del componente (clases `.wu-*` + variables); dark mode heredado por `.dark .wu`. |
+
+Las migraciones de la RPC siguen el patrón de **parche in-place** (`DO` + `pg_get_functiondef` + `replace` con guardas que fallan si el anchor no matchea); cada archivo en `supabase/migrations/` espeja el parche aplicado.
+
+Handoffs de diseño (fuera de git, en la carpeta del proyecto): `WEB UPGRADE TAB/Web Upgrade Performance2/design_handoff_web_upgrade_views/` — el README de ese bundle es la especificación y `Web Upgrade Tab v2.dc.html` el mock objetivo.
+
+---
+
 ## Cálculos destacados (Economic)
 
 - **Canales**: mezcla Unleashed + Shopify; exclusiones de canales tipo Shopify en Unleashed.
