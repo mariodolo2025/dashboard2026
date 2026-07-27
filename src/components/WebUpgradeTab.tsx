@@ -321,6 +321,17 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const restRev = ss && uor != null ? ss.storeRevenue - uor : null;
   const insidePct = ss && uor != null && uor > 0 ? Math.round((1000 * ss.attributedRevenue) / uor) / 10 : null;
   const rideRev = ss && uor != null ? Math.max(0, uor - ss.attributedRevenue) : null;
+  // Lifts recomputed from the numbers as DISPLAYED (rounded dollars / 2dp items),
+  // so a reader multiplying the visible figures lands on the visible result —
+  // the RPC's unrounded lift can be off by a point against what is on screen.
+  const shownLift = (a: number | null | undefined, b: number | null | undefined) => {
+    if (a == null || b == null || b === 0) return null;
+    const v = (100 * (a - b)) / b;
+    return Math.abs(v) >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
+  };
+  const aovLiftShown = data?.orderImpact ? shownLift(data.orderImpact.upgradeAov != null ? Math.round(data.orderImpact.upgradeAov) : null, data.orderImpact.otherAov != null ? Math.round(data.orderImpact.otherAov) : null) : null;
+  const itemsLiftShown = data?.orderImpact ? shownLift(data.orderImpact.upgradeItems, data.orderImpact.otherItems) : null;
+  const fmtLift = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v}%`);
 
   const secGuide = t ? (
     <>
@@ -590,16 +601,16 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                   <span>Items per order</span>
                   <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-text)' }}>{oi.upgradeItems ?? '—'}</b>
                   <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-dim)' }}>{oi.otherItems ?? '—'}</b>
-                  <b className="tnum" style={{ textAlign: 'right', color: (oi.itemsLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{oi.itemsLiftPct == null ? '—' : `${oi.itemsLiftPct >= 0 ? '+' : ''}${oi.itemsLiftPct}%`}</b>
+                  <b className="tnum" style={{ textAlign: 'right', color: (itemsLiftShown ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(itemsLiftShown)}</b>
                 </div>
                 <div className="wu-oigrid" style={{ padding: '10px 0', borderTop: '1px solid var(--wu-line)', fontSize: 12.5, color: 'var(--wu-dim)', alignItems: 'baseline' }}>
                   <span>Average order value</span>
                   <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-text)' }}>{money(oi.upgradeAov)}</b>
                   <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-dim)' }}>{money(oi.otherAov)}</b>
-                  <b className="tnum" style={{ textAlign: 'right', color: (oi.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{oi.aovLiftPct == null ? '—' : `${oi.aovLiftPct >= 0 ? '+' : ''}${oi.aovLiftPct}%`}</b>
+                  <b className="tnum" style={{ textAlign: 'right', color: (aovLiftShown ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(aovLiftShown)}</b>
                 </div>
-                {oi.itemsLiftPct != null && oi.aovLiftPct != null && oi.itemsLiftPct > oi.aovLiftPct && oi.itemsLiftPct > 0 && (
-                  <p style={{ margin: '11px 0 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--wu-faint)' }}>The module adds items, not expensive ones — the basket grows by {oi.itemsLiftPct}% but its value by only {oi.aovLiftPct}%.</p>
+                {itemsLiftShown != null && aovLiftShown != null && itemsLiftShown > aovLiftShown && itemsLiftShown > 0 && (
+                  <p style={{ margin: '11px 0 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--wu-faint)' }}>The module adds items, not expensive ones — the basket grows by {itemsLiftShown}% but its value by only {aovLiftShown}%.</p>
                 )}
               </div>
             )}
@@ -898,7 +909,9 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     const days = (data!.trend ?? []).filter((d2) => (d2.storeRevenue ?? 0) > 0);
     const maxStore = Math.max(...days.map((d2) => d2.storeRevenue ?? 0), 1);
     const todayYmd = toYMD(new Date());
-    const wouldBill = oi?.otherAov != null ? oi.otherAov * ss.upgradeOrders : null;
+    // Multiply by the ROUNDED AOV — the sentence says "at the same $103 AOV",
+    // so 384 × $103 must reproduce the figure shown, or the box contradicts itself.
+    const wouldBill = oi?.otherAov != null ? Math.round(oi.otherAov) * ss.upgradeOrders : null;
     const storeAlt = wouldBill != null && restRev != null ? restRev + wouldBill : null;
     const per100attr = Math.round(ss.revenueSharePct ?? 0);
     const per100ride = Math.max(0, Math.round(touchedPct - (ss.revenueSharePct ?? 0)));
@@ -955,7 +968,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     </div>
                     {oi && (
                       <div style={{ display: 'flex', gap: 16, marginTop: 13, paddingTop: 12, borderTop: '1px solid var(--wu-line)' }}>
-                        <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>vs the module group: <b className="tnum" style={{ color: (oi.aovLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{oi.aovLiftPct == null ? '—' : `${oi.aovLiftPct >= 0 ? '+' : ''}${oi.aovLiftPct}%`}</b> AOV · <b className="tnum" style={{ color: (oi.itemsLiftPct ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{oi.itemsLiftPct == null ? '—' : `${oi.itemsLiftPct >= 0 ? '+' : ''}${oi.itemsLiftPct}%`}</b> items</span>
+                        <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>the module group vs these: <b className="tnum" style={{ color: (aovLiftShown ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(aovLiftShown)}</b> AOV · <b className="tnum" style={{ color: (itemsLiftShown ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(itemsLiftShown)}</b> items</span>
                       </div>
                     )}
                   </div>
