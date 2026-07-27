@@ -1139,7 +1139,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 
             {view !== 'daily' && (
               <div className="wu-kpis" style={{ marginTop: 14 }}>
-                <Kpi label="Exposed sessions" def={DEFS.exposed} val={int(t.exposedSessions)} sub={`${int(t.totalEvents)} events`} accent />
+                <Kpi label="Exposed sessions" def={DEFS.exposed} val={int(t.exposedSessions)} sub="saw at least one module" accent />
                 <Kpi label="Direct revenue" def={DEFS.directRevenue} val={money(t.directRevenue)} ofVal={ss ? money(ss.storeRevenue) : undefined} pct={ss?.revenueSharePct ?? null} sub={`${int(t.directLines)} lines · ${ss?.revenueSharePct ?? '—'}% of store revenue`} accent />
                 <Kpi label="Direct orders" def={DEFS.directOrders} val={int(t.directOrders)} ofVal={ss ? int(ss.storeOrders) : undefined} pct={ss?.orderSharePct ?? null} sub={`with an upgrade line · ${ss?.orderSharePct ?? '—'}% of store orders`} />
                 <Kpi label="Assisted orders" def={DEFS.assisted} val={int(t.assistedOrders)} sub="via attribution id" />
