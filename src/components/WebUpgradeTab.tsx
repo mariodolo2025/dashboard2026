@@ -24,7 +24,7 @@ interface Dash {
   byModel: Array<{ brand: string; model: string; selects: number; addClicks: number; adds: number }>;
   byScreen: Array<{ sku: string; fitment: string | null; title: string; clicks: number; adds: number; attributedRevenue: number; unitsPerWeek: number; baselineUnitsPerWeek: number; deltaPct: number | null }>;
   rewards: Array<{ name: string; unlocks: number; sessions: number; bought: number }>;
-  storeShare: { storeOrders: number; storeRevenue: number; upgradeOrders: number; upgradeOrderRevenue?: number; attributedRevenue: number; orderSharePct: number | null; revenueSharePct: number | null } | null;
+  storeShare: { storeOrders: number; storeRevenue: number; upgradeOrders: number; upgradeOrderRevenue?: number; attributedRevenue: number; orderSharePct: number | null; revenueSharePct: number | null; preLaunchAov?: number | null; preLaunchItems?: number | null; preLaunchOrders?: number | null; preLaunchFrom?: string | null; preLaunchTo?: string | null } | null;
   orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
   bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
   byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number; variants: Array<{ label: string; orders: number; lines: number; revenue: number }> | null }>;
@@ -82,7 +82,8 @@ const DEFS = {
   byMachine: 'Attributed revenue grouped by the machine the customer selected in a module.',
   rewards: 'Carts that crossed a free-shipping or discount threshold while a module was open. A cart milestone, not a sale.',
   splitInTwo: 'Every paid order in the window lands on one side or the other: it either contains a module-placed line, or it does not.',
-  counterfactual: 'A plain arithmetic scenario, not a controlled test: the module orders repriced at the AOV of the orders with no module.',
+  counterfactual: 'What the module orders are worth against the store BEFORE the upgrades existed: the same orders repriced at the pre-launch store AOV (the frozen 84-day window ending Jul 21, every order in the shop). It is arithmetic, not a controlled test — product mix, ad spend and seasonality also move AOV.',
+  preLaunchAov: 'The average value of EVERY paid store order in the 84 days before the new theme went live (Apr 29 → Jul 21, 2026) — the same frozen window the Products baseline uses. It does not change with the date range you pick.',
   dayByDay: 'Total store revenue per day, with the module-attributed part shaded underneath.',
 };
 
@@ -909,10 +910,14 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     const days = (data!.trend ?? []).filter((d2) => (d2.storeRevenue ?? 0) > 0);
     const maxStore = Math.max(...days.map((d2) => d2.storeRevenue ?? 0), 1);
     const todayYmd = toYMD(new Date());
-    // Multiply by the ROUNDED AOV — the sentence says "at the same $103 AOV",
-    // so 384 × $103 must reproduce the figure shown, or the box contradicts itself.
-    const wouldBill = oi?.otherAov != null ? Math.round(oi.otherAov) * ss.upgradeOrders : null;
-    const storeAlt = wouldBill != null && restRev != null ? restRev + wouldBill : null;
+    // The counterfactual prices the module orders at the PRE-LAUNCH store AOV
+    // (frozen 84-day window), not at today's no-module group: comparing the same
+    // window against self-selected shoppers answered nothing about the upgrades.
+    // Multiply by the ROUNDED AOV so "at $104 × 388 orders" reproduces the figure shown.
+    const preAov = ss.preLaunchAov ?? null;
+    const wouldBill = preAov != null ? Math.round(preAov) * ss.upgradeOrders : null;
+    const extra = wouldBill != null ? uor - wouldBill : null;
+    const extraPerOrder = extra != null && ss.upgradeOrders > 0 ? extra / ss.upgradeOrders : null;
     const per100attr = Math.round(ss.revenueSharePct ?? 0);
     const per100ride = Math.max(0, Math.round(touchedPct - (ss.revenueSharePct ?? 0)));
     const per100rest = Math.max(0, 100 - per100attr - per100ride);
@@ -972,10 +977,16 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       </div>
                     )}
                   </div>
-                  {wouldBill != null && storeAlt != null && (
+                  {wouldBill != null && extra != null && preAov != null && (
                     <div className="wu-ink" style={{ borderRadius: 14, padding: '15px 18px' }}>
-                      <div className="wu-kicker" style={{ color: 'var(--wu-gold)', letterSpacing: '.14em' }}><Tip content={DEFS.counterfactual}>If the module group behaved like the rest</Tip></div>
-                      <p style={{ margin: '9px 0 0', fontSize: 12, lineHeight: 1.6, color: 'var(--wu-inkfg2)' }}>At the same {money(oi!.otherAov)} AOV, those {int(ss.upgradeOrders)} orders would have billed {money1(wouldBill)} instead of {money1(uor)} — the store lands on <b className="tnum" style={{ color: 'var(--wu-gold)' }}>{money1(storeAlt)}</b> rather than {money1(ss.storeRevenue)}.</p>
+                      <div className="wu-kicker" style={{ color: 'var(--wu-gold)', letterSpacing: '.14em' }}><Tip content={DEFS.counterfactual}>Against the store before the upgrades</Tip></div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+                        <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, lineHeight: 1 }}>${Math.round(preAov)}</div><div style={{ fontSize: 10, color: 'rgba(242,234,223,.55)', marginTop: 3, lineHeight: 1.4 }}>AOV before launch<br />{ss.preLaunchFrom ? format(new Date(ss.preLaunchFrom + 'T00:00:00'), 'MMM d') : ''} → {ss.preLaunchTo ? format(new Date(ss.preLaunchTo + 'T00:00:00'), 'MMM d') : ''}</div></div>
+                        <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 18, fontWeight: 600, lineHeight: 1, color: 'var(--wu-gold)' }}>{money(oi?.upgradeAov)}</div><div style={{ fontSize: 10, color: 'rgba(242,234,223,.55)', marginTop: 3, lineHeight: 1.4 }}>AOV of the {int(ss.upgradeOrders)} module orders<br />{preAov > 0 && oi?.upgradeAov != null ? `${Math.round(oi.upgradeAov) >= Math.round(preAov) ? '+' : ''}${Math.round((100 * (Math.round(oi.upgradeAov) - Math.round(preAov))) / Math.round(preAov))}% vs before` : ''}</div></div>
+                      </div>
+                      <div style={{ marginTop: 13, paddingTop: 12, borderTop: '1px solid rgba(242,234,223,.14)' }}>
+                        <p style={{ margin: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--wu-inkfg2)' }}>Priced at the old ${Math.round(preAov)}, those {int(ss.upgradeOrders)} orders would have billed {money1(wouldBill)}. They billed {money1(uor)} — <b className="tnum" style={{ color: extra >= 0 ? 'var(--wu-gold)' : 'var(--wu-neg)' }}>{extra >= 0 ? '+' : '−'}{money1(Math.abs(extra))}</b> in this window{extraPerOrder != null && <>, about ${Math.abs(extraPerOrder).toFixed(2)} {extra >= 0 ? 'more' : 'less'} per order</>}.</p>
+                      </div>
                     </div>
                   )}
                 </div>
