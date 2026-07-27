@@ -51,8 +51,8 @@ const HELP: Record<string, string> = {
 const DEFS = {
   storeImpact: 'How much of the whole store — not just upgrade traffic — runs through a module. Click to open the full store breakdown.',
   exposed: 'Unique browsing sessions in which at least one upgrade module rendered on screen. Counted once per session, however many times the module appeared.',
-  directRevenue: 'Net revenue of the order lines a module placed — the customer clicked add inside the module. It excludes the rest of that basket.',
-  directOrders: 'Paid orders containing at least one line a module placed.',
+  directRevenue: 'Net revenue of the order lines a module placed — the customer clicked add inside the module. It excludes the rest of that basket. The smaller figure after the slash is the whole store’s net revenue in the same window, and the bar is the share.',
+  directOrders: 'Paid orders containing at least one line a module placed. The smaller figure after the slash is EVERY paid store order in the same window (module or not), and the bar is the share.',
   assisted: 'Paid orders carrying a module attribution id whose lines were added somewhere else — the module was seen, the add happened later.',
   trendChart: 'Net revenue of module-placed lines, by day. Hover a day for its numbers. The last day in the window is still filling.',
   ranking: 'Modules ranked by attributed revenue per exposed session. Revenue alone rewards whichever module sits on the busiest page.',
@@ -330,6 +330,10 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     const v = (100 * (a - b)) / b;
     return Math.abs(v) >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
   };
+  // Denominator for every "share of the store" figure: ALL paid store orders in
+  // the window, not just the upgrade ones.
+  const storeOrders = data?.storeShare?.storeOrders ?? null;
+  const fmtShare = (v: number) => (v >= 10 ? `${Math.round(v)}%` : `${v.toFixed(1)}%`);
   const aovLiftShown = data?.orderImpact ? shownLift(data.orderImpact.upgradeAov != null ? Math.round(data.orderImpact.upgradeAov) : null, data.orderImpact.otherAov != null ? Math.round(data.orderImpact.otherAov) : null) : null;
   const itemsLiftShown = data?.orderImpact ? shownLift(data.orderImpact.upgradeItems, data.orderImpact.otherItems) : null;
   const fmtLift = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v}%`);
@@ -733,7 +737,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                         <div className="wu-mconn"><div className="wu-mconn-l"><D d={STEP_DEFS[i][0]}>{STEP_DEFS[i][1]}</D></div><div className="tnum wu-mconn-v" style={{ color: stepColor(s[i], i) }}>{fmtStep(s[i])}</div></div>
                       </Fragment>
                     ))}
-                    <div><div className="tnum wu-mstep-n" style={{ color: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>{int(m.orders)}</div><div className="wu-mstep-l"><D d={DEFS.orders}>Orders</D></div><div className="wu-mstep-b" style={{ background: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }} /></div>
+                    <div><div className="tnum wu-mstep-n" style={{ color: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>{int(m.orders)}</div><div className="wu-mstep-l"><D d={DEFS.orders}>Orders</D></div><div className="wu-mstep-b wu-mstep-share" data-def={storeOrders ? `${int(m.orders)} of the ${int(storeOrders)} orders the whole store took in this window — ${fmtShare((100 * m.orders) / storeOrders)}. Denominator is EVERY paid store order, not just the upgrade ones. An order that used two modules counts in both cards, so the four percentages do not add up to the store's module share.` : undefined} style={{ background: bad ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>{storeOrders ? <span className="tnum">{fmtShare((100 * m.orders) / storeOrders)}</span> : null}</div></div>
                   </div>
                 </div>
               </div>
@@ -1136,8 +1140,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             {view !== 'daily' && (
               <div className="wu-kpis" style={{ marginTop: 14 }}>
                 <Kpi label="Exposed sessions" def={DEFS.exposed} val={int(t.exposedSessions)} sub={`${int(t.totalEvents)} events`} accent />
-                <Kpi label="Direct revenue" def={DEFS.directRevenue} val={money(t.directRevenue)} sub={`${int(t.directLines)} lines`} accent />
-                <Kpi label="Direct orders" def={DEFS.directOrders} val={int(t.directOrders)} sub="with an upgrade line" />
+                <Kpi label="Direct revenue" def={DEFS.directRevenue} val={money(t.directRevenue)} ofVal={ss ? money(ss.storeRevenue) : undefined} pct={ss?.revenueSharePct ?? null} sub={`${int(t.directLines)} lines · ${ss?.revenueSharePct ?? '—'}% of store revenue`} accent />
+                <Kpi label="Direct orders" def={DEFS.directOrders} val={int(t.directOrders)} ofVal={ss ? int(ss.storeOrders) : undefined} pct={ss?.orderSharePct ?? null} sub={`with an upgrade line · ${ss?.orderSharePct ?? '—'}% of store orders`} />
                 <Kpi label="Assisted orders" def={DEFS.assisted} val={int(t.assistedOrders)} sub="via attribution id" />
               </div>
             )}
@@ -1396,11 +1400,14 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   );
 }
 
-function Kpi({ label, def, val, sub, accent }: { label: string; def: string; val: string; sub: ReactNode; accent?: boolean }) {
+function Kpi({ label, def, val, sub, accent, ofVal, pct }: { label: string; def: string; val: string; sub: ReactNode; accent?: boolean; ofVal?: string; pct?: number | null }) {
   return (
     <div className={cn('wu-card wu-kpi', accent && 'accent')}>
       <div className="wu-klabel"><D d={def}>{label}</D></div>
-      <div className="wu-val">{val}</div>
+      <div className="wu-val">{val}{ofVal && <span className="wu-val-of tnum">/{ofVal}</span>}</div>
+      {pct != null && (
+        <div className="wu-kpi-bar"><span style={{ width: `${Math.max(1, Math.min(100, pct))}%` }} /></div>
+      )}
       <div className="wu-sub">{sub}</div>
     </div>
   );
@@ -1661,6 +1668,11 @@ const WU_CSS = `
 .wu-mstep-n{font-family:'Fraunces',Georgia,serif;font-size:17px;font-weight:600}
 .wu-mstep-l{font-size:10px;color:var(--wu-faint);margin-top:2px}
 .wu-mstep-b{height:22px;margin-top:9px;border-radius:3px;background:linear-gradient(180deg,var(--wu-crema2),var(--wu-crema))}
+.wu-mstep-share{display:flex;align-items:center;justify-content:center;cursor:help}
+.wu-mstep-share span{font-size:10px;font-weight:700;color:#fff;letter-spacing:.02em;line-height:1}
+.wu-val-of{font-size:.52em;font-weight:500;color:var(--wu-faint);margin-left:5px;letter-spacing:0}
+.wu-kpi-bar{height:4px;border-radius:999px;background:var(--wu-crema-soft);overflow:hidden;margin-top:9px}
+.wu-kpi-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--wu-crema),var(--wu-crema2))}
 .wu-mconn{text-align:center;padding-bottom:1px}
 .wu-mconn-l{font-size:8.5px;font-weight:700;letter-spacing:.04em;color:var(--wu-faint)}
 .wu-mconn-v{font-size:11px;font-weight:700;line-height:1.25}
