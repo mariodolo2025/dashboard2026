@@ -1417,6 +1417,75 @@ export interface DemandWarehouseSplitResult {
  * quantity_sold is per-warehouse; component_usage comes from "All" aggregate
  * so component demand is visible regardless of assembly warehouse.
  */
+// ─── B2C Sales Explorer (Shopify, per SKU) ──────────────────────────────────
+
+export interface ShopifySkuListItem {
+  sku: string;
+  product_title: string | null;
+  units: number;
+  last_sale: string | null;
+}
+
+export interface ShopifySkuStats {
+  sku: string;
+  productTitle: string | null;
+  from: string;
+  to: string;
+  previousFrom: string;
+  previousTo: string;
+  summary: {
+    units: number;
+    orders: number;
+    grossAud: number;
+    discountsAud: number;
+    returnsAud: number;
+    netAud: number;
+    avgNetPriceAud: number | null;
+  };
+  previous: { units: number; orders: number; netAud: number };
+  monthly: Array<{ month: string; units: number; net_aud: number }>;
+  countries: Array<{ country: string; units: number; net_aud: number }>;
+  recentOrders: Array<{
+    order_date: string;
+    country: string;
+    quantity: number;
+    net_aud: number;
+    currency: string;
+  }>;
+}
+
+async function callRpc<T>(fn: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`${fn} failed (${response.status}): ${await response.text()}`);
+  }
+  return (await response.json()) as T;
+}
+
+/** Every SKU that has ever sold on Shopify, busiest first — feeds the search box. */
+export async function fetchShopifySkuList(): Promise<ShopifySkuListItem[]> {
+  try {
+    return await callRpc<ShopifySkuListItem[]>('shopify_sku_list', {});
+  } catch {
+    return [];
+  }
+}
+
+/** One SKU's Shopify sales over a window, with the equivalent previous window.
+ * All money is AUD: the source rows span 43 currencies, so net_usd is converted
+ * at the same per-month rate the rest of the dashboard uses. */
+export async function fetchShopifySkuStats(
+  sku: string,
+  from: string,
+  to: string
+): Promise<ShopifySkuStats> {
+  return callRpc<ShopifySkuStats>('shopify_sku_stats', { p_sku: sku, p_from: from, p_to: to });
+}
+
 /** Sales channels present in the demand data, busiest first.
  * Read from the DB rather than hardcoded, so a new customer type in Unleashed
  * shows up in the filter without a code change. */
