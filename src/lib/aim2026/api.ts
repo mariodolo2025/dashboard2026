@@ -1426,9 +1426,11 @@ export interface ShopifySkuListItem {
   last_sale: string | null;
 }
 
+export type SalesGranularity = 'day' | 'week' | 'month';
+
 export interface ShopifySkuStats {
-  sku: string;
-  productTitle: string | null;
+  skus: string[];
+  granularity: SalesGranularity;
   from: string;
   to: string;
   previousFrom: string;
@@ -1443,10 +1445,12 @@ export interface ShopifySkuStats {
     avgNetPriceAud: number | null;
   };
   previous: { units: number; orders: number; netAud: number };
-  monthly: Array<{ month: string; units: number; net_aud: number }>;
+  series: Array<{ bucket: string; units: number; net_aud: number; orders: number }>;
+  perSku: Array<{ sku: string; product_title: string | null; units: number; net_aud: number; orders: number }>;
   countries: Array<{ country: string; units: number; net_aud: number }>;
   recentOrders: Array<{
     order_date: string;
+    sku: string;
     country: string;
     quantity: number;
     net_aud: number;
@@ -1475,15 +1479,21 @@ export async function fetchShopifySkuList(): Promise<ShopifySkuListItem[]> {
   }
 }
 
-/** One SKU's Shopify sales over a window, with the equivalent previous window.
+/** Shopify sales for one or more SKUs over a window.
  * All money is AUD: the source rows span 43 currencies, so net_usd is converted
  * at the same per-month rate the rest of the dashboard uses. */
 export async function fetchShopifySkuStats(
-  sku: string,
+  skus: string[],
   from: string,
-  to: string
+  to: string,
+  granularity: SalesGranularity = 'month'
 ): Promise<ShopifySkuStats> {
-  return callRpc<ShopifySkuStats>('shopify_sku_stats', { p_sku: sku, p_from: from, p_to: to });
+  return callRpc<ShopifySkuStats>('shopify_sku_stats_multi', {
+    p_skus: skus,
+    p_from: from,
+    p_to: to,
+    p_granularity: granularity,
+  });
 }
 
 /** Sales channels present in the demand data, busiest first.
