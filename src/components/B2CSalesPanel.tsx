@@ -103,7 +103,7 @@ function bucketLabel(bucket: string, granularity: SalesGranularity): string {
 // ─── Pieces ─────────────────────────────────────────────────────────────────
 
 function DeltaPill({ value }: { value: number | null }) {
-  if (value === null) return <span className="text-[11px] text-muted-foreground">sin base previa</span>;
+  if (value === null) return <span className="text-[11px] text-muted-foreground">no prior baseline</span>;
   const up = value > 0;
   const flat = Math.abs(value) < 0.5;
   const Icon = flat ? Minus : up ? TrendingUp : TrendingDown;
@@ -191,7 +191,7 @@ function SkuMultiSearch({
       <div className="relative">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/50" />
         <Input
-          placeholder={selected.length ? 'Agregar otro SKU…' : 'Buscar SKU o producto…'}
+          placeholder={selected.length ? 'Add another SKU…' : 'Search SKU or product…'}
           value={query}
           onFocus={() => setOpen(true)}
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
@@ -210,7 +210,7 @@ function SkuMultiSearch({
           <div className="absolute top-full mt-1 left-0 right-0 z-50 bg-popover border rounded-lg shadow-lg py-1 max-h-[320px] overflow-y-auto">
             {matches.length === 0 && (
               <p className="px-3 py-2 text-xs text-muted-foreground">
-                Ningún SKU de Shopify coincide con “{query}”.
+                No Shopify SKU matches “{query}”.
               </p>
             )}
             {matches.map((s) => {
@@ -263,7 +263,7 @@ function SkuMultiSearch({
               <button
                 onClick={() => toggle(s)}
                 className="text-muted-foreground hover:text-foreground"
-                aria-label={`Quitar ${s}`}
+                aria-label={`Remove ${s}`}
               >
                 <X size={11} />
               </button>
@@ -274,7 +274,7 @@ function SkuMultiSearch({
               onClick={() => onChange([])}
               className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2"
             >
-              limpiar
+              clear
             </button>
           )}
         </div>
@@ -384,7 +384,7 @@ export function B2CSalesPanel({
 
       {skus.length === 0 && (
         <p className="text-sm text-muted-foreground py-6">
-          Elegí uno o más SKUs para ver sus ventas de Shopify.
+          Pick one or more SKUs to see their Shopify sales.
         </p>
       )}
 
@@ -394,7 +394,7 @@ export function B2CSalesPanel({
         </Card>
       )}
 
-      {loading && !stats && <p className="text-sm text-muted-foreground animate-pulse">Cargando…</p>}
+      {loading && !stats && <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>}
 
       {stats && (
         <div className={cn('space-y-4', loading && 'opacity-60')}>
@@ -408,38 +408,38 @@ export function B2CSalesPanel({
             <StatCard
               icon={<Package size={15} />} label="Units" accent="#3b82f6"
               value={fmtNum(stats.summary.units)}
-              sub={`${fmtNum(stats.previous.units)} en el período anterior`}
+              sub={`${fmtNum(stats.previous.units)} in the previous period`}
               delta={unitsDelta}
             />
             <StatCard
               icon={<DollarSign size={15} />} label="Net sales" accent="#10b981"
               value={fmtAud(stats.summary.netAud)}
-              sub={`${fmtAud(stats.previous.netAud)} antes · AUD`}
+              sub={`${fmtAud(stats.previous.netAud)} before · AUD`}
               delta={netDelta}
             />
             <StatCard
               icon={<ShoppingCart size={15} />} label="Orders" accent="#8b5cf6"
               value={fmtNum(stats.summary.orders)}
-              sub={`${fmtNum(stats.previous.orders)} antes`}
+              sub={`${fmtNum(stats.previous.orders)} before`}
               delta={ordersDelta}
             />
             <StatCard
-              icon={<Tag size={15} />} label="Precio real" accent="#f59e0b"
+              icon={<Tag size={15} />} label="Realised price" accent="#f59e0b"
               value={fmtAud2(stats.summary.avgNetPriceAud)}
-              sub="neto por unidad, después de descuentos"
+              sub="net per unit, after discounts"
             />
             <StatCard
-              icon={<Tag size={15} />} label="Descuentos" accent="#ef4444"
+              icon={<Tag size={15} />} label="Discounts" accent="#ef4444"
               value={fmtAud(stats.summary.discountsAud)}
               sub={stats.summary.grossAud > 0
-                ? `${((stats.summary.discountsAud / stats.summary.grossAud) * 100).toFixed(1)}% del bruto`
+                ? `${((stats.summary.discountsAud / stats.summary.grossAud) * 100).toFixed(1)}% of gross`
                 : undefined}
             />
             <StatCard
-              icon={<RotateCcw size={15} />} label="Devoluciones" accent="#f97316"
+              icon={<RotateCcw size={15} />} label="Returns" accent="#f97316"
               value={fmtAud(stats.summary.returnsAud)}
               sub={stats.summary.grossAud > 0
-                ? `${((stats.summary.returnsAud / stats.summary.grossAud) * 100).toFixed(1)}% del bruto`
+                ? `${((stats.summary.returnsAud / stats.summary.grossAud) * 100).toFixed(1)}% of gross`
                 : undefined}
             />
           </div>
@@ -448,7 +448,7 @@ export function B2CSalesPanel({
           <Card className="p-4">
             <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Unidades por {granularity === 'day' ? 'día' : granularity === 'week' ? 'semana' : 'mes'}
+                Units per {granularity}
               </h3>
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-0.5 rounded-lg bg-muted/50 p-0.5">
@@ -483,7 +483,7 @@ export function B2CSalesPanel({
 
             {chartData.length === 0 ? (
               <p className="text-sm text-muted-foreground py-8 text-center">
-                Sin ventas de Shopify en este rango.
+                No Shopify sales in this range.
               </p>
             ) : (
               <div className={compact ? 'h-[180px]' : 'h-[240px]'}>
@@ -502,7 +502,7 @@ export function B2CSalesPanel({
                     <RTooltip
                       labelFormatter={(b: string) => bucketLabel(b, granularity)}
                       formatter={(v: number, name: string) => {
-                        if (name === 'trend') return [fmtNum(v), 'Tendencia'];
+                        if (name === 'trend') return [fmtNum(v), 'Trend'];
                         if (name === 'netAud') return [fmtAud(v), 'Net AUD'];
                         return [fmtNum(v), 'Unidades'];
                       }}
@@ -529,15 +529,15 @@ export function B2CSalesPanel({
           {stats.perSku.length > 1 && (
             <Card className="p-4">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                Por SKU
+                By SKU
               </h3>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
                     <th className="text-left font-medium pb-1.5">SKU</th>
-                    <th className="text-right font-medium pb-1.5">Unidades</th>
-                    <th className="text-right font-medium pb-1.5">Órdenes</th>
-                    <th className="text-right font-medium pb-1.5">Neto AUD</th>
+                    <th className="text-right font-medium pb-1.5">Units</th>
+                    <th className="text-right font-medium pb-1.5">Orders</th>
+                    <th className="text-right font-medium pb-1.5">Net AUD</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -565,17 +565,17 @@ export function B2CSalesPanel({
           <div className={cn('grid gap-4', compact ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-2')}>
             <Card className="p-4">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
-                <Globe size={12} /> Países
+                <Globe size={12} /> Countries
               </h3>
               {stats.countries.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4">Sin datos.</p>
+                <p className="text-sm text-muted-foreground py-4">No data.</p>
               ) : (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                      <th className="text-left font-medium pb-1.5">País</th>
-                      <th className="text-right font-medium pb-1.5">Unidades</th>
-                      <th className="text-right font-medium pb-1.5">Neto AUD</th>
+                      <th className="text-left font-medium pb-1.5">Country</th>
+                      <th className="text-right font-medium pb-1.5">Units</th>
+                      <th className="text-right font-medium pb-1.5">Net AUD</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -593,20 +593,20 @@ export function B2CSalesPanel({
 
             <Card className="p-4">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                Últimas ventas
+                Recent sales
               </h3>
               {stats.recentOrders.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4">Sin datos.</p>
+                <p className="text-sm text-muted-foreground py-4">No data.</p>
               ) : (
                 <div className="max-h-[280px] overflow-y-auto">
                   <table className="w-full text-sm">
                     <thead className="sticky top-0 bg-card">
                       <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                        <th className="text-left font-medium pb-1.5">Fecha</th>
+                        <th className="text-left font-medium pb-1.5">Date</th>
                         {skus.length > 1 && <th className="text-left font-medium pb-1.5">SKU</th>}
-                        <th className="text-left font-medium pb-1.5">País</th>
-                        <th className="text-right font-medium pb-1.5">Cant.</th>
-                        <th className="text-right font-medium pb-1.5">Neto AUD</th>
+                        <th className="text-left font-medium pb-1.5">Country</th>
+                        <th className="text-right font-medium pb-1.5">Qty</th>
+                        <th className="text-right font-medium pb-1.5">Net AUD</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -627,8 +627,8 @@ export function B2CSalesPanel({
           </div>
 
           <p className="text-[11px] text-muted-foreground/70">
-            Solo ventas de Shopify. Importes en AUD, convertidos desde USD a la tasa del mes de cada
-            orden — la misma que usa el resto del dashboard.
+            Shopify sales only. Amounts in AUD, converted from USD at each order’s month rate —
+            the same rate the rest of the dashboard uses.
           </p>
         </div>
       )}

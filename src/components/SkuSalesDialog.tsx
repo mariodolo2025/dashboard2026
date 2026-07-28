@@ -61,7 +61,7 @@ export function SkuSalesDialog({
               <p className="text-sm text-muted-foreground truncate">{productTitle}</p>
             )}
             <p className="text-[11px] text-muted-foreground/70 mt-0.5">
-              Ventas de Shopify · B2C
+              Shopify sales · B2C
             </p>
           </div>
           <Button

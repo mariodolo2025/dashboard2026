@@ -842,7 +842,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                             <button
                               type="button"
                               onClick={() => setSkuDialog({ sku: r.sku, title: r.title })}
-                              title={`Ver ventas B2C de ${r.sku}`}
+                              title={`See B2C sales for ${r.sku}`}
                               className="tnum"
                               style={{
                                 display: 'block', fontFamily: 'ui-monospace,monospace', fontSize: 10,
