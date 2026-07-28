@@ -458,22 +458,49 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 
     const ranked = [...mods].sort((a, b) => rpsOf(b) - rpsOf(a));
 
-    // Families that moved (rail): sum-based deltas + a per-variant agreement note.
-    const famBaseMap = new Map<string, { upw: number; base: number; pcts: number[] }>();
+    // Families that moved (rail).
+    //
+    // Two rules that used to differ from the Products view, both fixed here:
+    //
+    // 1. A variant with no frozen baseline is EXCLUDED from the delta, not
+    //    counted as a zero. On 2026-07-23 the shower screens were consolidated
+    //    (EX54 + 54 -> BR54, MV58 -> BR58); the replacements had no baseline row,
+    //    so the family read +1018% — its whole volume against the baseline of its
+    //    five smallest members. The retired SKUs' baselines now carry over via
+    //    web_upgrade_sku_successor, and anything still without one is set aside
+    //    and counted in the note instead of dragging the number to +100%.
+    // 2. The delta is the MEAN of the comparable variants' percentages, the same
+    //    rule the Products view uses (documented in its column tooltip). The two
+    //    surfaces used to disagree by a factor of ~500 on the same family.
+    const famBaseMap = new Map<string, { upw: number; base: number; pcts: number[]; noBase: number }>();
     for (const r of data.byScreen) {
       const k = famOf(r.sku, r.title, false);
-      const cur = famBaseMap.get(k) ?? { upw: 0, base: 0, pcts: [] };
-      cur.upw += r.unitsPerWeek; cur.base += r.baselineUnitsPerWeek; cur.pcts.push(pctOf(r.unitsPerWeek, r.baselineUnitsPerWeek));
+      const cur = famBaseMap.get(k) ?? { upw: 0, base: 0, pcts: [], noBase: 0 };
+      cur.upw += r.unitsPerWeek;
+      if (r.baselineUnitsPerWeek > 0) {
+        cur.base += r.baselineUnitsPerWeek;
+        cur.pcts.push(pctOf(r.unitsPerWeek, r.baselineUnitsPerWeek));
+      } else {
+        cur.noBase += 1;
+      }
       famBaseMap.set(k, cur);
     }
     const famMoves = [...famBaseMap.entries()]
-      .filter(([, v]) => v.base > 0)
+      .filter(([, v]) => v.base > 0 && v.pcts.length > 0)
       .map(([k, v]) => {
         const ups = v.pcts.filter((p) => p > 0).length;
         const downs = v.pcts.filter((p) => p < 0).length;
-        const note = v.pcts.length > 1 && downs === v.pcts.length ? `all ${v.pcts.length} variants down`
-          : v.pcts.length > 1 && ups > 0 && downs > 0 ? `mixed — ${ups} up, ${downs} down` : null;
-        return { family: k, upw: Math.round(v.upw * 10) / 10, base: Math.round(v.base * 10) / 10, delta: Math.round((100 * (v.upw - v.base)) / v.base), note };
+        const parts: string[] = [];
+        if (v.pcts.length > 1 && downs === v.pcts.length) parts.push(`all ${v.pcts.length} variants down`);
+        else if (v.pcts.length > 1 && ups > 0 && downs > 0) parts.push(`mixed — ${ups} up, ${downs} down`);
+        if (v.noBase > 0) parts.push(`${v.noBase} new, no baseline`);
+        return {
+          family: k,
+          upw: Math.round(v.upw * 10) / 10,
+          base: Math.round(v.base * 10) / 10,
+          delta: Math.round((100 * v.pcts.reduce((s, p) => s + p, 0)) / v.pcts.length),
+          note: parts.length ? parts.join(' · ') : null,
+        };
       });
     const byAbs = [...famMoves].sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
     const worst = [...famMoves].sort((a, b) => a.delta - b.delta)[0];
