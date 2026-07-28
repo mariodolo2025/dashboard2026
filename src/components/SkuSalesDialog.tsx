@@ -10,6 +10,7 @@
 // you left behind.
 
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Package } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { B2CSalesPanel, DATE_PRESETS } from '@/components/B2CSalesPanel';
@@ -56,10 +57,15 @@ export function SkuSalesDialog({
 
   if (!open || !sku) return null;
 
-  // Centred on the viewport, not anchored to the top of a scrolled page. The
-  // panel caps at 90vh and scrolls its own body, so a tall report stays centred
-  // instead of pushing its header off screen.
-  return (
+  // Portalled to <body> on purpose. The Web Upgrade tab lives inside a Radix
+  // DialogContent, which is positioned with translate-x/y — a transform makes
+  // that element the containing block for every `position: fixed` descendant, so
+  // "fixed inset-0" would centre on the dialog box rather than the screen. That
+  // is why this popup kept opening pinned near the top.
+  //
+  // Centred on the viewport; the panel caps at 90vh and scrolls its own body, so
+  // a tall report stays centred instead of pushing its header off screen.
+  return createPortal(
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 sm:p-6">
       {/* Backdrop click closes; clicks inside must not bubble to it. */}
       <div className="absolute inset-0" onClick={onClose} aria-hidden />
@@ -108,7 +114,8 @@ export function SkuSalesDialog({
           />
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

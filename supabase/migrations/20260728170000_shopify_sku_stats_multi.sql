@@ -143,3 +143,13 @@ grant execute on function public.shopify_sku_stats_multi(text[], date, date, tex
 --   summary:  grossUsd, discountsUsd, returnsUsd, netUsd, avgNetPriceUsd
 --   previous: netUsd
 --   series / perSku / countries / recentOrders: net_usd
+
+-- -----------------------------------------------------------------------------
+-- 2026-07-29 · gap-filled series (migration 'shopify_sku_stats_multi_gapfill').
+-- The series only carried buckets that had sales, so a day with none simply did
+-- not exist: a 7-day window rendered as 2 bars side by side, and the trend line —
+-- a moving average over points that are not adjacent in time — was meaningless.
+-- Every bucket in the range is now emitted, zero-filled, via
+--   buckets as (select generate_series(date_trunc(v_trunc, p_from), 
+--                                      date_trunc(v_trunc, p_to), v_step)::date)
+-- left joined to the aggregate. Same totals, honest shape.

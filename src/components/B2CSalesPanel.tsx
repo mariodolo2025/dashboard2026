@@ -94,13 +94,22 @@ function delta(current: number, previous: number): number | null {
   return ((current - previous) / previous) * 100;
 }
 
-/** Centred 3-point moving average, so the curve shows direction rather than
- * repeating the bars. */
-function withTrend(series: { bucket: string; units: number; net_aud: number }[]) {
+/** Centred moving average, so the curve shows direction rather than repeating
+ * the bars. Daily data gets a 7-point window — a 3-point one on days is as
+ * twitchy as the bars themselves — while weeks and months keep 3.
+ *
+ * This only reads as a trend because the series is gap-filled server-side: a day
+ * with no sales is a zero bucket, not a missing one. Averaging over points that
+ * are not adjacent in time produced a flat line that meant nothing. */
+function withTrend(
+  series: { bucket: string; units: number; net_aud: number }[],
+  granularity: SalesGranularity
+) {
+  const half = granularity === 'day' ? 3 : 1;
   return series.map((p, i) => {
-    const window = series.slice(Math.max(0, i - 1), Math.min(series.length, i + 2));
+    const window = series.slice(Math.max(0, i - half), Math.min(series.length, i + half + 1));
     const trend = window.reduce((s, w) => s + w.units, 0) / window.length;
-    return { ...p, netAud: p.net_aud, trend: Math.round(trend * 10) / 10 };
+    return { ...p, netAud: p.net_aud, trend: Math.round(trend * 100) / 100 };
   });
 }
 
@@ -353,7 +362,10 @@ export function B2CSalesPanel({
     [from, to]
   );
 
-  const chartData = useMemo(() => withTrend(stats?.series ?? []), [stats]);
+  const chartData = useMemo(
+    () => withTrend(stats?.series ?? [], stats?.granularity ?? granularity),
+    [stats, granularity]
+  );
 
   const unitsDelta = stats ? delta(stats.summary.units, stats.previous.units) : null;
   const netDelta = stats ? delta(stats.summary.netAud, stats.previous.netAud) : null;
