@@ -371,31 +371,61 @@ export function SKUDetailDialog({
                 icon={ShieldAlert}
                 sub={`Safety Stock: ${fmt(sku.safetyStock)}`}
               />
+              {/* A metric that could not be measured shows "—" and says why.
+                  It must never be painted red with a verdict like "Below target",
+                  which is what a missing landed cost used to produce. */}
               <StatCard
                 label="Days of Cover"
-                value={`${Math.round(sku.daysOfCover)}d`}
+                value={sku.daysOfCover === null ? '—' : `${Math.round(sku.daysOfCover)}d`}
                 icon={Clock}
                 color={
-                  sku.daysOfCover < 30
+                  sku.daysOfCover === null
+                    ? 'text-muted-foreground'
+                    : sku.daysOfCover < 30
                     ? 'text-red-500'
                     : sku.daysOfCover < 60
                     ? 'text-amber-600'
                     : 'text-emerald-600'
                 }
-                sub={sku.daysOfCover < sku.leadTimeDays ? 'Below lead time!' : 'Above lead time'}
+                sub={
+                  sku.daysOfCover === null
+                    ? 'No demand in range'
+                    : sku.daysOfCover < sku.leadTimeDays
+                    ? 'Below lead time!'
+                    : 'Above lead time'
+                }
               />
               <StatCard
                 label="Turnover"
-                value={sku.turnover.toFixed(1)}
+                value={sku.turnover === null ? '—' : sku.turnover.toFixed(1)}
                 icon={TrendingUp}
-                sub="Times/period"
+                color={sku.turnover === null ? 'text-muted-foreground' : undefined}
+                sub={sku.turnover === null ? 'No landed cost' : 'Times/year (annualised)'}
               />
               <StatCard
                 label="GMROI"
-                value={sku.gmroi > 100 ? '>100' : sku.gmroi.toFixed(1)}
+                value={sku.gmroi === null ? '—' : sku.gmroi > 100 ? '>100' : sku.gmroi.toFixed(1)}
                 icon={DollarSign}
-                color={sku.gmroi >= 3 ? 'text-emerald-600' : sku.gmroi >= 1 ? 'text-foreground' : 'text-red-500'}
-                sub={sku.gmroi > 100 ? 'Very low stock vs demand' : sku.gmroi >= 3 ? 'Healthy' : sku.gmroi >= 1 ? 'Acceptable' : 'Below target'}
+                color={
+                  sku.gmroi === null
+                    ? 'text-muted-foreground'
+                    : sku.gmroi >= 3
+                    ? 'text-emerald-600'
+                    : sku.gmroi >= 1
+                    ? 'text-foreground'
+                    : 'text-red-500'
+                }
+                sub={
+                  sku.gmroi === null
+                    ? 'No landed cost or price'
+                    : sku.gmroi > 100
+                    ? 'Very low stock vs demand'
+                    : sku.gmroi >= 3
+                    ? 'Healthy'
+                    : sku.gmroi >= 1
+                    ? 'Acceptable'
+                    : 'Below target'
+                }
               />
             </div>
           </div>

@@ -235,7 +235,10 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
         label="Inventory Value"
         value={formatCurrencyAUD(data.totalInventoryValueAUD)}
         subtitle={`${formatCurrencyUSD(data.totalInventoryValueUSD)} · Click for details`}
-        sparkData={data.inventoryValueHistory.map((h) => h.value)}
+        // The history arrives newest-first from the API. Drawn as-is the line reads
+        // backwards — an 18% fall rendered as a rise. The valuation dialog and panel
+        // already reverse their own copy; this one did not.
+        sparkData={[...data.inventoryValueHistory].reverse().map((h) => h.value)}
         sparkColor="#3b82f6"
         accent="#3b82f6"
         delay={0}

@@ -668,12 +668,15 @@ export function InventoryTable({
           <span
             className={cn(
               'text-[13px] tabular-nums text-center block w-full',
-              getDaysOfCoverColor(row.original.daysOfCover)
+              row.original.daysOfCover === null
+                ? 'text-muted-foreground'
+                : getDaysOfCoverColor(row.original.daysOfCover)
             )}
+            title={row.original.daysOfCover === null ? 'No demand in the selected range — coverage cannot be measured' : undefined}
           >
-            {row.original.daysOfCover > 0
-              ? `${Math.round(row.original.daysOfCover)}d`
-              : '0d'}
+            {row.original.daysOfCover === null
+              ? '—'
+              : `${Math.round(row.original.daysOfCover)}d`}
           </span>
         ),
         size: 68,
@@ -687,8 +690,11 @@ export function InventoryTable({
           </SortHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-[13px] tabular-nums text-center block w-full">
-            {row.original.turnover > 0 ? row.original.turnover.toFixed(1) : '—'}
+          <span
+            className="text-[13px] tabular-nums text-center block w-full"
+            title={row.original.turnover === null ? 'No landed cost loaded for this SKU — turnover cannot be measured' : undefined}
+          >
+            {row.original.turnover === null ? '—' : row.original.turnover.toFixed(1)}
           </span>
         ),
         size: 62,
@@ -705,12 +711,17 @@ export function InventoryTable({
           <span
             className={cn(
               'text-[13px] tabular-nums text-center block w-full',
-              getMarginColor(row.original.marginPercent)
+              row.original.marginPercent === null
+                ? 'text-muted-foreground'
+                : getMarginColor(row.original.marginPercent)
             )}
+            title={row.original.marginPercent === null ? 'No landed cost or no selling price — margin cannot be measured' : undefined}
           >
-            {row.original.marginPercent > 0
-              ? `${row.original.marginPercent.toFixed(1)}%`
-              : '—'}
+            {/* Negative margins are shown, not hidden behind the same dash as
+                "no data": a SKU selling below cost has to be visible. */}
+            {row.original.marginPercent === null
+              ? '—'
+              : `${row.original.marginPercent.toFixed(1)}%`}
           </span>
         ),
         size: 68,
@@ -727,10 +738,17 @@ export function InventoryTable({
           <span
             className={cn(
               'text-[13px] tabular-nums text-center block w-full',
-              getGMROIColor(row.original.gmroi)
+              row.original.gmroi === null
+                ? 'text-muted-foreground'
+                : getGMROIColor(row.original.gmroi)
             )}
+            title={row.original.gmroi === null ? 'No landed cost or no selling price — GMROI cannot be measured' : undefined}
           >
-            {row.original.gmroi > 100 ? '>100' : row.original.gmroi > 0 ? row.original.gmroi.toFixed(1) : '—'}
+            {row.original.gmroi === null
+              ? '—'
+              : row.original.gmroi > 100
+                ? '>100'
+                : row.original.gmroi.toFixed(1)}
           </span>
         ),
         size: 62,

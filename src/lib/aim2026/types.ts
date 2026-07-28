@@ -62,13 +62,14 @@ export interface SKURow {
   pipeline: number;
   suggestedQty: number;
   softSuggestedQty: number;
-  // Coverage
-  daysOfCover: number;
-  // Performance
-  turnover: number;
+  // Coverage. null = not measurable (no demand in the window) — never a sentinel.
+  daysOfCover: number | null;
+  // Performance. null = missing input (no cost in the product master, or no
+  // selling price), which must never be averaged or rendered as a zero.
+  turnover: number | null;
   turnoverTrend: TrendDirection;
-  marginPercent: number;
-  gmroi: number;
+  marginPercent: number | null;
+  gmroi: number | null;
   // Cost
   productCostChina: number;
   landedCostAUD: number;
