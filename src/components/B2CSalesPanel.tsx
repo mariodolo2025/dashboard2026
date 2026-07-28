@@ -36,6 +36,19 @@ const fmtAud = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : `$${Math.round(v).toLocaleString('en-AU')}`;
 const fmtAud2 = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : `$${v.toFixed(2)}`;
+const fmtUsd = (v: number | null | undefined) =>
+  v === null || v === undefined ? '' : `(US$${Math.round(v).toLocaleString('en-AU')})`;
+const fmtUsd2 = (v: number | null | undefined) =>
+  v === null || v === undefined ? '' : `(US$${v.toFixed(2)})`;
+
+/** The USD companion of an AUD figure: same number, source currency, set much
+ * smaller so it never competes with the amount it annotates. */
+function Usd({ value, decimals = false }: { value: number | null | undefined; decimals?: boolean }) {
+  const text = decimals ? fmtUsd2(value) : fmtUsd(value);
+  if (!text) return null;
+  return <span className="ml-1 text-[0.58em] font-normal text-muted-foreground/70 align-baseline">{text}</span>;
+}
+
 const fmtNum = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : Math.round(v).toLocaleString('en-AU');
 
@@ -121,11 +134,14 @@ function DeltaPill({ value }: { value: number | null }) {
 }
 
 function StatCard({
-  icon, label, value, sub, delta: d, accent,
+  icon, label, value, usd, usdDecimals, sub, delta: d, accent,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  /** Same amount in USD, rendered small in parentheses beside the AUD figure. */
+  usd?: number | null;
+  usdDecimals?: boolean;
   sub?: string;
   delta?: number | null;
   accent?: string;
@@ -142,8 +158,11 @@ function StatCard({
         <span className="opacity-60">{icon}</span>
         <span className="text-xs font-medium tracking-wide uppercase truncate">{label}</span>
       </div>
-      <div className="flex items-end gap-2">
-        <span className="text-2xl font-semibold tracking-tight tabular-nums leading-none">{value}</span>
+      <div className="flex items-end gap-2 flex-wrap">
+        <span className="text-2xl font-semibold tracking-tight tabular-nums leading-none">
+          {value}
+          {usd !== undefined && <Usd value={usd} decimals={usdDecimals} />}
+        </span>
         {d !== undefined && <DeltaPill value={d} />}
       </div>
       {sub && <p className="text-[11px] text-muted-foreground/70 leading-tight mt-1.5">{sub}</p>}
@@ -414,6 +433,7 @@ export function B2CSalesPanel({
             <StatCard
               icon={<DollarSign size={15} />} label="Net sales" accent="#10b981"
               value={fmtAud(stats.summary.netAud)}
+              usd={stats.summary.netUsd}
               sub={`${fmtAud(stats.previous.netAud)} before · AUD`}
               delta={netDelta}
             />
@@ -426,11 +446,14 @@ export function B2CSalesPanel({
             <StatCard
               icon={<Tag size={15} />} label="Realised price" accent="#f59e0b"
               value={fmtAud2(stats.summary.avgNetPriceAud)}
+              usd={stats.summary.avgNetPriceUsd}
+              usdDecimals
               sub="net per unit, after discounts"
             />
             <StatCard
               icon={<Tag size={15} />} label="Discounts" accent="#ef4444"
               value={fmtAud(stats.summary.discountsAud)}
+              usd={stats.summary.discountsUsd}
               sub={stats.summary.grossAud > 0
                 ? `${((stats.summary.discountsAud / stats.summary.grossAud) * 100).toFixed(1)}% of gross`
                 : undefined}
@@ -438,6 +461,7 @@ export function B2CSalesPanel({
             <StatCard
               icon={<RotateCcw size={15} />} label="Returns" accent="#f97316"
               value={fmtAud(stats.summary.returnsAud)}
+              usd={stats.summary.returnsUsd}
               sub={stats.summary.grossAud > 0
                 ? `${((stats.summary.returnsAud / stats.summary.grossAud) * 100).toFixed(1)}% of gross`
                 : undefined}
@@ -553,7 +577,7 @@ export function B2CSalesPanel({
                       </td>
                       <td className="py-1.5 text-right tabular-nums">{fmtNum(p.units)}</td>
                       <td className="py-1.5 text-right tabular-nums">{fmtNum(p.orders)}</td>
-                      <td className="py-1.5 text-right tabular-nums">{fmtAud(p.net_aud)}</td>
+                      <td className="py-1.5 text-right tabular-nums">{fmtAud(p.net_aud)}<Usd value={p.net_usd} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -583,7 +607,7 @@ export function B2CSalesPanel({
                       <tr key={c.country} className="border-t border-border/40">
                         <td className="py-1.5">{c.country}</td>
                         <td className="py-1.5 text-right tabular-nums">{fmtNum(c.units)}</td>
-                        <td className="py-1.5 text-right tabular-nums">{fmtAud(c.net_aud)}</td>
+                        <td className="py-1.5 text-right tabular-nums">{fmtAud(c.net_aud)}<Usd value={c.net_usd} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -616,7 +640,7 @@ export function B2CSalesPanel({
                           {skus.length > 1 && <td className="py-1.5 text-[11px]">{o.sku}</td>}
                           <td className="py-1.5">{o.country}</td>
                           <td className="py-1.5 text-right tabular-nums">{fmtNum(o.quantity)}</td>
-                          <td className="py-1.5 text-right tabular-nums">{fmtAud2(o.net_aud)}</td>
+                          <td className="py-1.5 text-right tabular-nums">{fmtAud2(o.net_aud)}<Usd value={o.net_usd} decimals /></td>
                         </tr>
                       ))}
                     </tbody>
@@ -652,7 +676,7 @@ export interface B2CExplorerState {
 
 function defaultState(): B2CExplorerState {
   const r = DATE_PRESETS.find((p) => p.label === '90 days')!.range();
-  return { skus: [], from: r.from, to: r.to, granularity: 'month', showTrend: true };
+  return { skus: [], from: r.from, to: r.to, granularity: 'day', showTrend: true };
 }
 
 export function useB2CExplorerState() {
