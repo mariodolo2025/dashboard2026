@@ -41,17 +41,20 @@ export function SkuSalesDialog({
 
   if (!open || !sku) return null;
 
+  // Centred on the viewport, not anchored to the top of a scrolled page. The
+  // panel caps at 90vh and scrolls its own body, so a tall report stays centred
+  // instead of pushing its header off screen.
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 sm:p-6">
       {/* Backdrop click closes; clicks inside must not bubble to it. */}
       <div className="absolute inset-0" onClick={onClose} aria-hidden />
       <div
-        className="relative w-full max-w-5xl rounded-xl border bg-background shadow-2xl"
+        className="relative flex max-h-[90vh] w-full max-w-5xl flex-col rounded-xl border bg-background shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label={`Shopify sales for ${sku}`}
       >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/95 backdrop-blur px-5 py-4 rounded-t-xl">
+        <div className="flex flex-none items-start justify-between gap-4 border-b bg-background px-5 py-4 rounded-t-xl">
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight">
               <Package size={16} className="text-muted-foreground" />
@@ -75,7 +78,7 @@ export function SkuSalesDialog({
           </Button>
         </div>
 
-        <div className="p-5">
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <B2CSalesPanel
             skus={[sku]}
             from={from}
