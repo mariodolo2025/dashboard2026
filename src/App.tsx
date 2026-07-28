@@ -24,6 +24,7 @@ import InventoryReorderDashboard from '@/components/InventoryReorderDashboard';
 import MarioDashboard from '@/components/MarioDashboard';
 import CostsCanvas from '@/components/CostsCanvas';
 import { AIM2026Overlay } from '@/components/AIM2026Overlay';
+import { B2CSalesExplorer } from '@/components/B2CSalesExplorer';
 import { ReportsOverlay } from '@/components/ReportsOverlay';
 import { ConnectionsPanel } from '@/components/ConnectionsPanel';
 import EcommerceTab from '@/components/EcommerceTab';
@@ -139,7 +140,9 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
   // Modal for each nav pill - pills open modals instead of inline content
-  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | 'web-upgrade' | 'fy-report' | null>(null);
+  // 'aim' is the archived Inventory Reorder view: no tab points at it any more,
+  // but the modal is still mounted so it can be restored without a rebuild.
+  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | 'web-upgrade' | 'b2c-explorer' | 'fy-report' | null>(null);
   
   // Configurable financial parameters
   const [shippingCostPercent, setShippingCostPercent] = useState<number>(0.157);
@@ -1953,17 +1956,9 @@ function App() {
               >
                 Sales Evolution
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className={cn(
-                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
-                  activeModal === 'aim' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
-                )}
-                onClick={() => setActiveModal(activeModal === 'aim' ? null : 'aim')}
-              >
-                AIM
-              </Button>
+              {/* The old "AIM" tab (InventoryReorderDashboard) is archived: AIM 2026
+                  superseded it. The modal below is still mounted and reachable by
+                  setting activeModal to 'aim', so bringing it back is one line. */}
               <Button
                 variant="ghost"
                 size="sm"
@@ -1990,6 +1985,18 @@ function App() {
               >
                 <ShoppingBag className="h-3.5 w-3.5 mr-1.5" />
                 E-commerce
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'b2c-explorer' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'b2c-explorer' ? null : 'b2c-explorer')}
+              >
+                <Search className="h-3.5 w-3.5 mr-1.5" />
+                B2C Sales Explorer
               </Button>
               <Button
                 variant="ghost"
@@ -3430,6 +3437,30 @@ function App() {
           dateRange={dateRange}
           setDateRange={setDateRange}
         />
+
+        {/* B2C Sales Explorer — one SKU's Shopify sales over a chosen window.
+            Same full-screen overlay shape as AIM 2026 rather than a Radix
+            Dialog, so the date inputs and the search dropdown are not fighting
+            a focus scope. */}
+        {activeModal === 'b2c-explorer' && (
+          <div className="fixed inset-0 z-50 bg-background overflow-y-auto">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background/95 backdrop-blur px-6 py-3">
+              <h1 className="text-base font-semibold tracking-tight">B2C Sales Explorer</h1>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setActiveModal(null)}
+                aria-label="Close"
+                className="h-8 w-8 p-0"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="p-6">
+              <B2CSalesExplorer />
+            </div>
+          </div>
+        )}
 
         {/* Reports — op-manager reports container (FY Report, Freight, …) */}
         <ReportsOverlay
