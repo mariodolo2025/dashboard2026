@@ -174,10 +174,10 @@ function KPICard({
 // ─── KPI Summary Strip ───────────────────────────────────────────────────────
 
 interface FilteredKPIOverrides {
-  avgMarginPercent: number;
-  avgTurnover: number;
-  avgGMROI: number;
-  avgDaysOfCover: number;
+  avgMarginPercent: number | null;
+  avgTurnover: number | null;
+  avgGMROI: number | null;
+  avgDaysOfCover: number | null;
   itemsAtRisk: number;
   totalProducts: number;
 }
@@ -223,10 +223,19 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
   const fo = filteredOverrides;
   const itemsAtRisk = fo?.itemsAtRisk ?? data.itemsAtRisk;
   const totalProducts = fo?.totalProducts ?? data.totalProducts;
-  const avgMarginPercent = fo?.avgMarginPercent ?? data.avgMarginPercent;
-  const avgTurnover = fo?.avgTurnover ?? data.avgTurnover;
-  const avgGMROI = fo?.avgGMROI ?? data.avgGMROI;
-  const avgDaysOfCover = fo?.avgDaysOfCover ?? data.avgDaysOfCover;
+  // `fo` wins whenever a filter is active, INCLUDING when its value is null —
+  // `??` would fall through to the unfiltered figure and show a number that
+  // belongs to a different population.
+  const avgMarginPercent = fo ? fo.avgMarginPercent : data.avgMarginPercent;
+  const avgTurnover = fo ? fo.avgTurnover : data.avgTurnover;
+  const avgGMROI = fo ? fo.avgGMROI : data.avgGMROI;
+  const avgDaysOfCover = fo ? fo.avgDaysOfCover : data.avgDaysOfCover;
+
+  // "—" says the metric could not be measured for the rows in scope. Printing
+  // 0.0 there asserts a measurement that was never taken.
+  const NO_DATA = '—';
+  const fmtOrDash = (v: number | null, render: (n: number) => string) =>
+    v === null || v === undefined ? NO_DATA : render(v);
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
@@ -261,7 +270,7 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
       <KPICard
         icon={<RotateCcw size={15} />}
         label="Avg Turnover"
-        value={avgTurnover.toFixed(1)}
+        value={fmtOrDash(avgTurnover, (n) => n.toFixed(1))}
         subtitle="times per period"
         helpText="How many times inventory is sold and replaced. Higher = better capital efficiency."
         trend={{ direction: data.avgTurnoverTrend }}
@@ -271,16 +280,16 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
       <KPICard
         icon={<TrendingUp size={15} />}
         label="Avg GMROI"
-        value={avgGMROI > 100 ? '>100' : avgGMROI.toFixed(1)}
+        value={fmtOrDash(avgGMROI, (n) => (n > 100 ? '>100' : n.toFixed(1)))}
         subtitle="return on inventory $"
         helpText="Gross Margin Return on Investment: annual gross profit per AUD invested in inventory. High values (>100) indicate very low stock relative to sales. Target: > 3.0."
-        accent={avgGMROI >= 3 ? '#10b981' : avgGMROI >= 1 ? '#f59e0b' : '#ef4444'}
+        accent={avgGMROI === null ? '#94a3b8' : avgGMROI >= 3 ? '#10b981' : avgGMROI >= 1 ? '#f59e0b' : '#ef4444'}
         delay={0.15}
       />
       <KPICard
         icon={<Percent size={15} />}
         label="Avg Margin"
-        value={`${avgMarginPercent.toFixed(1)}%`}
+        value={fmtOrDash(avgMarginPercent, (n) => `${n.toFixed(1)}%`)}
         subtitle="gross profit"
         helpText="Gross profit margin: (Selling Price − Landed Cost) ÷ Selling Price × 100."
         trend={{ direction: data.avgMarginTrend }}
@@ -290,7 +299,7 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
       <KPICard
         icon={<CalendarClock size={15} />}
         label="Avg Coverage"
-        value={`${Math.round(avgDaysOfCover)}d`}
+        value={fmtOrDash(avgDaysOfCover, (n) => `${Math.round(n)}d`)}
         subtitle="days of cover"
         helpText="Average days current stock will last at current demand. Red < 30, Yellow < 60, Green ≥ 60."
         accent="#06b6d4"

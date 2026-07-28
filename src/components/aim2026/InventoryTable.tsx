@@ -328,13 +328,17 @@ export function InventoryTable({
                   onClick={() => onDemandClick(row.original.sku)}
                   className="flex items-center justify-center w-full text-[13px] tabular-nums hover:text-blue-600 dark:hover:text-blue-400 transition-colors group font-semibold"
                 >
-                  <span className="w-4 flex-shrink-0 flex justify-center mr-0.5">
-                    <TrendIndicator
-                      direction={row.original.demandTrend}
-                      size="sm"
-                      className="opacity-60 group-hover:opacity-100"
-                    />
-                  </span>
+                  {/* With zero demand the value already reads "—"; the trend glyph
+                      beside it is a second dash that looks like a broken cell. */}
+                  {row.original.projectedDemand > 0 && (
+                    <span className="w-4 flex-shrink-0 flex justify-center mr-0.5">
+                      <TrendIndicator
+                        direction={row.original.demandTrend}
+                        size="sm"
+                        className="opacity-60 group-hover:opacity-100"
+                      />
+                    </span>
+                  )}
                   <span className="text-center">{formatNum(row.original.projectedDemand)}</span>
                 </button>
               ),
