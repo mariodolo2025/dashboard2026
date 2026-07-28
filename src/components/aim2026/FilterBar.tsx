@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2, SplitSquareHorizontal, Warehouse } from 'lucide-react';
+import { Search, X, Filter, SlidersHorizontal, Columns3, Maximize2, Minimize2, SplitSquareHorizontal, Warehouse, Store } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -125,6 +125,9 @@ interface FilterBarProps {
   onWarehouseDemandChange?: (warehouse: string | null) => void;
   warehouseDemandLoading?: boolean;
   onLoadWarehouseList?: () => void;
+  channelList?: string[];
+  channelFilter?: string | null;
+  onChannelChange?: (channel: string | null) => void;
 }
 
 export function FilterBar({
@@ -147,6 +150,9 @@ export function FilterBar({
   onWarehouseDemandChange,
   warehouseDemandLoading = false,
   onLoadWarehouseList,
+  channelList = [],
+  channelFilter = null,
+  onChannelChange,
 }: FilterBarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -435,7 +441,7 @@ export function FilterBar({
                   <div className="flex items-center gap-2">
                     <Label className="text-xs font-normal text-muted-foreground whitespace-nowrap flex items-center gap-1">
                       <Warehouse size={11} />
-                      WH Demand
+                      Warehouse
                     </Label>
                     <Select
                       value={warehouseDemandFilter ?? '__none__'}
@@ -457,6 +463,34 @@ export function FilterBar({
                     {warehouseDemandLoading && (
                       <span className="text-[10px] text-muted-foreground animate-pulse">Loading…</span>
                     )}
+                  </div>
+                )}
+
+                {onChannelChange && channelList.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs font-normal text-muted-foreground whitespace-nowrap flex items-center gap-1">
+                      <Store size={11} />
+                      Channel
+                    </Label>
+                    <Select
+                      value={channelFilter ?? '__none__'}
+                      onValueChange={(v) => onChannelChange(v === '__none__' ? null : v)}
+                    >
+                      <SelectTrigger className={cn(
+                        'h-8 w-[160px] text-xs',
+                        channelFilter && 'border-emerald-400 text-emerald-700 dark:text-emerald-400'
+                      )}>
+                        <SelectValue placeholder="All channels" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__" className="text-xs">All channels</SelectItem>
+                        <SelectItem value="b2c" className="text-xs">B2C (online)</SelectItem>
+                        <SelectItem value="b2b" className="text-xs">B2B (wholesale)</SelectItem>
+                        {channelList.map((c) => (
+                          <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
 

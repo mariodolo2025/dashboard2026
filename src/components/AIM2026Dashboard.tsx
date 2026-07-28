@@ -39,7 +39,9 @@ import {
   recalcKPIsForDemandMode,
   fetchDemandWarehouseSplit,
   fetchWhDemandDetail,
+  fetchDemandChannels,
   downloadAsCSV,
+  avgMeasured,
 } from '@/lib/aim2026/api';
 import type { DemandWarehouseSplitItem } from '@/lib/aim2026/api';
 import { runFullCSVSync, type CSVSyncProgress } from '@/lib/aim2026/csvSync';
@@ -146,11 +148,16 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   // B2B / B2C demand channel split (pure display toggle — data is in SKURow already)
   const [splitDemand, setSplitDemand] = useState(false);
 
-  // Warehouse demand split (fetched on demand)
+  // Warehouse scope. Selecting one re-runs the KPI engine against that
+  // warehouse's demand AND its stock — it is not a display column any more.
   const [warehouseDemandFilter, setWarehouseDemandFilter] = useState<string | null>(null);
   const [warehouseDemandData, setWarehouseDemandData] = useState<DemandWarehouseSplitItem[]>([]);
   const [warehouseList, setWarehouseList] = useState<string[]>([]);
   const [warehouseDemandLoading, setWarehouseDemandLoading] = useState(false);
+  // Sales-channel scope: 'b2c' / 'b2b' or an exact customer_type ('Web',
+  // 'AUS Wholesale', …). null = every channel.
+  const [channelFilter, setChannelFilter] = useState<string | null>(null);
+  const [channelList, setChannelList] = useState<string[]>([]);
 
   // ─── Load real data from Supabase ──────────────────────────────────────────
 
@@ -223,9 +230,16 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     const toMonthLast = new Date(to.getFullYear(), to.getMonth() + 1, 0);
     const endDate = `${toMonthLast.getFullYear()}-${String(toMonthLast.getMonth() + 1).padStart(2, '0')}-${String(toMonthLast.getDate()).padStart(2, '0')}`;
 
-    // Check if the range covers roughly "all data" (> 11 months) — if so, use full cache
+    // Warehouse / channel scope. These are server-side filters: the engine
+    // recomputes demand, cover, ROP, suggested qty and status for the selected
+    // population instead of the table merely hiding rows.
+    const scope = { warehouse: warehouseDemandFilter, channel: channelFilter };
+    const hasScope = !!(scope.warehouse || scope.channel);
+
+    // Check if the range covers roughly "all data" (> 11 months) — if so, use full cache.
+    // A scoped view can never use that cache: the cache is the unfiltered picture.
     const monthsDiff = (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
-    if (monthsDiff >= 11) {
+    if (monthsDiff >= 11 && !hasScope) {
       setDateRangeLabel(null);
       setDemandIsDaily(false);
       fetchDashboardData().then((data) => {
@@ -249,7 +263,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     // Fetch valuation in parallel; use recalc for skuData (correct demand for date range)
     Promise.all([
       fetchDashboardData(),
-      recalcKPIsForDateRange(startDate, endDate, rangeFrom, rangeTo, filters.demandMode),
+      recalcKPIsForDateRange(startDate, endDate, rangeFrom, rangeTo, filters.demandMode, scope),
     ])
       .then(([data, result]) => {
         if (!cancelled && result.rows.length > 0) {
@@ -280,7 +294,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
       });
 
     return () => { cancelled = true; };
-  }, [dateRange?.from?.getTime(), dateRange?.to?.getTime(), filters.demandMode, loading, needsFirstSync]);
+  }, [dateRange?.from?.getTime(), dateRange?.to?.getTime(), filters.demandMode, loading, needsFirstSync, warehouseDemandFilter, channelFilter]);
 
   // ─── Demand Mode recalculation (no date range) ───────────────────────────
   useEffect(() => {
@@ -400,15 +414,13 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     const itemsAtRisk = filteredData.filter(
       (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
     ).length;
-    const withSellingPrice = filteredData.filter((r) => (r.avgSellingPrice ?? 0) > 0);
-    const avgMarginPercent = withSellingPrice.length > 0
-      ? withSellingPrice.reduce((s, r) => s + r.marginPercent, 0) / withSellingPrice.length
-      : 0;
+    // Same rule as the unfiltered summary: rows that cannot be measured are
+    // skipped, never averaged in as zeros.
     return {
-      avgMarginPercent,
-      avgTurnover: filteredData.reduce((s, r) => s + r.turnover, 0) / n,
-      avgGMROI: filteredData.reduce((s, r) => s + r.gmroi, 0) / n,
-      avgDaysOfCover: filteredData.reduce((s, r) => s + r.daysOfCover, 0) / n,
+      avgMarginPercent: avgMeasured(filteredData, (r) => r.marginPercent),
+      avgTurnover: avgMeasured(filteredData, (r) => r.turnover),
+      avgGMROI: avgMeasured(filteredData, (r) => r.gmroi),
+      avgDaysOfCover: avgMeasured(filteredData, (r) => r.daysOfCover),
       itemsAtRisk,
       totalProducts: n,
     };
@@ -561,6 +573,15 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
     () => Boolean(dateRange?.from) !== Boolean(dateRange?.to),
     [dateRange?.from?.getTime(), dateRange?.to?.getTime()]
   );
+
+  // Channel list comes from the data, so a new customer type in Unleashed shows
+  // up without a code change.
+  useEffect(() => {
+    if (loading || needsFirstSync || channelList.length > 0) return;
+    fetchDemandChannels(whDemandFrom, whDemandTo)
+      .then((list) => { if (list.length > 0) setChannelList(list); })
+      .catch(() => {});
+  }, [loading, needsFirstSync, channelList.length, whDemandFrom, whDemandTo]);
 
   // Lazily load warehouse names when the user first opens the "More" section
   const loadWarehouseListIfNeeded = useCallback(() => {
@@ -1186,6 +1207,9 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
               onWarehouseDemandChange={handleWarehouseDemandChange}
               warehouseDemandLoading={warehouseDemandLoading}
               onLoadWarehouseList={loadWarehouseListIfNeeded}
+              channelList={channelList}
+              channelFilter={channelFilter}
+              onChannelChange={setChannelFilter}
             />
           </div>
 
@@ -1412,6 +1436,9 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                   onWarehouseDemandChange={handleWarehouseDemandChange}
                   warehouseDemandLoading={warehouseDemandLoading}
                   onLoadWarehouseList={loadWarehouseListIfNeeded}
+                  channelList={channelList}
+                  channelFilter={channelFilter}
+                  onChannelChange={setChannelFilter}
                 />
               </div>
               {filteredData.length > 0 && (

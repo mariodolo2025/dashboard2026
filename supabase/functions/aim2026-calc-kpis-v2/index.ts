@@ -197,18 +197,22 @@ async function loadTodaySOH(supabase: any): Promise<Map<string, SOHByWarehouse>>
 async function loadDemandHistory(
   supabase: any,
   startDate?: string,
-  endDate?: string
+  endDate?: string,
+  warehouse?: string | null
 ): Promise<Map<string, DemandMonth[]>> {
   const allData: any[] = [];
   const pageSize = 1000;
   let offset = 0;
   let hasMore = true;
+  // 'All' is the roll-up row; any other value is a real warehouse, and the
+  // per-warehouse rows carry that warehouse's sales and component usage.
+  const whFilter = warehouse && warehouse !== "All" ? warehouse : "All";
 
   while (hasMore) {
     let query = supabase
       .from("aim2026_demand_history")
       .select("*")
-      .eq("warehouse", "All")
+      .eq("warehouse", whFilter)
       .order("period_date", { ascending: true });
 
     // Apply date range filter if provided
@@ -258,12 +262,99 @@ function isB2CCustomerType(customerType: string): boolean {
   return ct === "shopify" || ct === "b2c" || ct === "web" || ct.includes("shopify");
 }
 
+/** Does this row's customer_type belong to the requested channel?
+ * `channel` is either the coarse 'b2c' / 'b2b' split or an exact customer_type
+ * as stored by the sync ('Web', 'AUS Wholesale', 'ITL Wholesale', …). */
+function matchesChannel(customerType: string, channel: string): boolean {
+  const wanted = channel.trim().toLowerCase();
+  if (!wanted || wanted === "all") return true;
+  if (wanted === "b2c") return isB2CCustomerType(customerType);
+  if (wanted === "b2b") return !isB2CCustomerType(customerType);
+  return String(customerType ?? "").trim().toLowerCase() === wanted;
+}
+
+/** Completed sales demand rebuilt from aim2026_demand_detail.
+ *
+ * aim2026_demand_history has no channel column, so a per-channel view cannot come
+ * from it. The detail rows do carry customer_type and warehouse, so when either
+ * filter is active the monthly demand is aggregated from there instead.
+ *
+ * Component usage is deliberately NOT included when a channel filter is active:
+ * building a product out of components is not a customer sale and has no channel,
+ * so counting it under 'Web' or 'Wholesale' would invent demand for that channel. */
+async function loadCompletedDemandFromDetail(
+  supabase: any,
+  startDate: string | undefined,
+  endDate: string | undefined,
+  warehouse: string | null,
+  channel: string | null
+): Promise<Map<string, DemandMonth[]>> {
+  const allData: any[] = [];
+  const pageSize = 1000;
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let query = supabase
+      .from("aim2026_demand_detail")
+      .select("sku, period_date, quantity, amount, customer_type, warehouse")
+      .eq("type", "sale")
+      .eq("status", "Completed")
+      .range(offset, offset + pageSize - 1);
+    if (startDate) query = query.gte("period_date", startDate);
+    if (endDate) query = query.lte("period_date", endDate);
+    if (warehouse && warehouse !== "All") query = query.eq("warehouse", warehouse);
+
+    const { data, error } = await query;
+    if (error) throw new Error(`Failed to load completed demand detail: ${error.message}`);
+    allData.push(...(data ?? []));
+    if ((data?.length ?? 0) < pageSize) hasMore = false;
+    else offset += pageSize;
+  }
+
+  const map = new Map<string, DemandMonth[]>();
+  const perSku = new Map<string, Map<string, DemandMonth>>();
+
+  for (const row of allData) {
+    if (channel && !matchesChannel(row.customer_type, channel)) continue;
+    const sku = row.sku;
+    if (!sku) continue;
+    const period = `${String(row.period_date).slice(0, 7)}-01`;
+
+    const months = perSku.get(sku) ?? new Map<string, DemandMonth>();
+    const m = months.get(period) ?? {
+      periodDate: period,
+      quantity: 0,
+      revenue: 0,
+      componentUsage: 0,
+      placed: 0,
+      backordered: 0,
+      parked: 0,
+    };
+    m.quantity += Number(row.quantity ?? 0);
+    m.revenue += Number(row.amount ?? 0);
+    months.set(period, m);
+    perSku.set(sku, months);
+  }
+
+  for (const [sku, months] of perSku) {
+    map.set(sku, [...months.values()].sort((a, b) => a.periodDate.localeCompare(b.periodDate)));
+  }
+
+  console.log(
+    `[${VERSION}] Completed demand from detail: ${allData.length} rows → ${map.size} SKUs (warehouse=${warehouse ?? "All"}, channel=${channel ?? "all"})`
+  );
+  return map;
+}
+
 // Load demand_detail (sales) and aggregate by SKU + period + status.
 // Also computes per-SKU B2B/B2C totals from completed sales.
 async function loadDemandDetailSummary(
   supabase: any,
   startDate?: string,
-  endDate?: string
+  endDate?: string,
+  warehouse?: string | null,
+  channel?: string | null
 ): Promise<{
   breakdownMap: Map<string, Map<string, { placed: number; backordered: number; parked: number }>>;
   channelSplit: Map<string, { b2b: number; b2c: number }>;
@@ -276,11 +367,12 @@ async function loadDemandDetailSummary(
   while (hasMore) {
     let query = supabase
       .from("aim2026_demand_detail")
-      .select("sku, period_date, status, quantity, customer_type")
+      .select("sku, period_date, status, quantity, customer_type, warehouse")
       .eq("type", "sale")
       .range(offset, offset + pageSize - 1);
     if (startDate) query = query.gte("period_date", startDate);
     if (endDate) query = query.lte("period_date", endDate);
+    if (warehouse && warehouse !== "All") query = query.eq("warehouse", warehouse);
 
     const { data, error } = await query;
     if (error) throw new Error(`Failed to load demand detail: ${error.message}`);
@@ -307,6 +399,9 @@ async function loadDemandDetailSummary(
     const period = toMonthKey(row.period_date);
     const status = String(row.status ?? "").toLowerCase();
     if (!sku || !period) continue;
+    // The channel filter applies to the pending statuses too, so Placed and
+    // Backordered demand belongs to the same population as the Completed part.
+    if (channel && !matchesChannel(row.customer_type, channel)) continue;
 
     const qty = Number(row.quantity ?? 0);
 
@@ -552,7 +647,16 @@ function calcABCClass(
 
 type StockStatus = "CRITICAL" | "LOW STOCK" | "WARNING" | "OK" | "OVERSTOCK";
 
-function calcStatus(daysOfCover: number): StockStatus {
+/** daysOfCover is null when there is no demand to divide by — the SKU has no
+ * measurable coverage, which is NOT the same as "covered for a very long time".
+ * The old code used a literal 999 here, so 491 SKUs with ZERO stock and no
+ * demand were reported as OVERSTOCK and could never appear in Items at Risk. */
+function calcStatus(daysOfCover: number | null, stockOnHand: number): StockStatus {
+  if (daysOfCover === null) {
+    // No demand in the window. Stock sitting against no demand is dead stock;
+    // no stock and no demand is simply nothing to manage.
+    return stockOnHand > 0 ? "OVERSTOCK" : "OK";
+  }
   if (daysOfCover <= 0) return "CRITICAL";
   if (daysOfCover < 7) return "CRITICAL";
   if (daysOfCover < 30) return "LOW STOCK";
@@ -565,11 +669,13 @@ function calcStockoutRisk(
   sohMainWH: number,
   safetyStock: number,
   reorderPoint: number,
-  daysOfCover: number,
+  daysOfCover: number | null,
   leadTimeDays: number
 ): "critical" | "high" | "medium" | "low" {
   if (sohMainWH <= safetyStock) return "critical";
   if (sohMainWH <= reorderPoint) return "high";
+  // No demand to run out against, so the remaining risk tiers do not apply.
+  if (daysOfCover === null) return "low";
   if (daysOfCover < leadTimeDays * 1.5) return "medium";
   return "low";
 }
@@ -612,6 +718,8 @@ Deno.serve(async (req: Request) => {
     let rangeFrom: string | undefined;
     let rangeTo: string | undefined;
     let demandModeRaw: string | undefined;
+    let warehouseFilter: string | null = null;
+    let channelFilter: string | null = null;
     let previewOnly = false;
     try {
       const body = await req.json();
@@ -621,6 +729,8 @@ Deno.serve(async (req: Request) => {
       rangeFrom = body?.rangeFrom ?? undefined;
       rangeTo = body?.rangeTo ?? undefined;
       demandModeRaw = body?.demandMode ?? undefined;
+      warehouseFilter = body?.warehouse ?? null;
+      channelFilter = body?.channel ?? null;
       previewOnly = body?.previewOnly === true || body?.previewOnly === "true";
     } catch {
       // No body is fine
@@ -632,10 +742,19 @@ Deno.serve(async (req: Request) => {
     if (!dateRangeStart) dateRangeStart = url.searchParams.get("startDate") ?? undefined;
     if (!dateRangeEnd) dateRangeEnd = url.searchParams.get("endDate") ?? undefined;
     if (!demandModeRaw) demandModeRaw = url.searchParams.get("demandMode") ?? undefined;
+    if (!warehouseFilter) warehouseFilter = url.searchParams.get("warehouse");
+    if (!channelFilter) channelFilter = url.searchParams.get("channel");
     if (url.searchParams.get("previewOnly") === "true") previewOnly = true;
 
+    // Normalise "no filter" to null so every downstream check is a null check.
+    if (warehouseFilter === "All" || warehouseFilter === "") warehouseFilter = null;
+    if (channelFilter === "all" || channelFilter === "") channelFilter = null;
+    const hasScopeFilter = !!warehouseFilter || !!channelFilter;
+
     // When a date range is provided, this is a read-only recalculation (no cache write)
-    const isDateRangeQuery = !!dateRangeStart || !!dateRangeEnd;
+    // A scoped query is read-only for the same reason: the cache holds the
+    // unfiltered picture and must never be overwritten with a filtered subset.
+    const isDateRangeQuery = !!dateRangeStart || !!dateRangeEnd || hasScopeFilter;
     const demandMode = normalizeDemandMode(demandModeRaw);
     const useWeightedDemand = !!rangeFrom && !!rangeTo;
 
@@ -647,14 +766,23 @@ Deno.serve(async (req: Request) => {
       console.log(`[${VERSION}] Date range query: ${dateRangeStart} to ${dateRangeEnd} | weighted=${useWeightedDemand} rangeFrom=${rangeFrom ?? "MISSING"} rangeTo=${rangeTo ?? "MISSING"} | daily_mode=${useDailyMode} (${totalRangeDays} days)`);
     }
     console.log(`[${VERSION}] Demand mode: ${demandMode}`);
+    if (hasScopeFilter) {
+      console.log(`[${VERSION}] Scope filter: warehouse=${warehouseFilter ?? "All"} channel=${channelFilter ?? "all"}`);
+    }
 
     // ── Load all data ────────────────────────────────────────────
+    // A channel filter forces the Completed demand to come from the detail rows:
+    // aim2026_demand_history has no channel column. Without a channel filter the
+    // history path stays, because it is one row per SKU-month instead of one per
+    // order line.
     const [config, skuParams, sohMap, demandMap, demandDetailResult, bomComponentMap] = await Promise.all([
       loadConfig(supabase),
       loadSKUParameters(supabase),
       loadTodaySOH(supabase),
-      loadDemandHistory(supabase, dateRangeStart, dateRangeEnd),
-      loadDemandDetailSummary(supabase, dateRangeStart, dateRangeEnd),
+      channelFilter
+        ? loadCompletedDemandFromDetail(supabase, dateRangeStart, dateRangeEnd, warehouseFilter, channelFilter)
+        : loadDemandHistory(supabase, dateRangeStart, dateRangeEnd, warehouseFilter),
+      loadDemandDetailSummary(supabase, dateRangeStart, dateRangeEnd, warehouseFilter, channelFilter),
       loadBomComponents(supabase),
     ]);
     const demandDetailMap = demandDetailResult.breakdownMap;
@@ -769,6 +897,15 @@ Deno.serve(async (req: Request) => {
         mainWH.available = soh[""].available;
       }
 
+      // The stock every coverage/reorder figure is measured against. Without a
+      // warehouse filter that is Main WH, as it always was. With one, it is the
+      // selected warehouse — otherwise the demand would be China-W's while the
+      // cover behind it was still Main WH's, which is exactly the mismatch the
+      // old "WH Demand" dropdown produced.
+      const scopeWH = warehouseFilter
+        ? (soh[warehouseFilter] ?? findWarehouseValue(soh, [warehouseFilter.toLowerCase()]))
+        : mainWH;
+
       const demandStats = calcDemandStats(demandMonths, demandMode, rangeFrom, rangeTo);
       const avgDailyDemand = demandStats.avgMonthly / 30;
 
@@ -792,17 +929,20 @@ Deno.serve(async (req: Request) => {
       // Total allocated across ALL warehouses
       const allocatedTotal = Object.values(soh).reduce((sum, wh) => sum + wh.allocated, 0);
 
-      // Suggested Qty — trigger on Main WH only, but discount China stock from qty to order
-      const suggestedQty = mainWH.quantity <= reorderPoint
-        ? Math.max(0, targetStockLevel - mainWH.quantity - chinaWH.quantity - pipeline)
+      // Suggested Qty — triggers on the scoped warehouse, discounting China stock
+      // from the quantity to order. Without a warehouse filter scopeWH is Main WH,
+      // so this is the unchanged behaviour.
+      const suggestedQty = scopeWH.quantity <= reorderPoint
+        ? Math.max(0, targetStockLevel - scopeWH.quantity - chinaWH.quantity - pipeline)
         : 0;
 
       // Soft suggestion: SOH is above ROP but within a warning zone (≤ ROP × 1.5)
-      const softSuggestedQty = (suggestedQty === 0 && reorderPoint > 0 && mainWH.quantity <= reorderPoint * 1.5)
-        ? Math.max(0, targetStockLevel - mainWH.quantity - chinaWH.quantity - pipeline)
+      const softSuggestedQty = (suggestedQty === 0 && reorderPoint > 0 && scopeWH.quantity <= reorderPoint * 1.5)
+        ? Math.max(0, targetStockLevel - scopeWH.quantity - chinaWH.quantity - pipeline)
         : 0;
 
-      const daysOfCover = avgDailyDemand > 0 ? mainWH.quantity / avgDailyDemand : 999;
+      // null = not measurable (no demand in the window), never a sentinel number.
+      const daysOfCover = avgDailyDemand > 0 ? scopeWH.quantity / avgDailyDemand : null;
 
       // *** LANDED COST — NO FX conversion — costs are already AUD ***
       const landedCostAUD =
@@ -813,23 +953,33 @@ Deno.serve(async (req: Request) => {
       const avgSellingPrice =
         totalQtySold > 0 ? demandStats.totalRevenue / totalQtySold : 0;
 
+      // A cost of 0 means "not loaded in the product master", not "free": 287 SKUs
+      // have no product_cost_china. Reporting those as 100% margin (which is what
+      // the formula yields) and as 0 turnover made both averages meaningless.
+      // null = cannot be computed, and every consumer must exclude it.
+      const costKnown = landedCostAUD > 0;
+      const priceKnown = avgSellingPrice > 0;
+
       const marginPercent =
-        avgSellingPrice > 0
+        priceKnown && costKnown
           ? ((avgSellingPrice - landedCostAUD) / avgSellingPrice) * 100
-          : 0;
+          : null;
 
       const annualCOGS = demandStats.avgMonthly * 12 * landedCostAUD;
-      const avgInventoryValue = mainWH.quantity * landedCostAUD;
-      const turnover = avgInventoryValue > 0 ? annualCOGS / avgInventoryValue : 0;
+      const avgInventoryValue = scopeWH.quantity * landedCostAUD;
+      const turnover = costKnown && avgInventoryValue > 0 ? annualCOGS / avgInventoryValue : null;
 
       const grossMarginAnnual = demandStats.avgMonthly * 12 * (avgSellingPrice - landedCostAUD);
-      const gmroi = avgInventoryValue > 0 ? grossMarginAnnual / avgInventoryValue : 0;
+      const gmroi =
+        costKnown && priceKnown && avgInventoryValue > 0
+          ? grossMarginAnnual / avgInventoryValue
+          : null;
 
       const abcClass = abcMap.get(sku) ?? params.abcClass ?? "C";
 
-      const status = calcStatus(daysOfCover);
+      const status = calcStatus(daysOfCover, scopeWH.quantity);
       const stockoutRisk = calcStockoutRisk(
-        mainWH.quantity,
+        scopeWH.quantity,
         safetyStock,
         reorderPoint,
         daysOfCover,
@@ -903,10 +1053,12 @@ Deno.serve(async (req: Request) => {
           pipeline,
           suggestedQty,
           softSuggestedQty,
-          daysOfCover: Math.round(daysOfCover * 10) / 10,
-          turnover: Math.round(turnover * 10) / 10,
-          marginPercent: Math.round(marginPercent * 10) / 10,
-          gmroi: Math.round(gmroi * 10) / 10,
+          // null travels all the way to the UI so "no data" renders as "—"
+          // instead of masquerading as a measured zero.
+          daysOfCover: daysOfCover === null ? null : Math.round(daysOfCover * 10) / 10,
+          turnover: turnover === null ? null : Math.round(turnover * 10) / 10,
+          marginPercent: marginPercent === null ? null : Math.round(marginPercent * 10) / 10,
+          gmroi: gmroi === null ? null : Math.round(gmroi * 10) / 10,
           productCostChina: Math.round(params.productCostChina * 100) / 100,
           landedCostAUD: Math.round(landedCostAUD * 100) / 100,
           avgSellingPrice: Math.round(avgSellingPrice * 100) / 100,

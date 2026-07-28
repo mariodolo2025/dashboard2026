@@ -21,6 +21,34 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
 };
 
+/** One assemblies step per month for the trailing 3 months, oldest first.
+ * The window matches what syncAssemblies used to cover in a single call. */
+function assemblyChunks(): { name: string; fn: string; body: unknown }[] {
+  const now = new Date();
+  const out: { name: string; fn: string; body: unknown }[] = [];
+  const todayStr = now.toISOString().slice(0, 10);
+  for (let m = 2; m >= 0; m--) {
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - m, 1));
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - m + 1, 1));
+    const startStr = start.toISOString().slice(0, 10);
+    // Never send a future end date. Measured on 2026-07-28: asking for
+    // 2026-07-01 → 2026-08-01 wrote 4,347 detail rows but only 199 history rows
+    // (982 units against 5,131 in the detail); the same range ending today wrote
+    // both consistently. The current month must therefore stop at today.
+    const endStr = end.toISOString().slice(0, 10);
+    out.push({
+      name: `Inventory · assemblies (${startStr.slice(0, 7)})`,
+      fn: 'aim2026-sync-unleashed',
+      body: {
+        step: 'assemblies',
+        assemblyStartDate: startStr,
+        assemblyEndDate: endStr > todayStr ? todayStr : endStr,
+      },
+    });
+  }
+  return out;
+}
+
 // Ordered steps of a full refresh. Each underlying call finishes under 150s.
 const STEPS: { name: string; fn: string; body: unknown }[] = [
   // Refresh USD→AUD market rates first. Safe now that Shopify is native AUD: AU is
@@ -29,17 +57,20 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   { name: 'Unleashed sales', fn: 'unleashed-sales-sync', body: {} },
   { name: 'Inventory · products', fn: 'aim2026-sync-unleashed', body: { step: 'products' } },
   { name: 'Inventory · stock on hand', fn: 'aim2026-sync-unleashed', body: { step: 'soh' } },
-  // Sales/demand runs once PER STATUS, exactly like the manual sync. The first
-  // (Completed, isFirstSalesStatus) ZEROES the re-aggregation window before refilling,
-  // which makes the whole sales sync idempotent — re-running (or a reclaim retry)
-  // recomputes the window from scratch instead of adding on top. Calling it as a
-  // single non-first step (the previous bug) double-counted demand every run.
-  { name: 'Inventory · sales (Completed)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Completed', isFirstSalesStatus: true } },
-  { name: 'Inventory · sales (Placed)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Placed' } },
-  { name: 'Inventory · sales (Backordered)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Backordered' } },
-  { name: 'Inventory · sales (Parked)', fn: 'aim2026-sync-unleashed', body: { step: 'sales', salesStatus: 'Parked' } },
+  // Sales/demand is ONE step now. It reads Unleashed from its watermark, replaces
+  // each fetched order's lines by Guid, and recomputes demand_history from the
+  // detail rows — so every status arrives in the same pass and a re-run (or a
+  // reclaim retry) converges instead of adding on top. The old four-pass shape
+  // existed because the first pass had to zero a window before the others could
+  // accumulate into it; that window wipe is what destroyed the 2026 demand data.
+  { name: 'Inventory · sales', fn: 'aim2026-sync-unleashed', body: { step: 'sales' } },
   { name: 'Inventory · purchase orders', fn: 'aim2026-sync-unleashed', body: { step: 'purchase' } },
-  { name: 'Inventory · assemblies', fn: 'aim2026-sync-unleashed', body: { step: 'assemblies' } },
+  // Assemblies go one month per step, the same chunking the manual sync uses
+  // (src/lib/aim2026/api.ts). A single 3-month call exceeds the 150s idle limit
+  // now that the fetch refuses to truncate — it used to "succeed" only because it
+  // silently stopped at 3,000 assemblies, which is why April and May 2026 lost
+  // their component usage entirely. `end` is exclusive: first day of next month.
+  ...assemblyChunks(),
   // Shopify sales: pull from the API into shopify_sales_lines, then regenerate the
   // "Total sales by product variant" CSV the dashboard reads (frozen history + live).
   { name: 'Shopify sales', fn: 'shopify-sales-sync', body: {} },

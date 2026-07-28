@@ -31,6 +31,24 @@ function headers(): HeadersInit {
   };
 }
 
+/** Mean over the rows where the metric could actually be measured.
+ *
+ * Rows whose value is null — no cost in the product master, no demand in the
+ * window — are EXCLUDED, not counted as zero. Averaging those zeros in is what
+ * dragged Avg Turnover down to 1.92 (measured: 8.36), Avg GMROI to 2.22 (10.51)
+ * and pushed Avg Coverage to 450d (66d). Returns 0 when nothing is measurable. */
+export function avgMeasured<T>(rows: T[], pick: (r: T) => number | null | undefined): number {
+  let sum = 0;
+  let n = 0;
+  for (const r of rows) {
+    const v = pick(r);
+    if (v === null || v === undefined || Number.isNaN(v)) continue;
+    sum += v;
+    n++;
+  }
+  return n > 0 ? sum / n : 0;
+}
+
 async function callFunction<T>(
   functionName: string,
   body?: unknown,
@@ -359,10 +377,10 @@ export async function syncUnleashed(
   const coreSteps: { step: string; label: string; progress: number; extra?: Record<string, string> }[] = [
     { step: 'products', label: 'Syncing Products from Unleashed...', progress: dataExists ? 10 : 35 },
     { step: 'soh', label: 'Syncing Stock on Hand (per warehouse)...', progress: dataExists ? 20 : 42 },
-    { step: 'sales', label: 'Syncing Sales (Completed)...', progress: dataExists ? 26 : 46, extra: { salesStatus: 'Completed', isFirstSalesStatus: 'true' } },
-    { step: 'sales', label: 'Syncing Sales (Placed)...', progress: dataExists ? 30 : 50, extra: { salesStatus: 'Placed' } },
-    { step: 'sales', label: 'Syncing Sales (Backordered)...', progress: dataExists ? 34 : 54, extra: { salesStatus: 'Backordered' } },
-    { step: 'sales', label: 'Syncing Sales (Parked)...', progress: dataExists ? 36 : 56, extra: { salesStatus: 'Parked' } },
+    // One pass covers every order status: the sync reads from its watermark and
+    // rebuilds demand_history from the detail rows, so there is no per-status
+    // sequence to preserve any more.
+    { step: 'sales', label: 'Syncing Sales...', progress: dataExists ? 30 : 50 },
     { step: 'purchase', label: 'Syncing Purchase Orders...', progress: dataExists ? 40 : 58 },
   ];
 
@@ -588,11 +606,11 @@ export async function fetchDashboardData(): Promise<DashboardData> {
       pipeline: d.pipeline ?? 0,
       suggestedQty: d.suggestedQty ?? 0,
       softSuggestedQty: d.softSuggestedQty ?? 0,
-      daysOfCover: d.daysOfCover ?? 0,
-      turnover: d.turnover ?? 0,
+      daysOfCover: d.daysOfCover ?? null,
+      turnover: d.turnover ?? null,
       turnoverTrend: 'stable',
-      marginPercent: d.marginPercent ?? 0,
-      gmroi: d.gmroi ?? 0,
+      marginPercent: d.marginPercent ?? null,
+      gmroi: d.gmroi ?? null,
       productCostChina: d.productCostChina ?? 0,
       landedCostAUD: d.landedCostAUD ?? 0,
       avgSellingPrice: d.avgSellingPrice ?? 0,
@@ -617,7 +635,6 @@ export async function fetchDashboardData(): Promise<DashboardData> {
   ).length;
 
   // Exclude products without selling price from avg margin (old/obsolete parts skew the metric)
-  const rowsWithSellingPrice = rows.filter((r) => (r.avgSellingPrice ?? 0) > 0);
 
   // Use exchange rate from config if available, else default 1.54
   const exchangeRate = 1.54;
@@ -626,12 +643,12 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     totalInventoryValueAUD: Math.round(totalInventoryValue),
     totalInventoryValueUSD: Math.round(totalInventoryValue / exchangeRate),
     itemsAtRisk,
-    avgTurnover: rows.length > 0 ? rows.reduce((s, r) => s + r.turnover, 0) / rows.length : 0,
+    avgTurnover: avgMeasured(rows, (r) => r.turnover),
     avgTurnoverTrend: 'stable',
-    avgGMROI: rows.length > 0 ? rows.reduce((s, r) => s + r.gmroi, 0) / rows.length : 0,
-    avgMarginPercent: rowsWithSellingPrice.length > 0 ? rowsWithSellingPrice.reduce((s, r) => s + r.marginPercent, 0) / rowsWithSellingPrice.length : 0,
+    avgGMROI: avgMeasured(rows, (r) => r.gmroi),
+    avgMarginPercent: avgMeasured(rows, (r) => r.marginPercent),
     avgMarginTrend: 'stable',
-    avgDaysOfCover: rows.length > 0 ? rows.reduce((s, r) => s + r.daysOfCover, 0) / rows.length : 0,
+    avgDaysOfCover: avgMeasured(rows, (r) => r.daysOfCover),
     totalProducts: rows.length,
     lastSyncAt: kpiData[0]?.calculated_at ?? null,
     inventoryValueHistory: valuationHistory.map((h) => ({
@@ -695,11 +712,11 @@ function kpiDataToRow(sku: string, d: any): SKURow {
     pipeline: d.pipeline ?? 0,
     suggestedQty: d.suggestedQty ?? 0,
     softSuggestedQty: d.softSuggestedQty ?? 0,
-    daysOfCover: d.daysOfCover ?? 0,
-    turnover: d.turnover ?? 0,
+    daysOfCover: d.daysOfCover ?? null,
+    turnover: d.turnover ?? null,
     turnoverTrend: 'stable',
-    marginPercent: d.marginPercent ?? 0,
-    gmroi: d.gmroi ?? 0,
+    marginPercent: d.marginPercent ?? null,
+    gmroi: d.gmroi ?? null,
     productCostChina: d.productCostChina ?? 0,
     landedCostAUD: d.landedCostAUD ?? 0,
     avgSellingPrice: d.avgSellingPrice ?? 0,
@@ -711,22 +728,36 @@ function kpiDataToRow(sku: string, d: any): SKURow {
   };
 }
 
+/** Scope of a KPI recalculation. `warehouse` restricts the demand AND the stock
+ * every coverage/reorder figure is measured against; `channel` restricts the
+ * demand to one sales channel. Both are server-side: the numbers themselves
+ * change, which is the point — a client-side filter could only hide rows. */
+export interface KPIScope {
+  warehouse?: string | null;
+  channel?: string | null;
+}
+
 export async function recalcKPIsForDateRange(
   startDate: string,
   endDate: string,
   rangeFrom?: string,
   rangeTo?: string,
-  demandMode?: DemandMode
+  demandMode?: DemandMode,
+  scope?: KPIScope
 ): Promise<{ rows: SKURow[]; kpiSummary: KPISummary; demandIsDaily: boolean }> {
   const body: Record<string, string> = { startDate, endDate };
   if (rangeFrom) body.rangeFrom = rangeFrom;
   if (rangeTo) body.rangeTo = rangeTo;
   if (demandMode) body.demandMode = demandMode;
+  if (scope?.warehouse) body.warehouse = scope.warehouse;
+  if (scope?.channel) body.channel = scope.channel;
   // Use URL params as backup so rangeFrom/rangeTo always reach the backend
   const params = new URLSearchParams({ startDate, endDate });
   if (rangeFrom) params.set('rangeFrom', rangeFrom);
   if (rangeTo) params.set('rangeTo', rangeTo);
   if (demandMode) params.set('demandMode', demandMode);
+  if (scope?.warehouse) params.set('warehouse', scope.warehouse);
+  if (scope?.channel) params.set('channel', scope.channel);
   const url = `${SUPABASE_URL}/functions/v1/aim2026-calc-kpis-v2?${params.toString()}`;
   const response = await fetch(url, {
     method: 'POST',
@@ -751,19 +782,18 @@ export async function recalcKPIsForDateRange(
   const itemsAtRisk = rows.filter(
     (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
   ).length;
-  const rowsWithSellingPrice = rows.filter((r) => (r.avgSellingPrice ?? 0) > 0);
   const exchangeRate = 1.54;
 
   const kpiSummary: KPISummary = {
     totalInventoryValueAUD: Math.round(totalInventoryValue),
     totalInventoryValueUSD: Math.round(totalInventoryValue / exchangeRate),
     itemsAtRisk,
-    avgTurnover: rows.length > 0 ? rows.reduce((s, r) => s + r.turnover, 0) / rows.length : 0,
+    avgTurnover: avgMeasured(rows, (r) => r.turnover),
     avgTurnoverTrend: 'stable',
-    avgGMROI: rows.length > 0 ? rows.reduce((s, r) => s + r.gmroi, 0) / rows.length : 0,
-    avgMarginPercent: rowsWithSellingPrice.length > 0 ? rowsWithSellingPrice.reduce((s, r) => s + r.marginPercent, 0) / rowsWithSellingPrice.length : 0,
+    avgGMROI: avgMeasured(rows, (r) => r.gmroi),
+    avgMarginPercent: avgMeasured(rows, (r) => r.marginPercent),
     avgMarginTrend: 'stable',
-    avgDaysOfCover: rows.length > 0 ? rows.reduce((s, r) => s + r.daysOfCover, 0) / rows.length : 0,
+    avgDaysOfCover: avgMeasured(rows, (r) => r.daysOfCover),
     totalProducts: rows.length,
     lastSyncAt: null,
     inventoryValueHistory: [],
@@ -806,19 +836,18 @@ export async function recalcKPIsForDemandMode(
   const itemsAtRisk = rows.filter(
     (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
   ).length;
-  const rowsWithSellingPrice = rows.filter((r) => (r.avgSellingPrice ?? 0) > 0);
   const exchangeRate = 1.54;
 
   const kpiSummary: KPISummary = {
     totalInventoryValueAUD: Math.round(totalInventoryValue),
     totalInventoryValueUSD: Math.round(totalInventoryValue / exchangeRate),
     itemsAtRisk,
-    avgTurnover: rows.length > 0 ? rows.reduce((s, r) => s + r.turnover, 0) / rows.length : 0,
+    avgTurnover: avgMeasured(rows, (r) => r.turnover),
     avgTurnoverTrend: 'stable',
-    avgGMROI: rows.length > 0 ? rows.reduce((s, r) => s + r.gmroi, 0) / rows.length : 0,
-    avgMarginPercent: rowsWithSellingPrice.length > 0 ? rowsWithSellingPrice.reduce((s, r) => s + r.marginPercent, 0) / rowsWithSellingPrice.length : 0,
+    avgGMROI: avgMeasured(rows, (r) => r.gmroi),
+    avgMarginPercent: avgMeasured(rows, (r) => r.marginPercent),
     avgMarginTrend: 'stable',
-    avgDaysOfCover: rows.length > 0 ? rows.reduce((s, r) => s + r.daysOfCover, 0) / rows.length : 0,
+    avgDaysOfCover: avgMeasured(rows, (r) => r.daysOfCover),
     totalProducts: rows.length,
     lastSyncAt: null,
     inventoryValueHistory: [],
@@ -1386,6 +1415,26 @@ export interface DemandWarehouseSplitResult {
  * quantity_sold is per-warehouse; component_usage comes from "All" aggregate
  * so component demand is visible regardless of assembly warehouse.
  */
+/** Sales channels present in the demand data, busiest first.
+ * Read from the DB rather than hardcoded, so a new customer type in Unleashed
+ * shows up in the filter without a code change. */
+export async function fetchDemandChannels(from?: string, to?: string): Promise<string[]> {
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/aim2026_demand_channels`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ p_from: from ?? null, p_to: to ?? null }),
+    });
+    if (!response.ok) return [];
+    const rows = (await response.json()) as Array<{ channel: string; units: number }>;
+    return rows
+      .filter((r) => r.channel && r.channel !== '(no data)' && Number(r.units) > 0)
+      .map((r) => r.channel);
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchDemandWarehouseSplit(
   from?: string,
   to?: string,

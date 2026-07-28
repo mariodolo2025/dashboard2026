@@ -132,13 +132,12 @@ export function AIM2026ExportCSVDialog({
       push('leadTimeDays', 'L/T', (v) => `${Number(v ?? 0)}d`);
     }
 
-    push('daysOfCover', 'Cover', (v) => {
-      const num = Number(v ?? 0);
-      return num > 0 ? `${Math.round(num)}d` : '0d';
-    });
-    push('turnover', 'Turn.', (v) => formatTurnover(Number(v ?? 0)));
-    push('marginPercent', 'Margin', (v) => formatMarginPercent(Number(v ?? 0)));
-    push('gmroi', 'GMROI', (v) => formatGMROI(Number(v ?? 0)));
+    // A null metric exports as an empty cell, not as 0 — a spreadsheet that
+    // reads "0" cannot tell a measured zero from a missing landed cost.
+    push('daysOfCover', 'Cover', (v) => (v === null || v === undefined ? '' : `${Math.round(Number(v))}d`));
+    push('turnover', 'Turn.', (v) => (v === null || v === undefined ? '' : formatTurnover(Number(v))));
+    push('marginPercent', 'Margin', (v) => (v === null || v === undefined ? '' : formatMarginPercent(Number(v))));
+    push('gmroi', 'GMROI', (v) => (v === null || v === undefined ? '' : formatGMROI(Number(v))));
     push('status', 'Status', (v) => String(v ?? ''));
 
     return cols;
