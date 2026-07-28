@@ -100,6 +100,7 @@ async function unleashedGetAll(
   let page = 1;
   let allItems: any[] = [];
   let hasMore = true;
+  let totalPages = 1;
 
   while (hasMore && page <= maxPages) {
     const pageEndpoint = `${endpoint}/${page}`;
@@ -108,17 +109,71 @@ async function unleashedGetAll(
     const items = data.Items ?? [];
     allItems = allItems.concat(items);
 
-    const pagination = data.Pagination ?? {};
-    const totalPages = pagination.NumberOfPages ?? 1;
-    console.log(
-      `${endpoint} page ${page}/${totalPages}: ${items.length} items`
-    );
-    hasMore = page < totalPages;
+    const pageCount = Number(data.Pagination?.NumberOfPages ?? 0);
+    if (!pageCount) {
+      // No pagination metadata. A short page means we genuinely reached the end;
+      // a full page means there may be more and we cannot tell — never guess,
+      // because the caller deletes data before refilling from this array.
+      if (items.length >= pageSize) {
+        throw new Error(
+          `Unleashed ${endpoint}: page ${page} returned ${items.length} items with no Pagination ` +
+            `metadata — cannot tell whether more pages exist. Aborting so no data is deleted.`
+        );
+      }
+      console.log(`${endpoint} page ${page}: ${items.length} items (no pagination metadata, treating as last page)`);
+      hasMore = false;
+    } else {
+      totalPages = Math.max(totalPages, pageCount);
+      console.log(`${endpoint} page ${page}/${pageCount}: ${items.length} items`);
+      hasMore = page < pageCount;
+    }
     page++;
+  }
+
+  // Never hand back a truncated page set as if it were complete. Callers wipe
+  // whole periods before refilling them from this array, so a silent short read
+  // deletes real data and replaces it with nothing. Fail loudly instead.
+  if (totalPages > maxPages) {
+    throw new Error(
+      `Unleashed ${endpoint}: TRUNCATED fetch — API reports ${totalPages} pages, maxPages=${maxPages} ` +
+        `(only ${allItems.length} items retrieved). Raise maxPages or narrow the date range. ` +
+        `Aborting so no data is deleted.`
+    );
   }
 
   return allItems;
 }
+
+// ─── Period helpers ────────────────────────────────────────────────────────
+// aim2026_demand_history / _detail store period_date as a MONTH START. Any
+// window used to clear data must therefore be expressed in whole months, or the
+// clear and the refill cover different row sets and the totals stop adding up.
+
+/** Parse a strict YYYY-MM-DD date, rejecting malformed and non-existent dates
+ * (JS silently rolls "2026-02-31" over to March). */
+function parseIsoDate(value: string, label: string): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`${label} must be YYYY-MM-DD, got "${value}"`);
+  }
+  const d = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== value) {
+    throw new Error(`${label} is not a real date: "${value}"`);
+  }
+  return d;
+}
+
+/** First day of the month containing `iso` (YYYY-MM-DD). */
+function monthStartOf(iso: string): string {
+  return `${iso.slice(0, 7)}-01`;
+}
+
+/** First day of the month AFTER the one containing `iso` — an exclusive bound. */
+function nextMonthStartOf(iso: string): string {
+  const d = new Date(`${iso.slice(0, 7)}-01T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 
 // ─── Warehouse Configuration ───────────────────────────────────────────────
 // These are the known warehouses in Unleashed.
@@ -330,125 +385,154 @@ async function syncStockOnHand(
   return allRows.length;
 }
 
-/** Step 3: Sync Sales Orders → aim2026_demand_history + aim2026_demand_detail
- * Incremental: re-aggregates the last 2 full months to catch retroactive changes.
- * Accepts an optional salesStatus param to process one status at a time
- * (Completed, Placed, Backordered, Parked) — the frontend calls this step once per status
- * to stay within edge function compute limits.
- * When isFirstSalesStatus=true, zeroes out quantity_sold/revenue for affected periods
- * so subsequent status calls can ADD to it without overwriting. */
+/** Step 3: Sync Sales Orders → aim2026_demand_detail (+ derived demand_history)
+ *
+ * Incremental by watermark, never by window wipe. This mirrors the pattern that
+ * already works in `unleashed-sales-sync`:
+ *   1. read the watermark (how far the last run read Unleashed's LastModifiedOn)
+ *   2. ask Unleashed only for orders modified since then
+ *   3. replace each fetched ORDER's lines as a unit, keyed by its Unleashed Guid
+ *   4. recompute aim2026_demand_history for the touched months from the detail rows
+ *   5. advance the watermark
+ *
+ * What this deliberately does NOT do: delete a date window before fetching. The
+ * previous design zeroed and deleted 3 months up front, then refilled from a fetch
+ * that silently truncated at 6,000 orders — which destroyed 34,317 units of 2026
+ * demand, three times a day. Here a short or failed read simply means some orders
+ * were not refreshed; nothing is removed that is not immediately rewritten.
+ *
+ * One fetch covers every status. The old code ran four passes (Completed, Placed,
+ * Backordered, Parked) filtered server-side, which also meant an order moving from
+ * Placed to Completed left its stale Placed row behind unless both passes ran.
+ * Here the order's current OrderStatus is stored and its old lines are replaced.
+ *
+ * Backfill mode (salesStartDate/salesEndDate, whole months) re-reads a closed date
+ * range by order date. It is idempotent and does not move the watermark. */
 async function syncSalesOrders(
   supabase: any,
   creds: UnleashedCreds,
-  salesStatus?: string | null,
-  isFirstSalesStatus?: boolean
+  salesStartDate?: string | null,
+  salesEndDate?: string | null
 ): Promise<number> {
-  const { data: lastSyncLog } = await supabase
-    .from("aim2026_sync_log")
-    .select("synced_at, records_synced")
-    .eq("status", "success")
-    .order("synced_at", { ascending: false })
-    .limit(5);
+  const runStart = new Date();
 
-  let lastSyncDate: Date | null = null;
-  for (const log of lastSyncLog ?? []) {
-    const records = log.records_synced;
-    if (records?.sales > 0 || records?.source === "csv") {
-      lastSyncDate = new Date(log.synced_at);
-      break;
+  const { data: state } = await supabase
+    .from("aim2026_sales_sync_state")
+    .select("*")
+    .eq("id", 1)
+    .maybeSingle();
+
+  // ── Window ────────────────────────────────────────────────────────────────
+  let mode: "backfill" | "incremental" | "bootstrap";
+  let qsWindow: string;
+  let periodFrom: string | null = null;      // inclusive month start
+  let periodToExclusive: string | null = null; // exclusive month start
+
+  if (salesStartDate) {
+    const from = parseIsoDate(salesStartDate, "salesStartDate");
+    const to = salesEndDate ? parseIsoDate(salesEndDate, "salesEndDate") : from;
+    if (to < from) {
+      throw new Error(`salesEndDate (${salesEndDate}) is before salesStartDate (${salesStartDate})`);
     }
-  }
-
-  // Incremental: re-sync last 2 full months. Full: last 12 months.
-  let startDate: Date;
-  let maxPages: number;
-  if (lastSyncDate) {
-    const now = new Date();
-    startDate = new Date(now.getFullYear(), now.getMonth() - 2, 1);
-    maxPages = 30;
-    console.log(
-      `Incremental sales sync: re-aggregating from ${startDate.toISOString().slice(0, 10)} (last sync: ${lastSyncDate.toISOString().slice(0, 10)})`
-    );
+    // The fetch window is taken literally, so a heavy month can be split into
+    // several smaller calls that each fit the worker's compute budget. That is
+    // safe here in a way it never was before: orders are replaced one by one by
+    // Guid, and demand_history is recomputed from EVERY detail row in the months
+    // involved — not from this batch alone. A partial range therefore yields a
+    // correct aggregate for whatever has been loaded so far.
+    const fetchFrom = salesStartDate;
+    const fetchTo = to.toISOString().slice(0, 10);
+    periodFrom = monthStartOf(fetchFrom);
+    periodToExclusive = nextMonthStartOf(fetchTo);
+    mode = "backfill";
+    qsWindow = `startDate=${fetchFrom}&endDate=${fetchTo}`;
+    console.log(`Sales backfill: fetching ${fetchFrom}→${fetchTo}, rebuilding periods ${periodFrom}→before ${periodToExclusive}`);
+  } else if (state?.last_modified_watermark) {
+    const since = new Date(state.last_modified_watermark);
+    since.setUTCDate(since.getUTCDate() - 1); // 1-day overlap, same as unleashed-sales-sync
+    mode = "incremental";
+    qsWindow = `modifiedSince=${since.toISOString().slice(0, 10)}`;
+    console.log(`Sales incremental: modifiedSince=${since.toISOString().slice(0, 10)}`);
   } else {
-    startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 12);
-    startDate.setDate(1);
-    maxPages = 80;
-    console.log(
-      `Full sales sync: fetching last 12 months from ${startDate.toISOString().slice(0, 10)}`
-    );
+    // No watermark yet. Read a short recent window rather than the whole history:
+    // upserts are never destructive, so history is filled in by explicit backfills
+    // while the scheduled run stays small and green.
+    const since = new Date(runStart);
+    since.setUTCDate(since.getUTCDate() - 7);
+    mode = "bootstrap";
+    qsWindow = `modifiedSince=${since.toISOString().slice(0, 10)}`;
+    console.log(`Sales bootstrap (no watermark): modifiedSince=${since.toISOString().slice(0, 10)}`);
   }
 
-  const startStr = startDate.toISOString().slice(0, 10);
-  const statusToFetch = salesStatus ?? "Completed";
-  const qs = `startDate=${startStr}&orderStatus=${statusToFetch}`;
-
-  // CRITICAL: zero-out MUST happen BEFORE fetching/early-returns.
-  // If the first status has no orders for some reason, we still need clean slate.
-  if (isFirstSalesStatus) {
-    console.log(`SalesOrders: zeroing quantity_sold/revenue from ${startStr} onwards (first status)`);
-    const { error: zeroErr } = await supabase
-      .from("aim2026_demand_history")
-      .update({ quantity_sold: 0, revenue: 0 })
-      .gte("period_date", startStr);
-    if (zeroErr) console.error(`Sales zero-out error: ${JSON.stringify(zeroErr)}`);
+  // ── Customer type lookup ──────────────────────────────────────────────────
+  // CustomerType lives on the Customer record, NOT on the order — reading
+  // order.CustomerType is why aim2026_demand_detail.customer_type has been blank
+  // since 2026-04, and why the dashboard reports Shopify sales as B2B.
+  const typeByCustomer = new Map<string, string>();
+  const customers = await unleashedGetAll("Customers", "", creds, 200, 150);
+  for (const c of customers) {
+    const t = typeof c.CustomerType === "string" ? c.CustomerType : (c.CustomerType?.CustomerType ?? "");
+    if (c.CustomerName) typeByCustomer.set(String(c.CustomerName), t);
+    if (c.CustomerCode) typeByCustomer.set(String(c.CustomerCode), t);
   }
+  console.log(`Sales: ${typeByCustomer.size} customer keys for channel lookup`);
 
-  console.log(`Fetching SalesOrders with: ${qs} (maxPages=${maxPages})`);
-  const orders = await unleashedGetAll("SalesOrders", qs, creds, 200, maxPages);
-  console.log(`SalesOrders status=${statusToFetch}: received ${orders.length} orders`);
+  // ── Fetch ─────────────────────────────────────────────────────────────────
+  // No orderStatus filter: one pass returns every status, and each order carries
+  // its current one. unleashedGetAll throws rather than truncating.
+  const orders = await unleashedGetAll("SalesOrders", `${qsWindow}`, creds, 200, 150);
+  console.log(`Sales [${mode}]: received ${orders.length} orders`);
 
-  // Per-warehouse: key = "period|sku|warehouse", "All": key = "period|sku"
-  const whMap = new Map<string, { qty: number; revenue: number }>();
-  const allMap = new Map<string, { qty: number; revenue: number }>();
-  const detailRows: any[] = [];
+  // ── Build rows, grouped by order ──────────────────────────────────────────
+  const byOrder = new Map<string, any[]>();
+  const orderNumbers = new Set<string>();
+  const touchedPeriods = new Set<string>();
+  let maxModified: Date | null = state?.last_modified_watermark
+    ? new Date(state.last_modified_watermark)
+    : null;
+  let skippedNoGuid = 0;
 
   for (const order of orders) {
-    let orderDateStr: string | null = null;
-    let orderDateFull: string | null = null;
-    if (order.OrderDate) {
-      const dateMatch = String(order.OrderDate).match(/\/Date\((\d+)\)\//);
-      if (dateMatch) {
-        const d = new Date(Number(dateMatch[1]));
-        orderDateStr = d.toISOString().slice(0, 7) + "-01";
-        orderDateFull = d.toISOString().slice(0, 10);
-      } else {
-        const d = new Date(order.OrderDate);
-        orderDateStr = d.toISOString().slice(0, 7) + "-01";
-        orderDateFull = d.toISOString().slice(0, 10);
-      }
+    const guid = order.Guid ? String(order.Guid) : null;
+    if (!guid) { skippedNoGuid++; continue; }
+
+    const orderDateFull = parseUnleashedDate(order.OrderDate);
+    if (!orderDateFull) continue;
+    const periodDate = `${orderDateFull.slice(0, 7)}-01`;
+
+    // A backfill must not write outside its own range: those months were not
+    // scheduled for a rebuild, and Unleashed's date filters are applied server
+    // side where we cannot audit them.
+    if (periodFrom && periodDate < periodFrom) continue;
+    if (periodToExclusive && periodDate >= periodToExclusive) continue;
+
+    const lm = parseUnleashedDate(order.LastModifiedOn);
+    if (lm) {
+      const lmDate = new Date(`${lm}T00:00:00Z`);
+      if (!maxModified || lmDate > maxModified) maxModified = lmDate;
     }
-    if (!orderDateStr) continue;
 
     const warehouse = String(order.Warehouse?.WarehouseName ?? "").trim() || "Unknown";
     const customerName = String(order.Customer?.CustomerName ?? "").trim();
+    const customerCode = String(order.Customer?.CustomerCode ?? "").trim();
     const orderNumber = String(order.OrderNumber ?? "").trim();
-    const customerType = String(order.CustomerType ?? "").trim();
+    const status = String(order.OrderStatus ?? "").trim() || "Unknown";
+    const customerType =
+      typeByCustomer.get(customerName) ?? typeByCustomer.get(customerCode) ?? "";
 
+    if (orderNumber) orderNumbers.add(orderNumber);
+    touchedPeriods.add(periodDate);
+
+    const rows: any[] = [];
     for (const line of order.SalesOrderLines ?? []) {
-      const sku = (line.Product?.ProductCode ?? "").trim();
-      if (!sku) continue;
+      const sku = String(line.Product?.ProductCode ?? "").trim();
+      if (!sku) continue; // freight / rounding / fee lines carry no product code
 
       const qty = Number(line.OrderQuantity ?? 0);
       const revenue = qty * Number(line.UnitPrice ?? 0);
-      const productGroup = String(line.Product?.ProductGroup?.GroupName ?? "").trim();
 
-      // Per-warehouse
-      const whKey = `${orderDateStr}|${sku}|${warehouse}`;
-      const whExisting = whMap.get(whKey) ?? { qty: 0, revenue: 0 };
-      whExisting.qty += qty;
-      whExisting.revenue += revenue;
-      whMap.set(whKey, whExisting);
-
-      // All
-      const allKey = `${orderDateStr}|${sku}`;
-      const allExisting = allMap.get(allKey) ?? { qty: 0, revenue: 0 };
-      allExisting.qty += qty;
-      allExisting.revenue += revenue;
-      allMap.set(allKey, allExisting);
-
-      detailRows.push({
-        period_date: orderDateStr,
+      rows.push({
+        period_date: periodDate,
         sku,
         type: "sale",
         order_date: orderDateFull,
@@ -456,158 +540,146 @@ async function syncSalesOrders(
         customer: customerName,
         quantity: Math.round(Math.abs(qty) * 100) / 100,
         amount: Math.round(Math.abs(revenue) * 100) / 100,
-        status: statusToFetch,
+        status,
         warehouse,
-        product_group: productGroup,
+        product_group: String(line.Product?.ProductGroup?.GroupName ?? "").trim(),
         customer_type: customerType,
+        line_guid: line.Guid ? String(line.Guid) : null,
+        order_guid: guid,
       });
     }
+    byOrder.set(guid, rows);
   }
 
-  console.log(`SalesOrders: ${allMap.size} All, ${whMap.size} per-wh, ${detailRows.length} detail`);
+  if (skippedNoGuid > 0) console.warn(`Sales: ${skippedNoGuid} orders had no Guid and were skipped`);
 
-  const allKeys = allMap.size > 0 ? Array.from(allMap.keys()) : [];
-  const uniqueSkus = [...new Set(allKeys.map((k) => k.split("|")[1]))];
-  const uniquePeriods = [...new Set([
-    ...allKeys.map((k) => k.split("|")[0]),
-    ...detailRows.map((r: any) => r.period_date),
-  ])];
+  const orderGuids = [...byOrder.keys()];
+  const detailRows = [...byOrder.values()].flat();
+  console.log(
+    `Sales [${mode}]: ${orderGuids.length} orders → ${detailRows.length} lines, ${touchedPeriods.size} periods`
+  );
 
-  const isCompleted = statusToFetch === "Completed";
-  const batchSize = 200;
-
-  // ── demand_history: ONLY update for Completed status ──────────────────
-  // quantity_sold must contain ONLY Completed sales. Placed/Parked/Backordered
-  // go exclusively into demand_detail where calc-kpis-v2 reads them by status.
-  if (isCompleted && allMap.size > 0) {
-    const existingMap = new Map<string, { id: number; quantity_sold: number; revenue: number; component_usage: number }>();
-    for (let i = 0; i < uniqueSkus.length; i += 50) {
-      const skuBatch = uniqueSkus.slice(i, i + 50);
-      const { data: existing } = await supabase
-        .from("aim2026_demand_history")
-        .select("id, period_date, sku, warehouse, quantity_sold, revenue, component_usage")
-        .in("sku", skuBatch)
-        .in("period_date", uniquePeriods)
-        .limit(10000);
-
-      for (const row of existing ?? []) {
-        existingMap.set(`${row.period_date}|${row.sku}|${row.warehouse}`, {
-          id: row.id,
-          quantity_sold: Number(row.quantity_sold ?? 0),
-          revenue: Number(row.revenue ?? 0),
-          component_usage: Number(row.component_usage ?? 0),
-        });
-      }
-    }
-
-    console.log(`Sales existingMap: ${existingMap.size} rows loaded (Completed only)`);
-
-    const updates: { id: number; quantity_sold: number; revenue: number }[] = [];
-    const inserts: any[] = [];
-
-    for (const [key, val] of allMap) {
-      const [periodDate, sku] = key.split("|");
-      const dbKey = `${periodDate}|${sku}|All`;
-      const existing = existingMap.get(dbKey);
-      const newQty = Math.round(val.qty * 100) / 100;
-      const newRev = Math.round(val.revenue * 100) / 100;
-
-      if (existing) {
-        updates.push({
-          id: existing.id,
-          quantity_sold: existing.quantity_sold + newQty,
-          revenue: existing.revenue + newRev,
-        });
-      } else {
-        inserts.push({
-          period_date: periodDate, sku, warehouse: "All",
-          quantity_sold: newQty, revenue: newRev, component_usage: 0,
-        });
-      }
-    }
-
-    for (const [key, val] of whMap) {
-      const parts = key.split("|");
-      const existing = existingMap.get(key);
-      const newQty = Math.round(val.qty * 100) / 100;
-      const newRev = Math.round(val.revenue * 100) / 100;
-
-      if (existing) {
-        updates.push({
-          id: existing.id,
-          quantity_sold: existing.quantity_sold + newQty,
-          revenue: existing.revenue + newRev,
-        });
-      } else {
-        inserts.push({
-          period_date: parts[0], sku: parts[1], warehouse: parts[2],
-          quantity_sold: newQty, revenue: newRev, component_usage: 0,
-        });
-      }
-    }
-
-    console.log(`SalesOrders [Completed]: ${updates.length} updates, ${inserts.length} inserts`);
-
-    for (let i = 0; i < updates.length; i += 50) {
-      const chunk = updates.slice(i, i + 50);
-      await Promise.all(
-        chunk.map((u) =>
-          supabase.from("aim2026_demand_history")
-            .update({ quantity_sold: u.quantity_sold, revenue: u.revenue })
-            .eq("id", u.id)
-        )
-      );
-    }
-
-    for (let i = 0; i < inserts.length; i += batchSize) {
-      const batch = inserts.slice(i, i + batchSize);
-      const { error } = await supabase.from("aim2026_demand_history").insert(batch);
-      if (error) {
-        console.warn(`Sales insert batch ${i} failed (${error.code}), falling back to individual updates`);
-        for (const row of batch) {
-          const { data: existing } = await supabase
-            .from("aim2026_demand_history")
-            .select("id, quantity_sold, revenue")
-            .eq("period_date", row.period_date)
-            .eq("sku", row.sku)
-            .eq("warehouse", row.warehouse)
-            .limit(1);
-          if (existing?.[0]) {
-            await supabase.from("aim2026_demand_history")
-              .update({
-                quantity_sold: Number(existing[0].quantity_sold ?? 0) + row.quantity_sold,
-                revenue: Number(existing[0].revenue ?? 0) + row.revenue,
-              })
-              .eq("id", existing[0].id);
-          } else {
-            await supabase.from("aim2026_demand_history").insert(row);
-          }
-        }
-      }
-    }
-  } else if (!isCompleted) {
-    console.log(`SalesOrders [${statusToFetch}]: skipping demand_history (only detail rows)`);
+  if (orderGuids.length === 0) {
+    await writeSalesSyncState(supabase, { mode, runStart, maxModified, orders: 0, lines: 0, advanceWatermark: mode !== "backfill" });
+    return 0;
   }
 
-  // ── demand_detail: ALWAYS insert for every status ─────────────────────
-  for (const period of uniquePeriods) {
-    await supabase
+  // ── Replace each order's lines ────────────────────────────────────────────
+  // Scoped to the orders we just read, so nothing outside this set can be lost.
+  // The legacy pass also clears pre-migration rows (no guid) for the same order
+  // numbers, so the table converges as orders are re-synced instead of doubling.
+  const legacyPeriods = await collectLegacyPeriods(supabase, [...orderNumbers]);
+  for (const p of legacyPeriods) touchedPeriods.add(p);
+
+  for (let i = 0; i < orderGuids.length; i += 100) {
+    const batch = orderGuids.slice(i, i + 100);
+    const { error } = await supabase
       .from("aim2026_demand_detail")
       .delete()
       .eq("type", "sale")
-      .eq("period_date", period)
-      .eq("status", statusToFetch);
+      .in("order_guid", batch);
+    if (error) throw new Error(`demand_detail delete by order_guid failed: ${JSON.stringify(error)}`);
   }
 
-  for (let i = 0; i < detailRows.length; i += batchSize) {
-    const batch = detailRows.slice(i, i + batchSize);
+  const orderNumberList = [...orderNumbers];
+  for (let i = 0; i < orderNumberList.length; i += 100) {
+    const batch = orderNumberList.slice(i, i + 100);
+    const { error } = await supabase
+      .from("aim2026_demand_detail")
+      .delete()
+      .eq("type", "sale")
+      .is("order_guid", null)
+      .in("order_number", batch);
+    if (error) throw new Error(`demand_detail legacy delete failed: ${JSON.stringify(error)}`);
+  }
+
+  for (let i = 0; i < detailRows.length; i += 200) {
+    const batch = detailRows.slice(i, i + 200);
     const { error } = await supabase.from("aim2026_demand_detail").insert(batch);
-    if (error) console.error("Error inserting sale detail batch:", error);
+    if (error) {
+      throw new Error(
+        `demand_detail insert failed at batch ${i}/${detailRows.length}: ${JSON.stringify(error)}`
+      );
+    }
   }
 
-  const totalAgg = isCompleted ? allMap.size : 0;
-  console.log(`SalesOrders [${statusToFetch}]: ${totalAgg} demand_history rows + ${detailRows.length} detail rows`);
+  // ── Rebuild the aggregate ─────────────────────────────────────────────────
+  // demand_history is derived, never accumulated, so this is safe to repeat.
+  const periods = [...touchedPeriods].sort();
+  const { error: rebuildErr } = await supabase.rpc("aim2026_rebuild_demand_history", {
+    p_periods: periods,
+  });
+  if (rebuildErr) {
+    throw new Error(`aim2026_rebuild_demand_history failed for ${periods.join(",")}: ${JSON.stringify(rebuildErr)}`);
+  }
+  console.log(`Sales: demand_history rebuilt for ${periods.join(", ")}`);
+
+  await writeSalesSyncState(supabase, {
+    mode,
+    runStart,
+    maxModified,
+    orders: orderGuids.length,
+    lines: detailRows.length,
+    advanceWatermark: mode !== "backfill",
+  });
+
   return detailRows.length;
+}
+
+/** Unleashed serves dates as "/Date(1750000000000)/" or plain ISO. Returns YYYY-MM-DD. */
+function parseUnleashedDate(value: unknown): string | null {
+  if (!value) return null;
+  const raw = String(value);
+  const epoch = raw.match(/\/Date\((\d+)\)\//);
+  const d = epoch ? new Date(Number(epoch[1])) : new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+/** Periods held by pre-migration rows for these order numbers. They are about to
+ * be deleted, so their months need rebuilding even if no new row lands there. */
+async function collectLegacyPeriods(supabase: any, orderNumbers: string[]): Promise<string[]> {
+  const periods = new Set<string>();
+  for (let i = 0; i < orderNumbers.length; i += 100) {
+    const batch = orderNumbers.slice(i, i + 100);
+    const { data, error } = await supabase
+      .from("aim2026_demand_detail")
+      .select("period_date")
+      .eq("type", "sale")
+      .is("order_guid", null)
+      .in("order_number", batch);
+    if (error) throw new Error(`legacy period lookup failed: ${JSON.stringify(error)}`);
+    for (const r of data ?? []) periods.add(String(r.period_date).slice(0, 10));
+  }
+  return [...periods];
+}
+
+async function writeSalesSyncState(
+  supabase: any,
+  opts: {
+    mode: string;
+    runStart: Date;
+    maxModified: Date | null;
+    orders: number;
+    lines: number;
+    advanceWatermark: boolean;
+  }
+): Promise<void> {
+  const row: any = {
+    id: 1,
+    last_run_at: opts.runStart.toISOString(),
+    last_mode: opts.mode,
+    orders_seen: opts.orders,
+    lines_upserted: opts.lines,
+    updated_at: new Date().toISOString(),
+  };
+  // A backfill reads a closed historical range; letting it move the watermark
+  // would skip everything modified since.
+  if (opts.advanceWatermark) {
+    row.last_modified_watermark = (opts.maxModified ?? opts.runStart).toISOString();
+  }
+  const { error } = await supabase.from("aim2026_sales_sync_state").upsert(row, { onConflict: "id" });
+  if (error) throw new Error(`sales sync state write failed: ${JSON.stringify(error)}`);
 }
 
 /** Step 4: Sync Purchase Orders → Container/DHL/On Production data
@@ -812,7 +884,11 @@ async function syncAssemblies(
 
   let qs = `startDate=${startStr}&assemblyStatus=Completed`;
   if (endStr) qs += `&endDate=${endStr}`;
-  const maxPages = 15;
+  // Was 15 (= 3,000 assemblies), which the live data shows this window already
+  // exceeds: April and May 2026 component_usage are empty and the June+July rows
+  // land on exactly 3,000. Now that unleashedGetAll refuses to truncate, this cap
+  // has to clear the real page count or every scheduled run would fail.
+  const maxPages = 150;
 
   console.log(`Assembly sync: ${startStr} → ${endStr ?? "now"} (maxPages=${maxPages})`);
 
@@ -1291,6 +1367,8 @@ Deno.serve(async (req: Request) => {
     let assemblyStartDate: string | null = null;
     let assemblyEndDate: string | null = null;
     let salesStatus: string | null = null;
+    let salesStartDate: string | null = null;
+    let salesEndDate: string | null = null;
     let isFirstSalesStatus = false;
     let isFirstAssemblyChunk = false;
     try {
@@ -1299,6 +1377,10 @@ Deno.serve(async (req: Request) => {
       assemblyStartDate = body?.assemblyStartDate ?? null;
       assemblyEndDate = body?.assemblyEndDate ?? null;
       salesStatus = body?.salesStatus ?? null;
+      // Optional explicit window for backfills (YYYY-MM-DD). Omitted = normal
+      // rolling window, so the scheduled sync is unaffected.
+      salesStartDate = body?.salesStartDate ?? null;
+      salesEndDate = body?.salesEndDate ?? null;
       isFirstSalesStatus = body?.isFirstSalesStatus === true || body?.isFirstSalesStatus === "true";
       isFirstAssemblyChunk = body?.isFirstAssemblyChunk === true || body?.isFirstAssemblyChunk === "true";
     } catch {
@@ -1358,9 +1440,13 @@ Deno.serve(async (req: Request) => {
 
     if (step === "sales" || step === "all") {
       try {
-        // When running "all" steps at once, always treat as first status (clean slate)
-        const firstFlag = step === "all" ? true : isFirstSalesStatus;
-        result.sales = await syncSalesOrders(supabase, creds, salesStatus, firstFlag);
+        // salesStatus / isFirstSalesStatus are accepted but ignored: one fetch now
+        // covers every status and demand_history is derived, so there is no
+        // "first pass" that has to clear anything. Old callers keep working.
+        if (salesStatus || isFirstSalesStatus) {
+          console.log(`sales: ignoring legacy params (salesStatus=${salesStatus}, isFirstSalesStatus=${isFirstSalesStatus})`);
+        }
+        result.sales = await syncSalesOrders(supabase, creds, salesStartDate, salesEndDate);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         errors.push(`Sales sync failed: ${msg}`);
