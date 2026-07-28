@@ -6,7 +6,11 @@ React + TypeScript dashboard: análisis por canal (Unleashed, Shopify, Meta), **
 
 - **Authentication**: login restringido a correos `@dolo.com.au` (Supabase Auth)
 - **Multi-source**: Unleashed (CSV/API), Shopify/Meta (API y/o CSV), costes unitarios, P&amp;L Xero (Excel)
-- **AIM 2026**: SOH, demanda, BOM, KPIs cacheados, valuación
+- **AIM 2026**: SOH, demanda, BOM, KPIs cacheados, valuación. Filtros de **warehouse** y **sales
+  channel** que recalculan demanda, cover, ROP, sug. qty y status server-side (no ocultan filas)
+- **B2C Sales Explorer**: buscás uno o varios SKUs y ves sus ventas de Shopify — units, net sales,
+  orders, precio real por unidad, descuentos, devoluciones, países y últimas ventas, contra el
+  período anterior equivalente. Importes en AUD (ver nota de moneda más abajo)
 - **Costs Analysis / By channel**: costes desde Xero (edge `parse-xero-costs`) o entradas manuales legacy
 - **Currency**: tipos de cambio en tabla `currency_exchange_rates` donde aplica
 
@@ -142,7 +146,9 @@ El front recibe `assembledProductSKUs` y `bomComponents` en la respuesta del das
 | `parse-xero-costs` | P&amp;L Xero (xlsx en `csv-files`) |
 | `ecommerce-load-csv` | Bucket `ecom` → `ecommerce_*` |
 | `ecommerce-sync`, `ecommerce-sync-shopify`, `ecommerce-sync-meta` | APIs → `ecommerce_*` |
-| `aim2026-sync-unleashed`, `aim2026-calc-kpis-v2`, etc. | Sync y KPIs |
+| `aim2026-sync-unleashed` | Sync desde Unleashed. Ventas: **incremental por watermark** (`aim2026_sales_sync_state` + `modifiedSince`), reemplazo por `Guid` de orden, sin borrar ventanas. Acepta `salesStartDate`/`salesEndDate` para backfills acotados. |
+| `aim2026-calc-kpis-v2` | KPIs. Acepta `warehouse` y `channel` como scope; un query con scope nunca escribe el caché. |
+| `sync-orchestrate` | Orquestador de la corrida completa (15 pasos). Cada paso registra ok/error, filas y ms en `sync_runs.steps`. |
 
 ---
 
@@ -165,6 +171,30 @@ Panel modal (`src/components/WebUpgradeTab.tsx`, abierto desde `App.tsx`) que mi
 Las migraciones de la RPC siguen el patrón de **parche in-place** (`DO` + `pg_get_functiondef` + `replace` con guardas que fallan si el anchor no matchea); cada archivo en `supabase/migrations/` espeja el parche aplicado.
 
 Handoffs de diseño (fuera de git, en la carpeta del proyecto): `WEB UPGRADE TAB/Web Upgrade Performance2/design_handoff_web_upgrade_views/` — el README de ese bundle es la especificación y `Web Upgrade Tab v2.dc.html` el mock objetivo.
+
+---
+
+## B2C Sales Explorer
+
+Tab propio (`src/components/B2CSalesExplorer.tsx`, abierto desde `App.tsx`). Responde "escribí un
+SKU y decime qué hizo en Shopify" sin tener que pensar de qué tabla sale cada número: AIM 2026
+mezcla mayorista con component usage y el tab de E-commerce es de toda la tienda.
+
+| Pieza | Detalle |
+|---|---|
+| Cuerpo | `src/components/B2CSalesPanel.tsx`, compartido. El tab lo usa con buscador; `SkuSalesDialog` lo usa sin buscador cuando se clickea un SKU en la tabla de productos de **Web Upgrade**. |
+| Datos | `shopify_sales_lines` (sync `shopify-sales-sync`, cron cada ~5 min). RPCs `shopify_sku_list`, `shopify_sku_stats_multi(skus[], from, to, granularity)`, `usd_to_aud_rate(date)`. |
+| Controles | Multi-selección de SKUs · presets Yesterday / Last week / 30 / 90 días / 12 meses o rango propio · barras por día/semana/mes · curva de tendencia on/off. |
+| Persistencia | Selección, fechas, granularidad y toggle en `localStorage['b2c-sales-explorer.v1']`. El dialog tiene su propia fecha para no mover la del tab. |
+| Comparación | Cada métrica se compara contra la ventana **inmediatamente anterior del mismo largo**, no contra el mes calendario. |
+
+**Moneda — leer antes de tocar nada acá**: `shopify_sales_lines.net_native` está en **43 monedas
+distintas** (AUD, USD, JPY, KRW…). Sumar esa columna produce un número sin sentido. Todo el panel
+convierte `net_usd` a AUD con `currency_exchange_rates` (tasa por mes de la orden), la misma que
+usa el resto del dashboard, así que los números cierran con los otros tabs.
+
+El tab **AIM** viejo (`InventoryReorderDashboard`) quedó archivado: AIM 2026 lo reemplazó. Solo se
+sacó el botón del menú; el modal sigue montado y se restaura poniendo `activeModal = 'aim'`.
 
 ---
 

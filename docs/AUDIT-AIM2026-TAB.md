@@ -2,6 +2,11 @@
 
 > **Índice:** la parte 1 es la auditoría general de la pantalla. La **parte 2 (al final)** responde
 > las dos preguntas concretas de Mario: el selector WH Demand y el filtro por canal.
+>
+> **Estado 2026-07-28** — resueltos: 1 (parcial: el costo sigue faltando, pero ya no se reporta
+> como cero medido), 4, 5, 8, 11, 19, 26, y las dos preguntas de la parte 2 (warehouse y canal
+> ahora recalculan de verdad). Siguen abiertos: 2, 3, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 18,
+> 20, 21, 22, 23, 24, 25. Ver §7 de [`HANDOVER.md`](HANDOVER.md).
 
 > Fecha: **2026-07-28** · Estado observado: rama `feat/unleashed-sales-api`, filtro `psd-hd-d` activo, rango `Jun 2026 – Jul 2026`.
 > Método: 5 auditores en paralelo sobre el código + verificación adversarial + queries read-only contra la DB de producción.

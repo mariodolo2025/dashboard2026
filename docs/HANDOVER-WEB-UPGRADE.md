@@ -1,7 +1,14 @@
 # Handover — Web Upgrade performance
 
-> Última sesión: **2026-07-28** · Estado: **todo deployado y verificado, sin trabajo a medio terminar**
+> Cubre **solo el panel Web Upgrade**. El estado general del proyecto y el trabajo del
+> 2026-07-28 (incidente de demanda, sync incremental, filtros de AIM 2026, B2C Sales Explorer)
+> están en [`HANDOVER.md`](HANDOVER.md).
+>
+> Sesión de este panel: **2026-07-27** · Estado: **deployado y verificado**
 > Leer también: `README.md` (sección "Web Upgrade performance") y la memoria `web-upgrade-tracking`.
+>
+> **Cambio posterior**: la tabla de productos ahora abre un popup con las ventas de Shopify del
+> SKU clickeado (`SkuSalesDialog`, mismo panel que el B2C Sales Explorer).
 
 ## 1. Dónde está todo ahora
 

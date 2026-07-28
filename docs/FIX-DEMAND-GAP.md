@@ -1,6 +1,12 @@
 # Hueco de demanda 2026 — causa y plan de arreglo
 
-> 2026-07-28 · Diagnóstico verificado contra la DB de producción (`teewkafclgpfpczftvah`). **Nada ejecutado todavía.**
+> 2026-07-28 · Diagnóstico verificado contra la DB de producción (`teewkafclgpfpczftvah`).
+>
+> **RESUELTO el 2026-07-28.** El plan de abajo se ejecutó, con una diferencia: en vez de parchear
+> el sync se lo migró al patrón incremental de `unleashed-sales-sync` (watermark + upsert por
+> Guid + `demand_history` derivada), porque el diseño de borrar-y-rellenar no podía dejar de
+> romperse. Enero–julio recuperados: **35.001 unidades**, los cuatro meses viejos al 100,0% de
+> la fuente independiente. Resultado y verificación en §2 de [`HANDOVER.md`](HANDOVER.md).
 
 ## Causa
 
