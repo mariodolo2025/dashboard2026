@@ -1435,6 +1435,9 @@ export interface ShopifySkuStats {
   to: string;
   previousFrom: string;
   previousTo: string;
+  // Every amount comes in both currencies: AUD is what the dashboard reports in,
+  // USD is what the source rows are normalised to — showing both lets a figure be
+  // checked against Shopify without reversing the conversion.
   summary: {
     units: number;
     orders: number;
@@ -1442,18 +1445,24 @@ export interface ShopifySkuStats {
     discountsAud: number;
     returnsAud: number;
     netAud: number;
+    grossUsd: number;
+    discountsUsd: number;
+    returnsUsd: number;
+    netUsd: number;
     avgNetPriceAud: number | null;
+    avgNetPriceUsd: number | null;
   };
-  previous: { units: number; orders: number; netAud: number };
-  series: Array<{ bucket: string; units: number; net_aud: number; orders: number }>;
-  perSku: Array<{ sku: string; product_title: string | null; units: number; net_aud: number; orders: number }>;
-  countries: Array<{ country: string; units: number; net_aud: number }>;
+  previous: { units: number; orders: number; netAud: number; netUsd: number };
+  series: Array<{ bucket: string; units: number; net_aud: number; net_usd: number; orders: number }>;
+  perSku: Array<{ sku: string; product_title: string | null; units: number; net_aud: number; net_usd: number; orders: number }>;
+  countries: Array<{ country: string; units: number; net_aud: number; net_usd: number }>;
   recentOrders: Array<{
     order_date: string;
     sku: string;
     country: string;
     quantity: number;
     net_aud: number;
+    net_usd: number;
     currency: string;
   }>;
 }

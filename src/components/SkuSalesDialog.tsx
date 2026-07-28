@@ -29,7 +29,7 @@ export function SkuSalesDialog({
   const initial = DATE_PRESETS.find((p) => p.label === '90 days')!.range();
   const [from, setFrom] = useState(initial.from);
   const [to, setTo] = useState(initial.to);
-  const [granularity, setGranularity] = useState<SalesGranularity>('week');
+  const [granularity, setGranularity] = useState<SalesGranularity>('day');
   const [showTrend, setShowTrend] = useState(true);
 
   useEffect(() => {

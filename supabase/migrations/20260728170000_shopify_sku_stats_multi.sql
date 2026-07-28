@@ -133,3 +133,13 @@ comment on function public.shopify_sku_stats_multi(text[], date, date, text) is
   'Shopify sales for one or more SKUs over a window: totals, the equivalent previous window, a day/week/month series, a per-SKU breakdown, countries and recent orders. All money in AUD.';
 
 grant execute on function public.shopify_sku_stats_multi(text[], date, date, text) to authenticated, service_role;
+
+-- -----------------------------------------------------------------------------
+-- 2026-07-28 · adds the USD figure alongside every AUD one.
+-- USD is what the source rows are normalised to (net_usd); AUD is the converted
+-- view the dashboard reports in. Returning both lets a number be checked against
+-- Shopify without reversing the conversion. Applied as migration
+-- 'shopify_sku_stats_multi_usd' — same function body as above plus:
+--   summary:  grossUsd, discountsUsd, returnsUsd, netUsd, avgNetPriceUsd
+--   previous: netUsd
+--   series / perSku / countries / recentOrders: net_usd
