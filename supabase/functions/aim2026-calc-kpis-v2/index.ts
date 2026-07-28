@@ -645,16 +645,26 @@ function calcABCClass(
   return result;
 }
 
-type StockStatus = "CRITICAL" | "LOW STOCK" | "WARNING" | "OK" | "OVERSTOCK";
+// NO DEMAND only ever appears under a channel filter: stock is not held per
+// channel, so calling a SKU OVERSTOCK because it has no Shopify sales would
+// invite a decision about stock the filter says nothing about.
+type StockStatus = "CRITICAL" | "LOW STOCK" | "WARNING" | "OK" | "OVERSTOCK" | "NO DEMAND";
 
 /** daysOfCover is null when there is no demand to divide by — the SKU has no
  * measurable coverage, which is NOT the same as "covered for a very long time".
  * The old code used a literal 999 here, so 491 SKUs with ZERO stock and no
  * demand were reported as OVERSTOCK and could never appear in Items at Risk. */
-function calcStatus(daysOfCover: number | null, stockOnHand: number): StockStatus {
+function calcStatus(
+  daysOfCover: number | null,
+  stockOnHand: number,
+  channelScoped = false
+): StockStatus {
   if (daysOfCover === null) {
-    // No demand in the window. Stock sitting against no demand is dead stock;
-    // no stock and no demand is simply nothing to manage.
+    // Under a channel filter the absence of demand says nothing about whether
+    // the stock is excessive — that stock serves every channel.
+    if (channelScoped) return "NO DEMAND";
+    // Unfiltered: stock sitting against no demand is dead stock; no stock and
+    // no demand is simply nothing to manage.
     return stockOnHand > 0 ? "OVERSTOCK" : "OK";
   }
   if (daysOfCover <= 0) return "CRITICAL";
@@ -977,7 +987,7 @@ Deno.serve(async (req: Request) => {
 
       const abcClass = abcMap.get(sku) ?? params.abcClass ?? "C";
 
-      const status = calcStatus(daysOfCover, scopeWH.quantity);
+      const status = calcStatus(daysOfCover, scopeWH.quantity, !!channelFilter);
       const stockoutRisk = calcStockoutRisk(
         scopeWH.quantity,
         safetyStock,
