@@ -16,12 +16,13 @@ export interface KPISummary {
   totalInventoryValueAUD: number;
   totalInventoryValueUSD: number;
   itemsAtRisk: number;
-  avgTurnover: number;
+  // null = nothing measurable in the current scope; render as "—", never 0.
+  avgTurnover: number | null;
   avgTurnoverTrend: TrendDirection;
-  avgGMROI: number;
-  avgMarginPercent: number;
+  avgGMROI: number | null;
+  avgMarginPercent: number | null;
   avgMarginTrend: TrendDirection;
-  avgDaysOfCover: number;
+  avgDaysOfCover: number | null;
   totalProducts: number;
   lastSyncAt: string | null;
   inventoryValueHistory: { date: string; value: number }[];

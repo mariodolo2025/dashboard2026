@@ -37,7 +37,7 @@ function headers(): HeadersInit {
  * window — are EXCLUDED, not counted as zero. Averaging those zeros in is what
  * dragged Avg Turnover down to 1.92 (measured: 8.36), Avg GMROI to 2.22 (10.51)
  * and pushed Avg Coverage to 450d (66d). Returns 0 when nothing is measurable. */
-export function avgMeasured<T>(rows: T[], pick: (r: T) => number | null | undefined): number {
+export function avgMeasured<T>(rows: T[], pick: (r: T) => number | null | undefined): number | null {
   let sum = 0;
   let n = 0;
   for (const r of rows) {
@@ -46,7 +46,9 @@ export function avgMeasured<T>(rows: T[], pick: (r: T) => number | null | undefi
     sum += v;
     n++;
   }
-  return n > 0 ? sum / n : 0;
+  // null, not 0: with a narrow filter every row can be unmeasurable, and a card
+  // reading "0.0" then claims a measurement that was never taken.
+  return n > 0 ? sum / n : null;
 }
 
 async function callFunction<T>(
