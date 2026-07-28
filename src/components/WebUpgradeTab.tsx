@@ -9,6 +9,7 @@ import { DateRangePresets } from '@/components/DateRangePresets';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import { SkuSalesDialog } from '@/components/SkuSalesDialog';
 
 interface DateRange { from?: Date; to?: Date; }
 interface WebUpgradeTabProps { dateRange?: DateRange; setDateRange?: (r: DateRange) => void; }
@@ -257,6 +258,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const [screenGroup, setScreenGroup] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [openFams, setOpenFams] = useState<Record<string, boolean>>({});
+  // Clicking a SKU opens its Shopify sales in the shared B2C panel.
+  const [skuDialog, setSkuDialog] = useState<{ sku: string; title: string } | null>(null);
   // Per-card collapse, persisted. openS(id) says whether a card body is shown.
   const [closedCards, setClosedCards] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem('wu-closed2') || '{}'); } catch { return {}; }
@@ -832,7 +835,25 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       const p = pctOf(r.unitsPerWeek, r.baselineUnitsPerWeek);
                       return (
                         <div key={r.sku} className="wu-famgrid wu-varrow">
-                          <span style={{ color: 'var(--wu-dim)' }}>{r.title}<span className="tnum" style={{ display: 'block', fontFamily: 'ui-monospace,monospace', fontSize: 10, color: 'var(--wu-faint)', marginTop: 2 }}>{r.sku}{r.fitment ? ` · ${r.fitment}` : ''}</span></span>
+                          {/* The SKU opens its Shopify sales — the same panel as the
+                              B2C Sales Explorer, scoped to this product. */}
+                          <span style={{ color: 'var(--wu-dim)' }}>
+                            {r.title}
+                            <button
+                              type="button"
+                              onClick={() => setSkuDialog({ sku: r.sku, title: r.title })}
+                              title={`Ver ventas B2C de ${r.sku}`}
+                              className="tnum"
+                              style={{
+                                display: 'block', fontFamily: 'ui-monospace,monospace', fontSize: 10,
+                                color: 'var(--wu-faint)', marginTop: 2, background: 'none', border: 'none',
+                                padding: 0, cursor: 'pointer', textDecoration: 'underline',
+                                textUnderlineOffset: 2, textDecorationStyle: 'dotted', textAlign: 'left',
+                              }}
+                            >
+                              {r.sku}{r.fitment ? ` · ${r.fitment}` : ''}
+                            </button>
+                          </span>
                           <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-faint)' }}>{int(r.adds)}</span>
                           <span className="tnum" style={{ textAlign: 'right', color: 'var(--wu-dim)' }}>{r.attributedRevenue > 0 ? money1(r.attributedRevenue) : '—'}</span>
                           <span className="tnum" style={{ textAlign: 'right' }}>{(Math.round(r.unitsPerWeek * 10) / 10).toFixed(1)}</span>
@@ -1396,6 +1417,12 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
         )}
       </div>
       {storeModal}
+      <SkuSalesDialog
+        sku={skuDialog?.sku ?? null}
+        productTitle={skuDialog?.title ?? null}
+        open={!!skuDialog}
+        onClose={() => setSkuDialog(null)}
+      />
     </TooltipProvider>
   );
 }
