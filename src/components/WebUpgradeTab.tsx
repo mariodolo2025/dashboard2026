@@ -1449,6 +1449,10 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
         productTitle={skuDialog?.title ?? null}
         open={!!skuDialog}
         onClose={() => setSkuDialog(null)}
+        // Opens on the window this tab is showing, so the drill-down answers the
+        // same period as the row that was clicked.
+        initialFrom={range.from ? toYMD(range.from) : undefined}
+        initialTo={range.to ? toYMD(range.to) : undefined}
       />
     </TooltipProvider>
   );
