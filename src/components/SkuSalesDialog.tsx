@@ -20,17 +20,32 @@ export function SkuSalesDialog({
   productTitle,
   open,
   onClose,
+  initialFrom,
+  initialTo,
 }: {
   sku: string | null;
   productTitle?: string | null;
   open: boolean;
   onClose: () => void;
+  /** Window the calling tab is showing (YYYY-MM-DD). The dialog opens on it so
+   *  the drill-down answers the same period as the row that was clicked.
+   *  Changing it here stays local — the caller's own range never moves. */
+  initialFrom?: string;
+  initialTo?: string;
 }) {
-  const initial = DATE_PRESETS.find((p) => p.label === '90 days')!.range();
-  const [from, setFrom] = useState(initial.from);
-  const [to, setTo] = useState(initial.to);
+  const fallback = DATE_PRESETS.find((p) => p.label === '90 days')!.range();
+  const [from, setFrom] = useState(initialFrom ?? fallback.from);
+  const [to, setTo] = useState(initialTo ?? fallback.to);
   const [granularity, setGranularity] = useState<SalesGranularity>('day');
   const [showTrend, setShowTrend] = useState(true);
+
+  // Re-seed each time it opens: the caller's window may have moved, or a
+  // different row may have been clicked, since the last time this was mounted.
+  useEffect(() => {
+    if (!open) return;
+    if (initialFrom) setFrom(initialFrom);
+    if (initialTo) setTo(initialTo);
+  }, [open, sku, initialFrom, initialTo]);
 
   useEffect(() => {
     if (!open) return;
