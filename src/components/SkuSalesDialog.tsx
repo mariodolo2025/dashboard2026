@@ -65,8 +65,12 @@ export function SkuSalesDialog({
   //
   // Centred on the viewport; the panel caps at 90vh and scrolls its own body, so
   // a tall report stays centred instead of pushing its header off screen.
+  // pointer-events-auto is load-bearing, not decoration: a Radix modal Dialog
+  // sets `pointer-events: none` on <body> while it is open. Portalling out of its
+  // subtree means this overlay inherits that, so the close button and the
+  // backdrop stopped responding and clicks landed on the tab behind.
   return createPortal(
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 sm:p-6">
+    <div className="pointer-events-auto fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 sm:p-6">
       {/* Backdrop click closes; clicks inside must not bubble to it. */}
       <div className="absolute inset-0" onClick={onClose} aria-hidden />
       <div
