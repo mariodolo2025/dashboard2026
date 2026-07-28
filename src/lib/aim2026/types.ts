@@ -4,7 +4,9 @@
 
 // ─── Status & Classification ─────────────────────────────────────────────────
 
-export type StockStatus = 'CRITICAL' | 'LOW STOCK' | 'WARNING' | 'OK' | 'OVERSTOCK';
+// NO DEMAND appears only under a channel filter: no sales in that channel, and
+// since stock is not held per channel there is no stock verdict to give.
+export type StockStatus = 'CRITICAL' | 'LOW STOCK' | 'WARNING' | 'OK' | 'OVERSTOCK' | 'NO DEMAND';
 export type ABCClass = 'A' | 'B' | 'C';
 export type TrendDirection = 'up' | 'down' | 'stable';
 export type StockoutRisk = 'critical' | 'high' | 'medium' | 'low';

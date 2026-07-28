@@ -13,9 +13,24 @@ const STATUS_STYLES: Record<StockStatus, string> = {
   OK: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-400 dark:border-emerald-900',
   OVERSTOCK:
     'bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/50 dark:text-violet-400 dark:border-violet-900',
+  'NO DEMAND': 'bg-transparent text-muted-foreground border-transparent',
 };
 
 export function StatusBadge({ status, className }: { status: StockStatus; className?: string }) {
+  // Stock is not held per channel, so with a channel filter on, "no demand here"
+  // is not a stock verdict. It renders as a plain dash rather than a coloured
+  // badge that would read as an instruction.
+  if (status === 'NO DEMAND') {
+    return (
+      <span
+        className={cn('text-[13px] text-muted-foreground', className)}
+        title="No demand for the selected channel — stock status does not apply"
+      >
+        —
+      </span>
+    );
+  }
+
   return (
     <span
       className={cn(

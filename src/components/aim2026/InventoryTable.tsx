@@ -774,6 +774,8 @@ export function InventoryTable({
             WARNING: 2,
             OK: 3,
             OVERSTOCK: 4,
+            // Nothing to act on, so it sorts last in either direction.
+            'NO DEMAND': 5,
           };
           return order[rowA.original.status] - order[rowB.original.status];
         },
