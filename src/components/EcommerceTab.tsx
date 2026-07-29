@@ -161,7 +161,19 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
 
   const k = data?.kpis;
   const prior = data?.prior;
-  const trend = useMemo(() => (data?.trend ?? []).map((t) => ({ ...t, label: t.ym.slice(2).replace('-', "/") })), [data]);
+  // "2025-07" used to render as "25/07", which reads as a day and a month. Each
+  // point is a MONTH, so the label says so: "Jul 25". The year rides on every
+  // label because the default range spans two of them.
+  const trend = useMemo(
+    () =>
+      (data?.trend ?? []).map((t) => {
+        const [y, m] = t.ym.split('-');
+        const month = new Date(Date.UTC(Number(y), Number(m) - 1, 1))
+          .toLocaleDateString('en', { month: 'short', timeZone: 'UTC' });
+        return { ...t, label: `${month} ${y.slice(2)}` };
+      }),
+    [data]
+  );
   const funnelSteps = useMemo(() => {
     const f = data?.funnel; if (!f) return [];
     return [
@@ -296,10 +308,14 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
             {/* Trend */}
             <SectionH eyebrow="Trend" title="Revenue vs Ad Spend" help="trend" note="hover for detail · follows the filters" />
             <div className="ecom-card">
+              {/* Each swatch is shaped like the mark it stands for — the CSS default
+                  drew all three as identical little lines, so nothing told you that
+                  ad spend is the grey bars. The axis is named inline too: with two
+                  scales on screen, "$" and "×" are not interchangeable. */}
               <div className="ecom-legend">
-                <span><i style={{ background: CHART_GOLD }} />Net revenue</span>
-                <span><i style={{ background: CHART_AXIS }} />Ad spend</span>
-                <span><i style={{ background: CHART_MER }} />MER (right)</span>
+                <span><i style={{ background: CHART_GOLD }} />Net revenue <em className="ecom-legend-ax">line · left, $</em></span>
+                <span><i style={{ background: CHART_AXIS, opacity: 0.45, width: 9, height: 12 }} />Ad spend <em className="ecom-legend-ax">bars · left, $</em></span>
+                <span><i style={{ background: CHART_MER }} />MER <em className="ecom-legend-ax">line · right, revenue ÷ spend</em></span>
               </div>
               <ResponsiveContainer width="100%" height={280}>
                 <ComposedChart data={trend} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -534,7 +550,8 @@ const ECOM_CSS = `
 .ecom-section-h{display:flex;align-items:baseline;gap:12px;margin:28px 2px 14px;flex-wrap:wrap}
 .ecom-section-h h2{font-size:18px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:7px}
 .ecom-legend{display:flex;gap:16px;font-size:11.5px;color:var(--ecom-dim);margin-bottom:8px}
-.ecom-legend span{display:inline-flex;align-items:center;gap:6px}.ecom-legend i{width:14px;height:3px;border-radius:2px}
+.ecom-legend span{display:inline-flex;align-items:center;gap:6px}.ecom-legend i{width:14px;height:3px;border-radius:2px;flex:none}
+.ecom-legend-ax{font-style:normal;font-size:10px;color:var(--ecom-faint);letter-spacing:.01em}
 .ecom-two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
 .ecom-funnel{display:flex;flex-direction:column;gap:8px;margin-top:6px}
 .ecom-funnel .fstep{border-radius:9px;padding:11px 15px;color:#20160a;background:linear-gradient(90deg,var(--ecom-crema),var(--ecom-crema2));display:flex;justify-content:space-between;align-items:center;font-weight:600;min-width:120px}
