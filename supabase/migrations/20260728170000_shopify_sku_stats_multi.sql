@@ -160,3 +160,18 @@ grant execute on function public.shopify_sku_stats_multi(text[], date, date, tex
 -- answers "how is the store doing" before you narrow to a product. Adds
 -- `wholeStore` and `skuCount` to the payload, and caps perSku at 20 rows ordered
 -- by units — unbounded it returned every SKU that sold in the range.
+
+-- -----------------------------------------------------------------------------
+-- 2026-07-29 · native AUD basis (migration 'shopify_line_aud_native_basis').
+-- The AUD figures were a round trip: an Australian order arrives as AUD, the sync
+-- converts it to USD, and the RPC converted it back at a monthly average — so an
+-- amount already held exactly came back approximated, while net_native (what was
+-- actually charged) was never read. New helper shopify_line_aud_factor() gives a
+-- per-row USD->AUD multiplier: AUD orders resolve to net_native exactly, other
+-- currencies use the order's own rate (net_usd_orderrate) instead of a monthly
+-- average of a monthly average. One factor per row, so
+-- gross - discounts - returns = net still holds.
+--
+-- Effect is small in dollars — the same monthly rate was applied in both
+-- directions and nearly cancelled: over 12 months AUD lands on 2,488,816.12
+-- against 2,488,814.12 before. It is a correctness fix, not a restatement.
