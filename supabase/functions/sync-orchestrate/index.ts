@@ -71,6 +71,13 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   // silently stopped at 3,000 assemblies, which is why April and May 2026 lost
   // their component usage entirely. `end` is exclusive: first day of next month.
   ...assemblyChunks(),
+  // Recompute the KPI cache once the inventory inputs are in. Without this step
+  // the cache is only ever written by a manual run: it sat at 2026-07-07 for
+  // three weeks while the underlying data moved, so the tab reported EP-DL-18g
+  // with 1,000 on container and 1,000 on production when the real figures were
+  // 200 and none. Must come after products / SOH / sales / purchase orders /
+  // assemblies, since it reads all of them.
+  { name: 'Inventory · KPI cache', fn: 'aim2026-calc-kpis-v2', body: {} },
   // Shopify sales: pull from the API into shopify_sales_lines, then regenerate the
   // "Total sales by product variant" CSV the dashboard reads (frozen history + live).
   { name: 'Shopify sales', fn: 'shopify-sales-sync', body: {} },
