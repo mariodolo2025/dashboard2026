@@ -60,7 +60,7 @@ const DEFS = {
   insideTouched: 'Of the money those orders billed, how much the module put in the basket and how much the customer came for anyway.',
   modulePlaced: 'Order lines added by a click inside a module — the accessory the module put in the basket.',
   alreadyInBasket: 'Everything else in those same orders: the product the customer came for regardless of the module.',
-  growOrder: 'The two groups of orders compared. They are different customers, not an A/B test — someone using a compatibility finder already arrives with accessory intent.',
+  growOrder: 'Orders that used an upgrade module, measured against the store BEFORE the modules existed — the frozen 84-day window ending Jul 21, every order in the shop. Not an A/B test: product mix, ad spend and seasonality also move these numbers. The comparison against today’s no-module shoppers is shown underneath, but that group self-selects — someone using a compatibility finder already arrives with accessory intent, so the group without one is missing exactly the baskets a module would have grown.',
   rps: 'Attributed revenue divided by exposed sessions. The only fair way to rank modules whose traffic differs by 20×.',
   conversion: 'Share of exposed sessions that ended in a paid order containing a line from this module.',
   aov: 'Average value of the paid orders this module contributed to — the whole order, not just the line the module placed.',
@@ -314,7 +314,6 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const bestRps = Math.max(...mods.map(rpsOf), 0.01);
   const bestConv = Math.max(...mods.map(convOf), 0.01);
   const bestAov = Math.max(...mods.map((m) => m.aov ?? 0), 1);
-  const storeAov = data?.storeShare && data.storeShare.storeOrders > 0 ? data.storeShare.storeRevenue / data.storeShare.storeOrders : null;
   const RPS_FLOOR = 0.5;
   const badModule = (m: Dash['modules'][number]) => rpsOf(m) < RPS_FLOOR && rpsOf(m) === Math.min(...mods.map(rpsOf));
 
@@ -337,8 +336,28 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   // the window, not just the upgrade ones.
   const storeOrders = data?.storeShare?.storeOrders ?? null;
   const fmtShare = (v: number) => (v >= 10 ? `${Math.round(v)}%` : `${v.toFixed(1)}%`);
-  const aovLiftShown = data?.orderImpact ? shownLift(data.orderImpact.upgradeAov != null ? Math.round(data.orderImpact.upgradeAov) : null, data.orderImpact.otherAov != null ? Math.round(data.orderImpact.otherAov) : null) : null;
-  const itemsLiftShown = data?.orderImpact ? shownLift(data.orderImpact.upgradeItems, data.orderImpact.otherItems) : null;
+  // ── The reference every AOV comparison is made against ────────────────────
+  // The pre-launch store, not the shoppers who happened not to use a module
+  // today. Those two are not the same question: someone who opens a module is
+  // already shopping for a compatible part, so the no-module group is depleted
+  // of exactly the baskets a module would have grown. Measured: items per order
+  // are 1.39 for module orders against 1.40 pre-launch — flat — but 1.22 for
+  // today's no-module group, which is what turned a flat number into "+14%".
+  // Frozen 84-day window (Apr 29 → Jul 21 2026), the same one the Products
+  // baseline uses, so the whole tab compares against a single reference.
+  const preAovRef = data?.storeShare?.preLaunchAov ?? null;
+  const preItemsRef = data?.storeShare?.preLaunchItems ?? null;
+
+  const aovLiftShown = data?.orderImpact
+    ? shownLift(
+        data.orderImpact.upgradeAov != null ? Math.round(data.orderImpact.upgradeAov) : null,
+        preAovRef != null ? Math.round(preAovRef) : null
+      )
+    : null;
+  const itemsLiftShown = data?.orderImpact ? shownLift(data.orderImpact.upgradeItems, preItemsRef) : null;
+  // Kept as the secondary reading — informative, but self-selected.
+  const aovLiftVsOther = data?.orderImpact ? shownLift(data.orderImpact.upgradeAov != null ? Math.round(data.orderImpact.upgradeAov) : null, data.orderImpact.otherAov != null ? Math.round(data.orderImpact.otherAov) : null) : null;
+  const itemsLiftVsOther = data?.orderImpact ? shownLift(data.orderImpact.upgradeItems, data.orderImpact.otherItems) : null;
   const fmtLift = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v}%`);
 
   const secGuide = t ? (
@@ -630,22 +649,32 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px' }}>
                 <div className="wu-kicker"><D d={DEFS.growOrder}>Does the module grow the order?</D></div>
                 <div className="wu-oigrid" style={{ marginTop: 12, fontSize: 9.5, fontWeight: 700, letterSpacing: '.09em', textTransform: 'uppercase', color: 'var(--wu-faint)' }}>
-                  <span /><span style={{ textAlign: 'right' }}>With</span><span style={{ textAlign: 'right' }}>Without</span><span style={{ textAlign: 'right' }}>Diff</span>
+                  <span /><span style={{ textAlign: 'right' }}>With</span><span style={{ textAlign: 'right' }}>Pre-launch</span><span style={{ textAlign: 'right' }}>Diff</span>
                 </div>
                 <div className="wu-oigrid" style={{ padding: '10px 0', borderTop: '1px solid var(--wu-line)', fontSize: 12.5, color: 'var(--wu-dim)', alignItems: 'baseline' }}>
                   <span>Items per order</span>
                   <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-text)' }}>{oi.upgradeItems ?? '—'}</b>
-                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-dim)' }}>{oi.otherItems ?? '—'}</b>
+                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-dim)' }}>{preItemsRef ?? '—'}</b>
                   <b className="tnum" style={{ textAlign: 'right', color: (itemsLiftShown ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(itemsLiftShown)}</b>
                 </div>
                 <div className="wu-oigrid" style={{ padding: '10px 0', borderTop: '1px solid var(--wu-line)', fontSize: 12.5, color: 'var(--wu-dim)', alignItems: 'baseline' }}>
                   <span>Average order value</span>
                   <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-text)' }}>{money(oi.upgradeAov)}</b>
-                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-dim)' }}>{money(oi.otherAov)}</b>
+                  <b className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 17, textAlign: 'right', color: 'var(--wu-dim)' }}>{money(preAovRef)}</b>
                   <b className="tnum" style={{ textAlign: 'right', color: (aovLiftShown ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(aovLiftShown)}</b>
                 </div>
                 {itemsLiftShown != null && aovLiftShown != null && itemsLiftShown > aovLiftShown && itemsLiftShown > 0 && (
                   <p style={{ margin: '11px 0 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--wu-faint)' }}>The module adds items, not expensive ones — the basket grows by {itemsLiftShown}% but its value by only {aovLiftShown}%.</p>
+                )}
+                {/* The self-selected reading, kept but demoted: shoppers who open a
+                    module are already after a compatible part, so the no-module
+                    group is missing exactly the baskets a module would have grown. */}
+                {(aovLiftVsOther != null || itemsLiftVsOther != null) && (
+                  <p style={{ margin: '9px 0 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--wu-faint)' }}>
+                    Against today’s no-module shoppers instead ({money(oi.otherAov)} · {oi.otherItems ?? '—'} items):{' '}
+                    <b className="tnum">{fmtLift(aovLiftVsOther)}</b> AOV · <b className="tnum">{fmtLift(itemsLiftVsOther)}</b> items.
+                    That group self-selects — it is missing the shoppers a module would have helped.
+                  </p>
                 )}
               </div>
             )}
@@ -716,7 +745,10 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             const s = steps(m);
             const bad = badModule(m);
             const revShare = t.directRevenue > 0 ? Math.round((100 * m.revenue) / t.directRevenue) : 0;
-            const aovDelta = storeAov && m.aov != null ? Math.round((100 * (m.aov - storeAov)) / storeAov) : null;
+            // Against the pre-launch store, not the store as it is now. Comparing a
+            // module to a current average that already contains that module's own
+            // orders is partly comparing it to itself.
+            const aovDelta = preAovRef && m.aov != null ? Math.round((100 * (m.aov - preAovRef)) / preAovRef) : null;
             const endRate = m.views > 0 ? (100 * m.orders) / m.views : null;
             return (
               <div key={m.module} className="wu-card wu-mcard">
@@ -752,7 +784,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     <div className="wu-kicker"><D d={DEFS.aov}>AOV</D></div>
                     <div className="tnum wu-mrate-v">{m.aov != null ? `$${Math.round(m.aov)}` : '—'}</div>
                     <div className="wu-mrate-bar"><span style={{ width: `${m.aov != null ? Math.max(2, Math.round((100 * m.aov) / bestAov)) : 0}%`, background: 'var(--wu-crema)' }} /></div>
-                    <div className="wu-mrate-c">{storeAov != null && <>store ${Math.round(storeAov)}{aovDelta != null && <> · <span style={{ fontWeight: 600, color: Math.abs(aovDelta) < 3 ? 'var(--wu-dim)' : aovDelta > 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{aovDelta > 0 ? '+' : ''}{aovDelta}%</span></>}</>}</div>
+                    <div className="wu-mrate-c">{preAovRef != null && <>pre-launch ${Math.round(preAovRef)}{aovDelta != null && <> · <span style={{ fontWeight: 600, color: Math.abs(aovDelta) < 3 ? 'var(--wu-dim)' : aovDelta > 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{aovDelta > 0 ? '+' : ''}{aovDelta}%</span></>}</>}</div>
                   </div>
                 </div>
                 <div style={{ padding: '14px 18px 16px' }}>
@@ -1025,7 +1057,10 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                     </div>
                     {oi && (
                       <div style={{ display: 'flex', gap: 16, marginTop: 13, paddingTop: 12, borderTop: '1px solid var(--wu-line)' }}>
-                        <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>the module group vs these: <b className="tnum" style={{ color: (aovLiftShown ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(aovLiftShown)}</b> AOV · <b className="tnum" style={{ color: (itemsLiftShown ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(itemsLiftShown)}</b> items</span>
+                        {/* This line compares against the group shown right above it,
+                            so it keeps the vs-no-module lift — the headline elsewhere
+                            is against pre-launch. */}
+                        <span style={{ fontSize: 11, color: 'var(--wu-faint)' }}>the module group vs these: <b className="tnum" style={{ color: (aovLiftVsOther ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(aovLiftVsOther)}</b> AOV · <b className="tnum" style={{ color: (itemsLiftVsOther ?? 0) >= 0 ? 'var(--wu-pos)' : 'var(--wu-neg)' }}>{fmtLift(itemsLiftVsOther)}</b> items</span>
                       </div>
                     )}
                   </div>
