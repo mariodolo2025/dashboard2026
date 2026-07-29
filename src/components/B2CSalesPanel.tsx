@@ -41,12 +41,30 @@ const fmtUsd = (v: number | null | undefined) =>
 const fmtUsd2 = (v: number | null | undefined) =>
   v === null || v === undefined ? '' : `(US$${v.toFixed(2)})`;
 
-/** The USD companion of an AUD figure: same number, source currency, set much
- * smaller so it never competes with the amount it annotates. */
-function Usd({ value, decimals = false }: { value: number | null | undefined; decimals?: boolean }) {
+/** The USD companion of an AUD figure: same number, source currency, set smaller
+ * so it never competes with the amount it annotates.
+ *
+ * Size is fixed rather than relative. At 0.58em it rendered around 8px inside a
+ * table cell — legible next to a 24px stat card, unreadable in a row. */
+function Usd({
+  value, decimals = false, size = 'card',
+}: {
+  value: number | null | undefined;
+  decimals?: boolean;
+  size?: 'card' | 'table';
+}) {
   const text = decimals ? fmtUsd2(value) : fmtUsd(value);
   if (!text) return null;
-  return <span className="ml-1 text-[0.58em] font-normal text-muted-foreground/70 align-baseline">{text}</span>;
+  return (
+    <span
+      className={cn(
+        'ml-1 font-normal text-muted-foreground align-baseline',
+        size === 'table' ? 'text-[11px]' : 'text-[0.58em]'
+      )}
+    >
+      {text}
+    </span>
+  );
 }
 
 const fmtNum = (v: number | null | undefined) =>
@@ -585,9 +603,9 @@ export function B2CSalesPanel({
                           </span>
                         )}
                       </td>
-                      <td className="py-1.5 text-right tabular-nums">{fmtNum(p.units)}</td>
-                      <td className="py-1.5 text-right tabular-nums">{fmtNum(p.orders)}</td>
-                      <td className="py-1.5 text-right tabular-nums">{fmtAud(p.net_aud)}<Usd value={p.net_usd} /></td>
+                      <td className="py-1.5 text-right tabular-nums font-medium">{fmtNum(p.units)}</td>
+                      <td className="py-1.5 text-right tabular-nums font-medium">{fmtNum(p.orders)}</td>
+                      <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud(p.net_aud)}<Usd value={p.net_usd} size="table" /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -616,8 +634,8 @@ export function B2CSalesPanel({
                     {stats.countries.map((c) => (
                       <tr key={c.country} className="border-t border-border/40">
                         <td className="py-1.5">{c.country}</td>
-                        <td className="py-1.5 text-right tabular-nums">{fmtNum(c.units)}</td>
-                        <td className="py-1.5 text-right tabular-nums">{fmtAud(c.net_aud)}<Usd value={c.net_usd} /></td>
+                        <td className="py-1.5 text-right tabular-nums font-medium">{fmtNum(c.units)}</td>
+                        <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud(c.net_aud)}<Usd value={c.net_usd} size="table" /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -649,8 +667,8 @@ export function B2CSalesPanel({
                           <td className="py-1.5 tabular-nums">{o.order_date}</td>
                           {skus.length !== 1 && <td className="py-1.5 text-[11px]">{o.sku}</td>}
                           <td className="py-1.5">{o.country}</td>
-                          <td className="py-1.5 text-right tabular-nums">{fmtNum(o.quantity)}</td>
-                          <td className="py-1.5 text-right tabular-nums">{fmtAud2(o.net_aud)}<Usd value={o.net_usd} decimals /></td>
+                          <td className="py-1.5 text-right tabular-nums font-medium">{fmtNum(o.quantity)}</td>
+                          <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud2(o.net_aud)}<Usd value={o.net_usd} decimals size="table" /></td>
                         </tr>
                       ))}
                     </tbody>
