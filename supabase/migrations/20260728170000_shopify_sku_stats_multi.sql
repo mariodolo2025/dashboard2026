@@ -153,3 +153,10 @@ grant execute on function public.shopify_sku_stats_multi(text[], date, date, tex
 --   buckets as (select generate_series(date_trunc(v_trunc, p_from), 
 --                                      date_trunc(v_trunc, p_to), v_step)::date)
 -- left joined to the aggregate. Same totals, honest shape.
+
+-- -----------------------------------------------------------------------------
+-- 2026-07-29 · whole store (migration 'shopify_sku_stats_multi_whole_store').
+-- An empty/NULL p_skus now means "every SKU" instead of raising, so the explorer
+-- answers "how is the store doing" before you narrow to a product. Adds
+-- `wholeStore` and `skuCount` to the payload, and caps perSku at 20 rows ordered
+-- by units — unbounded it returned every SKU that sold in the range.

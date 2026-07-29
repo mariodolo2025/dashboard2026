@@ -1430,6 +1430,10 @@ export type SalesGranularity = 'day' | 'week' | 'month';
 
 export interface ShopifySkuStats {
   skus: string[];
+  /** true when no SKU was selected: the figures cover the whole store. */
+  wholeStore: boolean;
+  /** How many distinct SKUs actually sold in the window. */
+  skuCount: number;
   granularity: SalesGranularity;
   from: string;
   to: string;
@@ -1498,7 +1502,8 @@ export async function fetchShopifySkuStats(
   granularity: SalesGranularity = 'month'
 ): Promise<ShopifySkuStats> {
   return callRpc<ShopifySkuStats>('shopify_sku_stats_multi', {
-    p_skus: skus,
+    // No selection means the whole store, not an error.
+    p_skus: skus.length > 0 ? skus : null,
     p_from: from,
     p_to: to,
     p_granularity: granularity,

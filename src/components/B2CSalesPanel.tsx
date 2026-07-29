@@ -346,7 +346,7 @@ export function B2CSalesPanel({
   }, [showSearch]);
 
   useEffect(() => {
-    if (skus.length === 0) { setStats(null); return; }
+    // An empty selection is not an empty state: it means the whole store.
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -413,12 +413,6 @@ export function B2CSalesPanel({
         </div>
       </div>
 
-      {skus.length === 0 && (
-        <p className="text-sm text-muted-foreground py-6">
-          Pick one or more SKUs to see their Shopify sales.
-        </p>
-      )}
-
       {error && (
         <Card className="p-4 border-red-200 bg-red-50 dark:bg-red-950/30">
           <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
@@ -430,7 +424,11 @@ export function B2CSalesPanel({
       {stats && (
         <div className={cn('space-y-4', loading && 'opacity-60')}>
           <p className="text-[11px] text-muted-foreground/70">
-            {skus.length === 1 ? stats.perSku[0]?.product_title ?? '' : `${skus.length} SKUs`}
+            {stats.wholeStore
+              ? `Whole store · ${fmtNum(stats.skuCount)} SKUs sold`
+              : skus.length === 1
+                ? stats.perSku[0]?.product_title ?? ''
+                : `${skus.length} SKUs`}
             {' · vs '}{stats.previousFrom} → {stats.previousTo}
           </p>
 
@@ -565,7 +563,7 @@ export function B2CSalesPanel({
           {stats.perSku.length > 1 && (
             <Card className="p-4">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                By SKU
+                {stats.wholeStore ? 'Top products' : 'By SKU'}
               </h3>
               <table className="w-full text-sm">
                 <thead>
@@ -639,7 +637,7 @@ export function B2CSalesPanel({
                     <thead className="sticky top-0 bg-card">
                       <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
                         <th className="text-left font-medium pb-1.5">Date</th>
-                        {skus.length > 1 && <th className="text-left font-medium pb-1.5">SKU</th>}
+                        {skus.length !== 1 && <th className="text-left font-medium pb-1.5">SKU</th>}
                         <th className="text-left font-medium pb-1.5">Country</th>
                         <th className="text-right font-medium pb-1.5">Qty</th>
                         <th className="text-right font-medium pb-1.5">Net AUD</th>
@@ -649,7 +647,7 @@ export function B2CSalesPanel({
                       {stats.recentOrders.map((o, i) => (
                         <tr key={`${o.order_date}-${o.sku}-${i}`} className="border-t border-border/40">
                           <td className="py-1.5 tabular-nums">{o.order_date}</td>
-                          {skus.length > 1 && <td className="py-1.5 text-[11px]">{o.sku}</td>}
+                          {skus.length !== 1 && <td className="py-1.5 text-[11px]">{o.sku}</td>}
                           <td className="py-1.5">{o.country}</td>
                           <td className="py-1.5 text-right tabular-nums">{fmtNum(o.quantity)}</td>
                           <td className="py-1.5 text-right tabular-nums">{fmtAud2(o.net_aud)}<Usd value={o.net_usd} decimals /></td>
