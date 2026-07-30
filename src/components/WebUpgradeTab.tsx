@@ -27,6 +27,10 @@ interface Dash {
   rewards: Array<{ name: string; unlocks: number; sessions: number; bought: number }>;
   storeShare: { storeOrders: number; storeRevenue: number; upgradeOrders: number; upgradeOrderRevenue?: number; attributedRevenue: number; orderSharePct: number | null; revenueSharePct: number | null; preLaunchAov?: number | null; preLaunchItems?: number | null; preLaunchOrders?: number | null; preLaunchFrom?: string | null; preLaunchTo?: string | null } | null;
   orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
+  // The site-wide COMPATIBILITY bar. Measured apart from the modules on purpose:
+  // inside `ev` its view event would count every page of the site as an exposed
+  // module session. Zeros until the theme starts emitting compatibility_bar_*.
+  compatibilityBar?: { views: number; clicks: number; sessions: number; clickSessions: number; ctr: number | null } | null;
   bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
   byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number; variants: Array<{ label: string; orders: number; lines: number; revenue: number }> | null }>;
   byFamily: Array<{ family: string; lines: number; revenue: number }>;
@@ -806,6 +810,21 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             );
           })}
         </div>
+        {/* The site-wide COMPATIBILITY bar. Hidden until the theme starts
+            emitting compatibility_bar_view / _click — its own events, so the
+            bar never contaminates the guide-page funnel again. */}
+        {data?.compatibilityBar && data.compatibilityBar.views > 0 && (
+          <div className="wu-card" style={{ borderRadius: 14, padding: '14px 18px', marginTop: 14 }}>
+            <div className="wu-kicker">Compatibility bar · site-wide</div>
+            <div style={{ display: 'flex', gap: 26, marginTop: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
+              <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, lineHeight: 1 }}>{int(data.compatibilityBar.views)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>Views</div></div>
+              <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, lineHeight: 1 }}>{int(data.compatibilityBar.clicks)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>Clicks</div></div>
+              <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, lineHeight: 1 }}>{data.compatibilityBar.ctr != null ? `${data.compatibilityBar.ctr}%` : '—'}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>CTR</div></div>
+              <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, lineHeight: 1 }}>{int(data.compatibilityBar.sessions)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>Sessions</div></div>
+            </div>
+            <p style={{ margin: '10px 0 0', fontSize: 10.5, color: 'var(--wu-faint)', lineHeight: 1.5 }}>The orange bar shown on every page. Measured apart from the modules: its views cover the whole site, so mixing them into a module funnel would dilute every rate.</p>
+          </div>
+        )}
         {secGuide}
       </>
     );
