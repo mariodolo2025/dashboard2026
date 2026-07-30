@@ -124,11 +124,22 @@ function TrendTip({ active, payload, label }: { active?: boolean; payload?: Arra
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;
   return (
+    // Same swatch shapes and colours as the legend, so a row in here points at a
+    // mark out there without the reader having to match numbers by eye.
     <div className="ecom-charttip">
       <div className="tt">{label}</div>
-      <div className="tr"><span>Net revenue</span><b>{money(d.revenue)}</b></div>
-      <div className="tr"><span>Ad spend</span><b>{money(d.spend)}</b></div>
-      <div className="tr"><span>MER</span><b style={{ color: CHART_MER }}>{d.mer != null ? `${d.mer.toFixed(2)}×` : '–'}</b></div>
+      <div className="tr">
+        <span><i className="ecom-tipsw" style={{ background: CHART_GOLD }} />Net revenue</span>
+        <b style={{ color: CHART_GOLD }}>{money(d.revenue)}</b>
+      </div>
+      <div className="tr">
+        <span><i className="ecom-tipsw" style={{ background: CHART_AXIS, opacity: 0.45, width: 8, height: 11 }} />Ad spend</span>
+        <b style={{ color: CHART_AXIS }}>{money(d.spend)}</b>
+      </div>
+      <div className="tr">
+        <span><i className="ecom-tipsw" style={{ background: CHART_MER }} />MER</span>
+        <b style={{ color: CHART_MER }}>{d.mer != null ? `${d.mer.toFixed(2)}×` : '–'}</b>
+      </div>
     </div>
   );
 }
@@ -587,7 +598,8 @@ const ECOM_CSS = `
 .ecom-charttip{background:var(--ecom-card);border:1px solid var(--ecom-line);border-radius:11px;box-shadow:var(--ecom-shadow);padding:10px 12px;font-size:12px}
 .ecom-charttip .tt{font-family:'Fraunces',Georgia,serif;font-size:13px;color:var(--ecom-crema);margin-bottom:5px;font-weight:600}
 .ecom-charttip .tr{display:flex;justify-content:space-between;gap:18px;font-variant-numeric:tabular-nums;color:var(--ecom-text)}
-.ecom-charttip .tr span{color:var(--ecom-faint)}
+.ecom-charttip .tr span{color:var(--ecom-faint);display:inline-flex;align-items:center;gap:6px}
+.ecom-tipsw{width:12px;height:3px;border-radius:2px;flex:none}
 .ecom-foot{margin-top:28px;padding-top:16px;border-top:1px solid var(--ecom-line);font-size:12px;color:var(--ecom-faint);line-height:1.7}
 .ecom-foot b{color:var(--ecom-dim);font-weight:600}
 @media (max-width:900px){.ecom-hero,.ecom-strip{grid-column:span 12}.ecom-mini{grid-template-columns:repeat(2,1fr)}.ecom-two,.ecom-mkt,.ecom-dgrid{grid-template-columns:1fr}}
