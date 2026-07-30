@@ -1,0 +1,31 @@
+-- =============================================================================
+-- Web Upgrade — guard compatibility_page_view by page, measure the bar apart
+-- =============================================================================
+-- Applied as migration 'web_upgrade_guard_page_view_and_bar' (in-place patch of
+-- web_upgrade_performance via pg_get_functiondef + anchored replace).
+--
+-- Symptom: on 2026-07-30 the guide's $/session fell from $5 to $2 and its CTR
+-- from 15% to 4.7% overnight, with real guide-page traffic unchanged.
+--
+-- Cause: at 04:25:38 UTC that day, layout/theme.liquid on the LIVE theme
+-- (187483062579) started loading pesado-compatibility.js on every page, to power
+-- the mobile COMPATIBILITY bar. The script fires compatibility_page_view
+-- unconditionally on init, so every page of the site emitted "guide viewed" —
+-- 6,043 foreign-page views in one day (first contaminated event 04:25:42, four
+-- seconds after the theme edit).
+--
+-- Patch 1 — the ev CTE now keeps compatibility_page_view only when its
+-- page_path is the guide page (blank kept for pre-field history):
+--   and (action <> 'compatibility_page_view'
+--        or coalesce(payload->>'page_path', '') = ''
+--        or payload->>'page_path' like '%compatibility-guide%')
+--   and action not like 'compatibility!_bar!_%' escape '!'
+--
+-- Patch 2 — a new top-level `compatibilityBar` object counts the bar's own
+-- events (compatibility_bar_view / compatibility_bar_click, to be emitted by
+-- the theme): views, clicks, sessions, clickSessions, ctr. The bar is excluded
+-- from ev entirely: inside it, a site-wide bar view would count every page of
+-- the site as an exposed module session.
+--
+-- Verified after applying: Guide for 2026-07-23..30 back to 1,542 sessions /
+-- 2,360 views / 16.1% CTR; compatibilityBar returns zeros until the theme ships.
