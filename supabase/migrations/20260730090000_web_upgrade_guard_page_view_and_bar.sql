@@ -29,3 +29,28 @@
 --
 -- Verified after applying: Guide for 2026-07-23..30 back to 1,542 sessions /
 -- 2,360 views / 16.1% CTR; compatibilityBar returns zeros until the theme ships.
+--
+-- -----------------------------------------------------------------------------
+-- 2026-07-31 · theme side shipped, both patches confirmed against live data.
+--
+-- The theme fix guards the event with !isStandalone rather than a URL check:
+-- off the guide the script mounts an invisible `pcg--standalone` root, so that
+-- flag is exact and survives any locale prefix. Bar events fire only for
+-- .pesado-find-tools-mobile, once per load when it actually becomes visible;
+-- the desktop orange button is deliberately NOT included — it is a different
+-- surface and folding it in would corrupt the mobile bar's CTR.
+--
+-- Confirmed on live data:
+--   * foreign-page compatibility_page_view collapsed from 433/hour to 12/hour
+--     within the hour the fix landed (the tail is browsers still on the cached
+--     theme, and the page_path filter neutralises it either way).
+--   * every compatibility_model_select — real guide interaction — sits on a
+--     path the filter keeps: /pages/compatibility-guide and
+--     /en-au/pages/compatibility-guide. The filter discards no real traffic.
+--   * zero compatibility_bar_view on the guide page: the bar does not render
+--     there, so the two surfaces never overlap.
+--   * Guide back to $5.78/session and 16.6% CTR; bar reads 783 views, 7 clicks,
+--     0.9% CTR over 473 sessions.
+--
+-- The page_path filter STAYS regardless of the theme fix: it is what corrects
+-- the contaminated history, and it is the defence if the guard ever regresses.
