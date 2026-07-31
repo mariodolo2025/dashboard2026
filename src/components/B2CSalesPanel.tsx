@@ -138,19 +138,29 @@ function delta(current: number, previous: number): number | null {
  * with no sales is a zero bucket, not a missing one. Averaging over points that
  * are not adjacent in time produced a flat line that meant nothing. */
 function withTrend(
-  series: { bucket: string; units: number; net_aud: number }[],
+  series: { bucket: string; units: number; net_aud: number; net_usd: number }[],
   granularity: SalesGranularity,
   metric: SalesMetric
 ) {
   const half = granularity === 'day' ? 3 : 1;
   // The curve has to average the same thing the bars draw, or it reads as a
   // trend for a quantity nobody is looking at.
-  const valueOf = (p: { units: number; net_aud: number }) =>
-    metric === 'revenue' ? p.net_aud : p.units;
+  const rev = metric === 'revenue';
+  const valueOf = (p: { units: number; net_aud: number }) => (rev ? p.net_aud : p.units);
   return series.map((p, i) => {
     const window = series.slice(Math.max(0, i - half), Math.min(series.length, i + half + 1));
-    const trend = window.reduce((s, w) => s + valueOf(w), 0) / window.length;
-    return { ...p, netAud: p.net_aud, value: valueOf(p), trend: Math.round(trend * 100) / 100 };
+    const avg = (f: (w: typeof p) => number) =>
+      Math.round((window.reduce((s, w) => s + f(w), 0) / window.length) * 100) / 100;
+    return {
+      ...p,
+      netAud: p.net_aud,
+      value: valueOf(p),
+      // Money carries its USD companion everywhere it is shown. Units do not:
+      // a count has no second currency.
+      valueUsd: rev ? p.net_usd : null,
+      trend: avg(valueOf),
+      trendUsd: rev ? avg((w) => w.net_usd) : null,
+    };
   });
 }
 
@@ -488,7 +498,7 @@ export function B2CSalesPanel({
               icon={<DollarSign size={15} />} label="Net sales" accent="#10b981"
               value={fmtAud(stats.summary.netAud)}
               usd={stats.summary.netUsd}
-              sub={`${fmtAud(stats.previous.netAud)} before · AUD`}
+              sub={`${fmtAud(stats.previous.netAud)} ${fmtUsd(stats.previous.netUsd)} before`}
               delta={netDelta}
             />
             <StatCard
@@ -601,10 +611,14 @@ export function B2CSalesPanel({
                     />
                     <RTooltip
                       labelFormatter={(b: string) => bucketLabel(b, granularity)}
-                      formatter={(v: number, name: string) => {
-                        const fmt = metric === 'revenue' ? fmtAud : fmtNum;
-                        if (name === 'trend') return [fmt(v), 'Trend'];
-                        return [fmt(v), metric === 'revenue' ? 'Net AUD' : 'Units'];
+                      formatter={(v: number, name: string, p: { payload?: Record<string, number | null> }) => {
+                        if (metric !== 'revenue') {
+                          return [fmtNum(v), name === 'trend' ? 'Trend' : 'Units'];
+                        }
+                        // Same rule as everywhere else: an AUD figure is followed
+                        // by the USD it was converted from.
+                        const usd = p?.payload?.[name === 'trend' ? 'trendUsd' : 'valueUsd'];
+                        return [`${fmtAud(v)} ${fmtUsd(usd)}`.trim(), name === 'trend' ? 'Trend' : 'Net AUD'];
                       }}
                       contentStyle={{ fontSize: 12, borderRadius: 8 }}
                     />
