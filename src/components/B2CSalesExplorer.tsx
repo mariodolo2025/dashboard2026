@@ -21,6 +21,8 @@ export function B2CSalesExplorer() {
       onRangeChange={(from, to) => patch({ from, to })}
       granularity={state.granularity}
       onGranularityChange={(granularity) => patch({ granularity })}
+      metric={state.metric}
+      onMetricChange={(metric) => patch({ metric })}
       showTrend={state.showTrend}
       onShowTrendChange={(showTrend) => patch({ showTrend })}
     />

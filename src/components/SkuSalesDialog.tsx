@@ -14,7 +14,7 @@ import { createPortal } from 'react-dom';
 import { X, Package } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { B2CSalesPanel, DATE_PRESETS } from '@/components/B2CSalesPanel';
-import type { SalesGranularity } from '@/lib/aim2026/api';
+import type { SalesGranularity, SalesMetric } from '@/lib/aim2026/api';
 
 export function SkuSalesDialog({
   sku,
@@ -38,6 +38,7 @@ export function SkuSalesDialog({
   const [from, setFrom] = useState(initialFrom ?? fallback.from);
   const [to, setTo] = useState(initialTo ?? fallback.to);
   const [granularity, setGranularity] = useState<SalesGranularity>('day');
+  const [metric, setMetric] = useState<SalesMetric>('units');
   const [showTrend, setShowTrend] = useState(true);
 
   // Re-seed each time it opens: the caller's window may have moved, or a
@@ -109,6 +110,8 @@ export function SkuSalesDialog({
             from={from}
             to={to}
             onRangeChange={(f, t) => { setFrom(f); setTo(t); }}
+            metric={metric}
+            onMetricChange={setMetric}
             granularity={granularity}
             onGranularityChange={setGranularity}
             showTrend={showTrend}

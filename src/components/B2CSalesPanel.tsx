@@ -28,6 +28,7 @@ import {
   type ShopifySkuListItem,
   type ShopifySkuStats,
   type SalesGranularity,
+  type SalesMetric,
 } from '@/lib/aim2026/api';
 
 // ─── Formatting ─────────────────────────────────────────────────────────────
@@ -117,6 +118,11 @@ const GRANULARITIES: { key: SalesGranularity; label: string }[] = [
   { key: 'month', label: 'Month' },
 ];
 
+const METRICS: { key: SalesMetric; label: string }[] = [
+  { key: 'units', label: 'Units' },
+  { key: 'revenue', label: 'Revenue' },
+];
+
 /** Change vs the equivalent previous window. null when there is no previous
  * figure — a first-ever period is not "+100%". */
 function delta(current: number, previous: number): number | null {
@@ -133,13 +139,18 @@ function delta(current: number, previous: number): number | null {
  * are not adjacent in time produced a flat line that meant nothing. */
 function withTrend(
   series: { bucket: string; units: number; net_aud: number }[],
-  granularity: SalesGranularity
+  granularity: SalesGranularity,
+  metric: SalesMetric
 ) {
   const half = granularity === 'day' ? 3 : 1;
+  // The curve has to average the same thing the bars draw, or it reads as a
+  // trend for a quantity nobody is looking at.
+  const valueOf = (p: { units: number; net_aud: number }) =>
+    metric === 'revenue' ? p.net_aud : p.units;
   return series.map((p, i) => {
     const window = series.slice(Math.max(0, i - half), Math.min(series.length, i + half + 1));
-    const trend = window.reduce((s, w) => s + w.units, 0) / window.length;
-    return { ...p, netAud: p.net_aud, trend: Math.round(trend * 100) / 100 };
+    const trend = window.reduce((s, w) => s + valueOf(w), 0) / window.length;
+    return { ...p, netAud: p.net_aud, value: valueOf(p), trend: Math.round(trend * 100) / 100 };
   });
 }
 
@@ -353,6 +364,8 @@ export interface B2CSalesPanelProps {
   onRangeChange: (from: string, to: string) => void;
   granularity: SalesGranularity;
   onGranularityChange: (g: SalesGranularity) => void;
+  metric: SalesMetric;
+  onMetricChange: (m: SalesMetric) => void;
   showTrend: boolean;
   onShowTrendChange: (v: boolean) => void;
   /** Hides the search when the caller has already fixed the SKU. */
@@ -362,7 +375,8 @@ export interface B2CSalesPanelProps {
 
 export function B2CSalesPanel({
   skus, onSkusChange, from, to, onRangeChange,
-  granularity, onGranularityChange, showTrend, onShowTrendChange,
+  granularity, onGranularityChange, metric, onMetricChange,
+  showTrend, onShowTrendChange,
   showSearch = true, compact = false,
 }: B2CSalesPanelProps) {
   const [skuList, setSkuList] = useState<ShopifySkuListItem[]>([]);
@@ -380,12 +394,12 @@ export function B2CSalesPanel({
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchShopifySkuStats(skus, from, to, granularity)
+    fetchShopifySkuStats(skus, from, to, granularity, metric)
       .then((s) => { if (!cancelled) setStats(s); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [skus.join('|'), from, to, granularity]);
+  }, [skus.join('|'), from, to, granularity, metric]);
 
   const activePreset = useMemo(
     () => DATE_PRESETS.find((p) => { const r = p.range(); return r.from === from && r.to === to; })?.label ?? null,
@@ -393,8 +407,8 @@ export function B2CSalesPanel({
   );
 
   const chartData = useMemo(
-    () => withTrend(stats?.series ?? [], stats?.granularity ?? granularity),
-    [stats, granularity]
+    () => withTrend(stats?.series ?? [], stats?.granularity ?? granularity, metric),
+    [stats, granularity, metric]
   );
 
   const unitsDelta = stats ? delta(stats.summary.units, stats.previous.units) : null;
@@ -512,9 +526,25 @@ export function B2CSalesPanel({
           <Card className="p-4">
             <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Units per {granularity}
+                {metric === 'revenue' ? 'Net AUD' : 'Units'} per {granularity}
               </h3>
               <div className="flex items-center gap-2">
+                <div className="flex items-center gap-0.5 rounded-lg bg-muted/50 p-0.5">
+                  {METRICS.map((m) => (
+                    <button
+                      key={m.key}
+                      onClick={() => onMetricChange(m.key)}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors',
+                        metric === m.key
+                          ? 'bg-background shadow-sm text-foreground'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
                 <div className="flex items-center gap-0.5 rounded-lg bg-muted/50 p-0.5">
                   {GRANULARITIES.map((g) => (
                     <button
@@ -562,17 +592,23 @@ export function B2CSalesPanel({
                       tickLine={false}
                       minTickGap={16}
                     />
-                    <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} width={44} />
+                    <YAxis
+                      tick={{ fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={metric === 'revenue' ? 60 : 44}
+                      tickFormatter={(v: number) => (metric === 'revenue' ? fmtAud(v) : fmtNum(v))}
+                    />
                     <RTooltip
                       labelFormatter={(b: string) => bucketLabel(b, granularity)}
                       formatter={(v: number, name: string) => {
-                        if (name === 'trend') return [fmtNum(v), 'Trend'];
-                        if (name === 'netAud') return [fmtAud(v), 'Net AUD'];
-                        return [fmtNum(v), 'Unidades'];
+                        const fmt = metric === 'revenue' ? fmtAud : fmtNum;
+                        if (name === 'trend') return [fmt(v), 'Trend'];
+                        return [fmt(v), metric === 'revenue' ? 'Net AUD' : 'Units'];
                       }}
                       contentStyle={{ fontSize: 12, borderRadius: 8 }}
                     />
-                    <Bar dataKey="units" fill="#3b82f6" radius={[4, 4, 0, 0]} name="units" />
+                    <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} name="value" />
                     {showTrend && (
                       <Line
                         type="monotone"
@@ -711,12 +747,13 @@ export interface B2CExplorerState {
   from: string;
   to: string;
   granularity: SalesGranularity;
+  metric: SalesMetric;
   showTrend: boolean;
 }
 
 function defaultState(): B2CExplorerState {
   const r = DATE_PRESETS.find((p) => p.label === '90 days')!.range();
-  return { skus: [], from: r.from, to: r.to, granularity: 'day', showTrend: true };
+  return { skus: [], from: r.from, to: r.to, granularity: 'day', metric: 'units', showTrend: true };
 }
 
 export function useB2CExplorerState() {
@@ -733,6 +770,9 @@ export function useB2CExplorerState() {
         granularity: (['day', 'week', 'month'] as const).includes(parsed.granularity as SalesGranularity)
           ? (parsed.granularity as SalesGranularity)
           : d.granularity,
+        metric: (['units', 'revenue'] as const).includes(parsed.metric as SalesMetric)
+          ? (parsed.metric as SalesMetric)
+          : d.metric,
         showTrend: typeof parsed.showTrend === 'boolean' ? parsed.showTrend : d.showTrend,
       };
     } catch {
