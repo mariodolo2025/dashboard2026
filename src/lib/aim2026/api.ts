@@ -1428,6 +1428,11 @@ export interface ShopifySkuListItem {
 
 export type SalesGranularity = 'day' | 'week' | 'month';
 
+/** What the reader is measuring by. Ranking by units hides the SKU that sells
+ * few but expensive pieces; ranking by revenue hides the volume driver. Both
+ * figures always come back, so this only decides ordering and emphasis. */
+export type SalesMetric = 'units' | 'revenue';
+
 export interface ShopifySkuStats {
   skus: string[];
   /** true when no SKU was selected: the figures cover the whole store. */
@@ -1435,6 +1440,8 @@ export interface ShopifySkuStats {
   /** How many distinct SKUs actually sold in the window. */
   skuCount: number;
   granularity: SalesGranularity;
+  /** What perSku and countries are ranked by. */
+  metric: SalesMetric;
   from: string;
   to: string;
   previousFrom: string;
@@ -1499,7 +1506,8 @@ export async function fetchShopifySkuStats(
   skus: string[],
   from: string,
   to: string,
-  granularity: SalesGranularity = 'month'
+  granularity: SalesGranularity = 'month',
+  metric: SalesMetric = 'units'
 ): Promise<ShopifySkuStats> {
   return callRpc<ShopifySkuStats>('shopify_sku_stats_multi', {
     // No selection means the whole store, not an error.
@@ -1507,6 +1515,8 @@ export async function fetchShopifySkuStats(
     p_from: from,
     p_to: to,
     p_granularity: granularity,
+    // Only reorders Top products and Countries; every figure comes back either way.
+    p_metric: metric,
   });
 }
 

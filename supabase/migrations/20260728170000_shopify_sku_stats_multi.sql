@@ -162,6 +162,18 @@ grant execute on function public.shopify_sku_stats_multi(text[], date, date, tex
 -- by units — unbounded it returned every SKU that sold in the range.
 
 -- -----------------------------------------------------------------------------
+-- 2026-07-31 · units or revenue (migration 'shopify_sku_stats_multi_metric').
+-- Everything was ranked by units, so a SKU selling few expensive pieces was
+-- invisible: over 12 months PRE_BREX54HD_SET (200 u, $58,107) did not make the
+-- top 20 at all, while it is 13th by revenue. New p_metric ('units'|'revenue',
+-- default 'units') switches the ORDER BY of perSku and countries, and the
+-- payload echoes it back as `metric`. Only the ordering changes — every figure,
+-- including both units and net_aud on every row, is returned either way, so the
+-- panel can switch emphasis without losing anything. Appended with a default so
+-- 4-argument calls keep working; the function was dropped and recreated because
+-- CREATE OR REPLACE cannot add a parameter.
+
+-- -----------------------------------------------------------------------------
 -- 2026-07-31 · FX resolved by join, not per row (migration
 -- 'shopify_sku_stats_multi_fx_join'). The explorer returned 500 / 57014
 -- "canceling statement due to statement timeout" on any wide range: 28.2s for
