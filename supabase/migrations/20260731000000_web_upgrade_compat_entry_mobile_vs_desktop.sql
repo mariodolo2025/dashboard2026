@@ -28,3 +28,14 @@
 -- Verified: mobile reads 897 views / 7 clicks / 0.8% CTR / 542 sessions over
 -- Jul 29-31 with desktop absent; the two-surface layout was exercised against
 -- an injected desktop row (ordering by views, per-surface CTR, share split).
+--
+-- MEASUREMENT RULE (confirmed 2026-07-31, contract with the theme):
+-- this is ACQUISITION — how people reach the guide — so neither surface is
+-- counted on the guide page itself. The desktop button also renders inside the
+-- guide, where a view is not acquisition and nobody clicks it; the mobile bar
+-- does not render there at all. Counting the guide page would inflate desktop
+-- views AND sink its CTR, against a mobile figure that structurally cannot
+-- have those rows — wrong in both the numerator and the denominator.
+-- The RPC needs no page_path filter for this: the theme simply does not emit
+-- compatibility_button_* inside the guide. If that guarantee ever changes, add
+-- the filter here rather than reinterpreting the numbers.
