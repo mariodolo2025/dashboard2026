@@ -27,10 +27,12 @@ interface Dash {
   rewards: Array<{ name: string; unlocks: number; sessions: number; bought: number }>;
   storeShare: { storeOrders: number; storeRevenue: number; upgradeOrders: number; upgradeOrderRevenue?: number; attributedRevenue: number; orderSharePct: number | null; revenueSharePct: number | null; preLaunchAov?: number | null; preLaunchItems?: number | null; preLaunchOrders?: number | null; preLaunchFrom?: string | null; preLaunchTo?: string | null } | null;
   orderImpact: { upgradeOrders: number; upgradeAov: number | null; upgradeItems: number | null; otherOrders: number; otherAov: number | null; otherItems: number | null; aovLiftPct: number | null; itemsLiftPct: number | null } | null;
-  // The site-wide COMPATIBILITY bar. Measured apart from the modules on purpose:
-  // inside `ev` its view event would count every page of the site as an exposed
-  // module session. Zeros until the theme starts emitting compatibility_bar_*.
-  compatibilityBar?: { views: number; clicks: number; sessions: number; clickSessions: number; ctr: number | null } | null;
+  // The compatibility entry point, keyed by surface: `mobile` is the orange bar
+  // (compatibility_bar_*), `desktop` the orange button (compatibility_button_*).
+  // A surface only appears once it emits. Measured apart from the modules on
+  // purpose: inside `ev` these views would count every page of the site as an
+  // exposed module session.
+  compatibilityBar?: Partial<Record<'mobile' | 'desktop', { views: number; clicks: number; sessions: number; clickSessions: number; ctr: number | null }>> | null;
   bySource: Array<{ source: string; orders: number; lines: number; revenue: number; addedItems: number; addedPerOrder: number | null; aov: number | null; itemsPerOrder: number | null }>;
   byMachine: Array<{ machine: string; orders: number; lines: number; revenue: number; variants: Array<{ label: string; orders: number; lines: number; revenue: number }> | null }>;
   byFamily: Array<{ family: string; lines: number; revenue: number }>;
@@ -310,6 +312,23 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const t = data?.totals;
   const noData = !!data && (data.totals.totalEvents === 0);
   const rangeLabel = `${range.from ? format(range.from, 'MMM d') : ''} – ${range.to ? format(range.to, 'MMM d, yyyy') : ''}`;
+
+  // Entry-point surfaces, ordered by views so the busier one reads first. A
+  // surface with no events is absent from the payload rather than zeroed — an
+  // untracked button and a button nobody uses are not the same claim.
+  const compatEntry = useMemo(() => {
+    const src = data?.compatibilityBar;
+    if (!src) return null;
+    const rows = ([
+      { key: 'mobile' as const, label: 'Orange bar · mobile' },
+      { key: 'desktop' as const, label: 'Orange button · desktop' },
+    ])
+      .map((s) => ({ ...s, ...(src[s.key] ?? { views: 0, clicks: 0, sessions: 0, clickSessions: 0, ctr: null }) }))
+      .filter((r) => r.views > 0)
+      .sort((a, b) => b.views - a.views);
+    if (rows.length === 0) return null;
+    return { rows, totalViews: rows.reduce((n, r) => n + r.views, 0) };
+  }, [data]);
 
   // Module maths shared by Daily brief + Modules view.
   const rpsOf = (m: Dash['modules'][number]) => (m.sessions > 0 ? m.revenue / m.sessions : 0);
@@ -810,21 +829,37 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             );
           })}
         </div>
-        {/* The mobile COMPATIBILITY bar. Hidden until the theme starts emitting
-            compatibility_bar_view / _click — its own events, so the bar never
-            contaminates the guide-page funnel again. Mobile ONLY by contract:
-            the desktop orange button is a different surface and deliberately
-            excluded, so this CTR stays a clean read of the mobile bar. */}
-        {data?.compatibilityBar && data.compatibilityBar.views > 0 && (
+        {/* How people reach the guide: the orange bar on mobile vs the orange
+            button on desktop. Kept out of the module cards on purpose — these
+            views span the whole site, so inside a module funnel they would
+            count every page of the store as an exposed session, which is the
+            bug that halved the guide's numbers on 2026-07-30. Each surface is
+            its own row: one CTR covering both would answer nothing. */}
+        {compatEntry && (
           <div className="wu-card" style={{ borderRadius: 14, padding: '14px 18px', marginTop: 14 }}>
-            <div className="wu-kicker">Compatibility bar · mobile</div>
-            <div style={{ display: 'flex', gap: 26, marginTop: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
-              <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, lineHeight: 1 }}>{int(data.compatibilityBar.views)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>Views</div></div>
-              <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, lineHeight: 1 }}>{int(data.compatibilityBar.clicks)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>Clicks</div></div>
-              <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, lineHeight: 1 }}>{data.compatibilityBar.ctr != null ? `${data.compatibilityBar.ctr}%` : '—'}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>CTR</div></div>
-              <div><div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 20, fontWeight: 600, lineHeight: 1 }}>{int(data.compatibilityBar.sessions)}</div><div style={{ fontSize: 10, color: 'var(--wu-faint)', marginTop: 3 }}>Sessions</div></div>
-            </div>
-            <p style={{ margin: '10px 0 0', fontSize: 10.5, color: 'var(--wu-faint)', lineHeight: 1.5 }}>The orange bar shown on every page on mobile. Measured apart from the modules: its views cover the whole site, so mixing them into a module funnel would dilute every rate. The desktop orange button is a separate surface and is not counted here.</p>
+            <div className="wu-kicker">Compatibility entry point · mobile vs desktop</div>
+            <table className="wu-entry-tbl">
+              <thead>
+                <tr><th>Surface</th><th>Views</th><th>Share of views</th><th>Clicks</th><th>CTR</th><th>Sessions</th></tr>
+              </thead>
+              <tbody>
+                {compatEntry.rows.map((r) => (
+                  <tr key={r.key}>
+                    <td>{r.label}</td>
+                    <td className="tnum">{int(r.views)}</td>
+                    <td className="tnum">{compatEntry.totalViews > 0 ? `${Math.round((100 * r.views) / compatEntry.totalViews)}%` : '—'}</td>
+                    <td className="tnum">{int(r.clicks)}</td>
+                    <td className="tnum">{r.ctr != null ? `${r.ctr}%` : '—'}</td>
+                    <td className="tnum">{int(r.sessions)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p style={{ margin: '10px 0 0', fontSize: 10.5, color: 'var(--wu-faint)', lineHeight: 1.5 }}>
+              {compatEntry.rows.length > 1
+                ? 'Share of views says where the entry point is seen, not where it works harder — read it next to each surface’s own CTR.'
+                : 'Only the mobile bar reports. The desktop orange button emits no events yet, so this is not a mobile-vs-desktop comparison.'}
+            </p>
           </div>
         )}
         {secGuide}
@@ -1768,6 +1803,11 @@ const WU_CSS = `
 .wu-oigrid{display:grid;grid-template-columns:1fr 76px 76px 56px;gap:10px;align-items:center}
 .wu-famcard{border:1px solid var(--wu-line);border-radius:12px;padding:12px 14px;background:var(--wu-card);cursor:pointer;transition:border-color .15s}
 .wu-famcard:hover{border-color:var(--wu-crema)}
+.wu-entry-tbl{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}
+.wu-entry-tbl th{text-align:right;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--wu-faint);font-weight:500;padding:0 0 6px}
+.wu-entry-tbl th:first-child,.wu-entry-tbl td:first-child{text-align:left}
+.wu-entry-tbl td{text-align:right;padding:7px 0;border-top:1px solid var(--wu-line)}
+.wu-entry-tbl tbody tr:first-child td{font-weight:600}
 .wu-mcard{padding:0}
 .wu-mband1{display:flex;gap:14px;padding:16px 18px 14px;align-items:flex-start}
 .wu-mthumb{width:112px;height:66px;border-radius:8px}
