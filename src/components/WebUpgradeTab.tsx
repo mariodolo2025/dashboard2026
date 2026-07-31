@@ -829,12 +829,18 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             );
           })}
         </div>
-        {/* How people reach the guide: the orange bar on mobile vs the orange
-            button on desktop. Kept out of the module cards on purpose — these
-            views span the whole site, so inside a module funnel they would
-            count every page of the store as an exposed session, which is the
-            bug that halved the guide's numbers on 2026-07-30. Each surface is
-            its own row: one CTR covering both would answer nothing. */}
+        {/* How people REACH the guide: the orange bar on mobile vs the orange
+            button on desktop. This is an acquisition measure, so both surfaces
+            are counted only outside the guide — the desktop button also renders
+            inside it, where a view is not acquisition and nobody clicks it, and
+            the mobile bar does not render there at all. Counting the guide page
+            would inflate desktop views and sink its CTR against a mobile figure
+            that structurally cannot have the same rows.
+            Kept out of the module cards on purpose: these views span the whole
+            site, so inside a module funnel they would count every page of the
+            store as an exposed session — the bug that halved the guide's
+            numbers on 2026-07-30. Each surface is its own row; one CTR covering
+            both would answer nothing. */}
         {compatEntry && (
           <div className="wu-card" style={{ borderRadius: 14, padding: '14px 18px', marginTop: 14 }}>
             <div className="wu-kicker">Compatibility entry point · mobile vs desktop</div>
@@ -857,7 +863,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             </table>
             <p style={{ margin: '10px 0 0', fontSize: 10.5, color: 'var(--wu-faint)', lineHeight: 1.5 }}>
               {compatEntry.rows.length > 1
-                ? 'Share of views says where the entry point is seen, not where it works harder — read it next to each surface’s own CTR.'
+                ? 'Counted only outside the guide, so this measures how people get there. Share of views says where the entry point is seen; each surface’s own CTR says where it works.'
                 : 'Only the mobile bar reports. The desktop orange button emits no events yet, so this is not a mobile-vs-desktop comparison.'}
             </p>
           </div>
