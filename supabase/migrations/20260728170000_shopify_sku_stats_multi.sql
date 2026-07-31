@@ -162,6 +162,25 @@ grant execute on function public.shopify_sku_stats_multi(text[], date, date, tex
 -- by units — unbounded it returned every SKU that sold in the range.
 
 -- -----------------------------------------------------------------------------
+-- 2026-07-31 · FX resolved by join, not per row (migration
+-- 'shopify_sku_stats_multi_fx_join'). The explorer returned 500 / 57014
+-- "canceling statement due to statement timeout" on any wide range: 28.2s for
+-- the whole store over 12 months.
+-- Cause: each of the ~77k lines called shopify_line_aud_factor(), which called
+-- usd_to_aud_rate(), which ran up to two index scans on currency_exchange_rates
+-- — a table holding one row per month. The rate is identical for every line in
+-- a month, so this was ~150k scans to learn ~13 numbers.
+-- Fix: LEFT JOIN currency_exchange_rates on (year, month) once, and resolve the
+-- newest-rate fallback into a variable before the query. The factor CASE is
+-- inlined verbatim from shopify_line_aud_factor, so the arithmetic is unchanged
+-- — output verified byte-identical across whole store 12m/monthly, 90d/daily,
+-- 7d/daily, one SKU 12m/weekly, three SKUs 30d/daily, and a SKU with no sales.
+-- 28,180ms -> 1,412ms; worst case (whole store, 13 months, daily) 1,379ms.
+-- Also fixed: shopify_line_aud_factor was declared IMMUTABLE while reading a
+-- table through usd_to_aud_rate — a promise the planner is entitled to act on.
+-- Now STABLE, and both helpers are PARALLEL SAFE.
+
+-- -----------------------------------------------------------------------------
 -- 2026-07-29 · native AUD basis (migration 'shopify_line_aud_native_basis').
 -- The AUD figures were a round trip: an Australian order arrives as AUD, the sync
 -- converts it to USD, and the RPC converted it back at a monthly average — so an
