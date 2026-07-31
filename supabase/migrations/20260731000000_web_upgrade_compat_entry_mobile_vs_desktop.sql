@@ -1,0 +1,30 @@
+-- =============================================================================
+-- Web Upgrade — compatibility entry point reported per surface
+-- =============================================================================
+-- Applied as migration 'web_upgrade_compat_entry_mobile_vs_desktop' (in-place
+-- patch of web_upgrade_performance via pg_get_functiondef + anchored replace).
+--
+-- The guide has two entry points and they answer different questions: the
+-- orange bar on mobile (compatibility_bar_*) and the orange button on desktop
+-- (compatibility_button_*, still to be emitted by the theme). `compatibilityBar`
+-- changes from one flat object to one keyed by surface:
+--
+--   {"mobile": {views, clicks, sessions, clickSessions, ctr},
+--    "desktop": {...}}
+--
+-- A surface that emits nothing is ABSENT, not zeroed — an untracked button and
+-- a button nobody presses are not the same claim, and the panel says which one
+-- it is rather than printing a 0 that reads as failure.
+--
+-- Both surfaces stay OUT of the ev CTE. Every action matching 'compatibility%'
+-- is classified as the Compatibility Guide module, so a site-wide entry-point
+-- view reaching ev would count every page of the store as an exposed guide
+-- session — precisely the 2026-07-30 bug. The compatibility_button_% exclusion
+-- is in place BEFORE the theme ships those events, so the bug cannot reappear
+-- on deploy day:
+--   and action not like 'compatibility!_bar!_%'    escape '!'
+--   and action not like 'compatibility!_button!_%' escape '!'
+--
+-- Verified: mobile reads 897 views / 7 clicks / 0.8% CTR / 542 sessions over
+-- Jul 29-31 with desktop absent; the two-surface layout was exercised against
+-- an injected desktop row (ordering by views, per-surface CTR, share split).
