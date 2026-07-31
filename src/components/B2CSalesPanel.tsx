@@ -38,6 +38,18 @@ const fmtAud2 = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : `$${v.toFixed(2)}`;
 const fmtUsd = (v: number | null | undefined) =>
   v === null || v === undefined ? '' : `(US$${Math.round(v).toLocaleString('en-AU')})`;
+
+// Shopify stores the shipping country as an ISO 3166-1 alpha-2 code. Intl
+// resolves it to the English name without shipping a 250-row lookup table that
+// would then need maintaining. Anything it does not recognise — 'Unknown', or a
+// code Intl has no name for — falls through unchanged rather than being hidden.
+const regionNames = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
+  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  : null;
+const countryName = (code: string) => {
+  if (!code || !/^[A-Za-z]{2}$/.test(code)) return code;
+  try { return regionNames?.of(code.toUpperCase()) ?? code; } catch { return code; }
+};
 const fmtUsd2 = (v: number | null | undefined) =>
   v === null || v === undefined ? '' : `(US$${v.toFixed(2)})`;
 
@@ -633,7 +645,7 @@ export function B2CSalesPanel({
                   <tbody>
                     {stats.countries.map((c) => (
                       <tr key={c.country} className="border-t border-border/40">
-                        <td className="py-1.5">{c.country}</td>
+                        <td className="py-1.5">{countryName(c.country)}</td>
                         <td className="py-1.5 text-right tabular-nums font-medium">{fmtNum(c.units)}</td>
                         <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud(c.net_aud)}<Usd value={c.net_usd} size="table" /></td>
                       </tr>
@@ -666,7 +678,7 @@ export function B2CSalesPanel({
                         <tr key={`${o.order_date}-${o.sku}-${i}`} className="border-t border-border/40">
                           <td className="py-1.5 tabular-nums">{o.order_date}</td>
                           {skus.length !== 1 && <td className="py-1.5 text-[11px]">{o.sku}</td>}
-                          <td className="py-1.5">{o.country}</td>
+                          <td className="py-1.5">{countryName(o.country)}</td>
                           <td className="py-1.5 text-right tabular-nums font-medium">{fmtNum(o.quantity)}</td>
                           <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud2(o.net_aud)}<Usd value={o.net_usd} decimals size="table" /></td>
                         </tr>
