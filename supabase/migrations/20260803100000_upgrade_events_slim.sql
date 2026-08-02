@@ -1,0 +1,60 @@
+-- =============================================================================
+-- upgrade_events_slim — the panel's read path stops growing with the payload
+-- =============================================================================
+-- Applied as migrations 'upgrade_events_slim', 'web_upgrade_performance_read_slim'
+-- and 'upgrade_events_slim_reconcile'.
+--
+-- PROBLEM
+-- Opening the Web Upgrade panel cost 16s cold / 2s warm, and got worse with
+-- every event stored. upgrade_events is 151MB for 157k rows — ~960 bytes each,
+-- nearly all of it the `payload` jsonb — on an instance with 224MB of
+-- shared_buffers. Every open read the whole table: the window filter
+--     coalesce(event_timestamp, received_at)::date between p_from and p_to
+-- casts to date, which is not indexable (the result depends on the session's
+-- TimeZone), so even a one-day window scanned all 157k rows. Between opens,
+-- other traffic evicted the table, so nearly every open paid the cold price.
+--
+-- SHAPE OF THE FIX
+-- The panel reads seven payload keys and nothing else. upgrade_events_slim
+-- mirrors exactly those, plus the event's calendar day stored rather than
+-- computed, kept in step by an AFTER INSERT/UPDATE/DELETE trigger.
+--   151MB -> 41MB, and the window filter becomes an ordinary indexed compare.
+--
+-- Deliberately NOT a daily pre-aggregate: the panel reports
+-- count(distinct attribution_id) over the window, and distinct counts cannot be
+-- summed across days without either approximating (HyperLogLog) or silently
+-- redefining the number as session-days. The mirror keeps every figure exact
+-- and leaves the query shape untouched.
+--
+-- RESULT — the cost now scales with the window, which is the real win. Before,
+-- every range scanned the whole table:
+--     1 day      554ms
+--     1 week   1,114ms
+--     11 days  1,987ms
+--     30 days  4,305ms   (was 16,023ms cold)
+--
+-- CORRECTNESS
+-- The mirror is not trusted on faith. Verified against the source table:
+--   * 157,994 rows both sides, 0 discrepancies on action, attribution_id,
+--     p_brand, p_page_path and the computed day;
+--   * module sessions recomputed from raw payload match the RPC exactly for all
+--     four modules (2,328 / 4,333 / 9,030 / 42,262);
+--   * guide page views, model selects, complete-kit orders, brand count, mobile
+--     bar views, desktop button views and reward unlocks all match;
+--   * trigger exercised for insert, update and delete — all three propagate,
+--     leaving no orphans and no unmirrored rows.
+--
+-- upgrade_events_slim_reconcile() rebuilds the mirror from the source. The
+-- trigger covers normal operation; run this after a bulk load, a restore, or if
+-- the row counts ever disagree. A mirror that drifts silently is worse than no
+-- mirror, because the panel would keep reporting confidently from stale data.
+--
+-- OPEN QUESTION, deliberately not decided here.
+-- `d` is the UTC calendar day, preserving exactly what the panel reported
+-- before. `d_store` holds the same instant as a Brisbane day and is unused.
+-- They differ: an event at 9am Brisbane is 11pm UTC the previous day, so the
+-- panel currently books the store's morning traffic to the day before. That is
+-- the same class of bug fixed in the B2C explorer, but switching would move
+-- every historical figure in this panel, so it is Mario's call. The column is
+-- there so the decision can be made by measuring the difference rather than
+-- guessing at it.
