@@ -30,6 +30,7 @@ import {
   type SalesGranularity,
   type SalesMetric,
 } from '@/lib/aim2026/api';
+import { STORE_DATE_PRESETS, storeToday } from '@/lib/storeDate';
 
 // ─── Formatting ─────────────────────────────────────────────────────────────
 
@@ -83,54 +84,7 @@ function Usd({
 const fmtNum = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : Math.round(v).toLocaleString('en-AU');
 
-// Dates are the STORE's calendar days, not the browser's. order_date is stored
-// in store time and Shopify reports in store time, so deriving "yesterday" from
-// the browser's UTC date put this panel a full day behind Shopify for the first
-// ten hours of every Brisbane day — the window in which the store is actually
-// read in the morning.
-const STORE_TZ = 'Australia/Brisbane';
-const storeDateFmt = new Intl.DateTimeFormat('en-CA', {
-  timeZone: STORE_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
-});
-
-/** Today's calendar date in the store's timezone, as YYYY-MM-DD. */
-const storeToday = (): string => storeDateFmt.format(new Date());
-
-const iso = (d: Date) => d.toISOString().slice(0, 10);
-
-/** A calendar date pinned to UTC midnight, so adding days is plain arithmetic
- *  that no timezone or DST shift can move onto the wrong day. */
-function storeDay(ymd: string = storeToday()): Date {
-  const [y, m, d] = ymd.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d));
-}
-
-function shiftDays(n: number): string {
-  const d = storeDay();
-  d.setUTCDate(d.getUTCDate() + n);
-  return iso(d);
-}
-
-/** Monday-to-Sunday of the week before the current one, in store time. */
-function lastWeek(): { from: string; to: string } {
-  const now = storeDay();
-  const dow = (now.getUTCDay() + 6) % 7; // 0 = Monday
-  const thisMonday = new Date(now);
-  thisMonday.setUTCDate(now.getUTCDate() - dow);
-  const lastMonday = new Date(thisMonday);
-  lastMonday.setUTCDate(thisMonday.getUTCDate() - 7);
-  const lastSunday = new Date(thisMonday);
-  lastSunday.setUTCDate(thisMonday.getUTCDate() - 1);
-  return { from: iso(lastMonday), to: iso(lastSunday) };
-}
-
-export const DATE_PRESETS: { label: string; range: () => { from: string; to: string } }[] = [
-  { label: 'Yesterday', range: () => ({ from: shiftDays(-1), to: shiftDays(-1) }) },
-  { label: 'Last week', range: lastWeek },
-  { label: '30 days', range: () => ({ from: shiftDays(-29), to: storeToday() }) },
-  { label: '90 days', range: () => ({ from: shiftDays(-89), to: storeToday() }) },
-  { label: '12 months', range: () => ({ from: shiftDays(-364), to: storeToday() }) },
-];
+export const DATE_PRESETS = STORE_DATE_PRESETS;
 
 const GRANULARITIES: { key: SalesGranularity; label: string }[] = [
   { key: 'day', label: 'Day' },
@@ -158,7 +112,7 @@ function delta(current: number, previous: number): number | null {
  * with no sales is a zero bucket, not a missing one. Averaging over points that
  * are not adjacent in time produced a flat line that meant nothing. */
 function withTrend(
-  series: { bucket: string; units: number; net_aud: number; net_usd: number }[],
+  series: { bucket: string; units: number; net_aud: number; net_usd: number; orders: number }[],
   granularity: SalesGranularity,
   metric: SalesMetric
 ) {
@@ -183,6 +137,8 @@ function withTrend(
     };
   });
 }
+
+type ChartPoint = ReturnType<typeof withTrend>[number];
 
 /** Bucket label: a day and a week start show the date, a month shows the month. */
 function bucketLabel(bucket: string, granularity: SalesGranularity): string {
@@ -630,17 +586,41 @@ export function B2CSalesPanel({
                       tickFormatter={(v: number) => (metric === 'revenue' ? fmtAud(v) : fmtNum(v))}
                     />
                     <RTooltip
-                      labelFormatter={(b: string) => bucketLabel(b, granularity)}
-                      formatter={(v: number, name: string, p: { payload?: Record<string, number | null> }) => {
-                        if (metric !== 'revenue') {
-                          return [fmtNum(v), name === 'trend' ? 'Trend' : 'Units'];
-                        }
-                        // Same rule as everywhere else: an AUD figure is followed
-                        // by the USD it was converted from.
-                        const usd = p?.payload?.[name === 'trend' ? 'trendUsd' : 'valueUsd'];
-                        return [`${fmtAud(v)} ${fmtUsd(usd)}`.trim(), name === 'trend' ? 'Trend' : 'Net AUD'];
+                      cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }}
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        const p = payload[0].payload as ChartPoint;
+                        return (
+                          <div className="rounded-lg border bg-popover px-2.5 py-2 text-xs shadow-md">
+                            <div className="font-medium mb-1">{bucketLabel(String(label), granularity)}</div>
+                            <div className="flex items-baseline justify-between gap-4">
+                              <span className="text-muted-foreground">{metric === 'revenue' ? 'Net AUD' : 'Units'}</span>
+                              <span className="font-medium tabular-nums" style={{ color: '#3b82f6' }}>
+                                {metric === 'revenue'
+                                  ? <>{fmtAud(p.value)}<Usd value={p.valueUsd} size="table" /></>
+                                  : fmtNum(p.value)}
+                              </span>
+                            </div>
+                            {/* Orders alongside the measure: 40 units over 8 orders and
+                                over 40 orders are different days, and neither the bar
+                                nor the trend line can tell them apart. */}
+                            <div className="flex items-baseline justify-between gap-4">
+                              <span className="text-muted-foreground">Orders</span>
+                              <span className="font-medium tabular-nums">{fmtNum(p.orders)}</span>
+                            </div>
+                            {showTrend && (
+                              <div className="flex items-baseline justify-between gap-4">
+                                <span className="text-muted-foreground">Trend</span>
+                                <span className="font-medium tabular-nums" style={{ color: '#f59e0b' }}>
+                                  {metric === 'revenue'
+                                    ? <>{fmtAud(p.trend)}<Usd value={p.trendUsd} size="table" /></>
+                                    : fmtNum(p.trend)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
                       }}
-                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
                     />
                     <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} name="value" />
                     {showTrend && (

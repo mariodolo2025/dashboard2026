@@ -9,6 +9,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { storeToday, storeDateOf } from '@/lib/storeDate';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -1391,10 +1392,13 @@ function GenerateProductionCsvSection() {
         if (d) {
           const cut = new Date(d);
           cut.setDate(cut.getDate() - 3);
-          cutoffStr = cut.toISOString().slice(0, 10);
+          // Store time, not UTC — see storeDate.ts.
+          cutoffStr = storeDateOf(cut);
         }
       }
-      const endDate = new Date().toISOString().slice(0, 10);
+      // Store time. As the UTC day this asked for data up to yesterday every
+      // Brisbane morning, dropping the day in progress from the sync.
+      const endDate = storeToday();
 
       const allNewLines: string[] = [];
       const statusesDone: string[] = [];

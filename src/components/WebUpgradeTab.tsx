@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment, type ReactNode, type MouseEvent as ReactMouseEvent } from 'react';
 import { format, subDays } from 'date-fns';
+import { STORE_DATE_PRESETS } from '@/lib/storeDate';
 import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw, BookOpen, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -147,6 +148,8 @@ const money = (v: number | null | undefined) => { const n = Number(v) || 0; retu
 const money1 = (v: number | null | undefined) => { const n = Number(v) || 0; return Math.abs(n) >= 1000 ? `$${(n / 1000).toFixed(1)}K` : `$${Math.round(n)}`; };
 const int = (v: number | null | undefined) => (Number(v) || 0).toLocaleString('en-US');
 const toYMD = (d: Date) => format(d, 'yyyy-MM-dd');
+// The first day with events. Presets never reach behind it.
+const LAUNCH_DAY = new Date('2026-07-23T00:00:00');
 
 // Family (+ detected size) a product belongs to, derived from its SKU. The same
 // mapping the E-commerce tab uses, plus the 54/58 mm size read from SKU/title.
@@ -1223,10 +1226,34 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             ))}
           </div>
           <Info k="env" />
+          {/* Same presets, same meaning, as the B2C explorer — resolved in store
+              time so "Yesterday" is the day Shopify calls yesterday, not the
+              browser's UTC day. Anything starting before launch is clamped:
+              there are no events before the theme went live, and a window that
+              begins earlier only dilutes every per-day figure. */}
           <div className="wu-seg">
-            {[7, 30, 90].map((d2) => (
-              <button key={d2} onClick={() => { const now = new Date(); applyRange({ from: subDays(now, d2), to: now }); }}>Last {d2}d</button>
-            ))}
+            {(() => {
+              const resolved = STORE_DATE_PRESETS.map((p2) => {
+                const r = p2.range();
+                const raw = new Date(`${r.from}T00:00:00`);
+                return { label: p2.label, from: raw < LAUNCH_DAY ? LAUNCH_DAY : raw, to: new Date(`${r.to}T00:00:00`), toYmd: r.to };
+              });
+              // Once clamped to launch, 30 / 90 / 365 days all collapse onto the
+              // same window. Highlighting the FIRST match keeps one button lit
+              // instead of three that would each claim to be the current range.
+              const activeIdx = range.from && range.to
+                ? resolved.findIndex((x) => toYMD(range.from!) === toYMD(x.from) && toYMD(range.to!) === x.toYmd)
+                : -1;
+              return resolved.map((x, i) => (
+                <button
+                  key={x.label}
+                  aria-pressed={i === activeIdx}
+                  onClick={() => applyRange({ from: x.from, to: x.to })}
+                >
+                  {x.label}
+                </button>
+              ));
+            })()}
           </div>
           <select className="wu-view" value={view} onChange={(e) => pickView(e.target.value as View)} aria-label="Layout view">
             <option value="daily">View: Daily brief</option>

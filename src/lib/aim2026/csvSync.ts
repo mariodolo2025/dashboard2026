@@ -8,6 +8,7 @@
 // Then recalculates KPIs.
 // =============================================================================
 
+import { storeToday, storeDateOf } from '@/lib/storeDate';
 import {
   fetchSOHCSV,
   uploadSOHCSV,
@@ -296,10 +297,14 @@ async function updateProduction(
     if (d) {
       const cut = new Date(d);
       cut.setDate(cut.getDate() - 3);
-      cutoffStr = cut.toISOString().slice(0, 10);
+      // Store time, not UTC: toISOString() reads the previous day for the
+      // first ten Brisbane hours, which walked the cutoff a day further back.
+      cutoffStr = storeDateOf(cut);
     }
   }
-  const endDate = new Date().toISOString().slice(0, 10);
+  // Store time. As the UTC day, this asked for data up to YESTERDAY every
+  // morning in Brisbane, so the day in progress was missing from the sync.
+  const endDate = storeToday();
 
   const allNewLines: string[] = [];
   for (let si = 0; si < PRODUCTION_STATUSES.length; si++) {
