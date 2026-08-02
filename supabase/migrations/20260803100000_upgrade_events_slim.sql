@@ -49,12 +49,25 @@
 -- the row counts ever disagree. A mirror that drifts silently is worse than no
 -- mirror, because the panel would keep reporting confidently from stale data.
 --
--- OPEN QUESTION, deliberately not decided here.
--- `d` is the UTC calendar day, preserving exactly what the panel reported
--- before. `d_store` holds the same instant as a Brisbane day and is unused.
--- They differ: an event at 9am Brisbane is 11pm UTC the previous day, so the
--- panel currently books the store's morning traffic to the day before. That is
--- the same class of bug fixed in the B2C explorer, but switching would move
--- every historical figure in this panel, so it is Mario's call. The column is
--- there so the decision can be made by measuring the difference rather than
--- guessing at it.
+-- CALENDAR DECISION (Mario, 2026-08-03) — settled, do not re-litigate.
+-- The two surfaces keep DIFFERENT calendars, on purpose:
+--   * sales (B2C explorer)  -> the store's day, Brisbane. shopify_sales_lines
+--     only ever stored a day, taken from Shopify's created_at with the offset
+--     already applied, so this is the only calendar the data supports. It is
+--     also what makes the explorer reconcile with Shopify Analytics to the cent.
+--   * events (this panel)   -> the UTC day, via `d`.
+--
+-- Unifying was considered and declined. Moving events to Brisbane would shift
+-- individual days materially (30 Jul -3,798 events, 2 Aug +2,795; long ranges
+-- barely move) and rewrite every historical figure in this panel. Moving sales
+-- to UTC is not possible without re-running the Shopify sync to capture the
+-- order's time of day, and would then break agreement with Shopify's own
+-- reports, which are always in store time.
+--
+-- Consequence to keep in mind when reading the panel: an event at 9am Brisbane
+-- is 11pm UTC the previous day, so the store's morning traffic books to the day
+-- before. Day-for-day comparisons between this panel and the B2C explorer are
+-- therefore not exact; range totals are.
+--
+-- `d_store` stays populated and unused, so the decision can be revisited from
+-- data rather than guessed at.
