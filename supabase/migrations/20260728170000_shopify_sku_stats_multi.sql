@@ -162,6 +162,27 @@ grant execute on function public.shopify_sku_stats_multi(text[], date, date, tex
 -- by units — unbounded it returned every SKU that sold in the range.
 
 -- -----------------------------------------------------------------------------
+-- 2026-08-03 · money excludes sales tax (migration 'shopify_sku_stats_multi_ex_tax').
+-- Audited against Shopify Analytics for 2026-08-02. Orders (163) and units (225)
+-- already matched to the unit; money ran 5.2% high because gross_usd / net_usd
+-- carry the tax baked into the shelf price — in Australia the 10% GST is
+-- included (taxes_usd is exactly net_usd/11), in the US sales tax is added at
+-- checkout, and several markets charge none.
+-- The tax share of a line is taxes_usd spread over what was taxed — the goods
+-- AND the shipping on that line:
+--     k = 1 - taxes_usd / (net_usd + shipping_usd)
+-- Applying k to gross/discounts/returns/net reproduces Shopify to cents:
+--     gross 12,469.28 vs 12,469.60 · disc 518.95 vs 518.86 · net 11,950.31 vs
+--     11,950.74. The residue is FX rounding (our rows are converted to USD).
+-- Alternatives tested and rejected: subtracting taxes_usd outright overshoots by
+-- 45.41 (it removes tax charged on shipping, which was never inside net_usd),
+-- and removing only Australian GST undershoots by 156.97.
+-- k is safe across all 78,142 rows — never negative, never above 1, never null;
+-- the 67 rows with k = 0 are zero-value lines (giveaways carrying shipping tax).
+-- New: summary.taxExcludedAud / taxExcludedUsd and a top-level taxBasis, so the
+-- panel states the basis instead of quietly reporting a smaller number.
+
+-- -----------------------------------------------------------------------------
 -- 2026-07-31 · units or revenue (migration 'shopify_sku_stats_multi_metric').
 -- Everything was ranked by units, so a SKU selling few expensive pieces was
 -- invisible: over 12 months PRE_BREX54HD_SET (200 u, $58,107) did not make the

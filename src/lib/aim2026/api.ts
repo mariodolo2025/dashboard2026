@@ -1442,6 +1442,10 @@ export interface ShopifySkuStats {
   granularity: SalesGranularity;
   /** What perSku and countries are ranked by. */
   metric: SalesMetric;
+  /** 'excluded' — every amount below is net of sales tax, matching Shopify's
+   *  "Net sales". GST is inside the Australian shelf price and US sales tax is
+   *  added at checkout, so the raw rows carry tax that Shopify reports apart. */
+  taxBasis: 'excluded';
   from: string;
   to: string;
   previousFrom: string;
@@ -1462,6 +1466,9 @@ export interface ShopifySkuStats {
     netUsd: number;
     avgNetPriceAud: number | null;
     avgNetPriceUsd: number | null;
+    /** How much sales tax was taken out to reach the figures above. */
+    taxExcludedAud: number;
+    taxExcludedUsd: number;
   };
   previous: { units: number; orders: number; netAud: number; netUsd: number };
   series: Array<{ bucket: string; units: number; net_aud: number; net_usd: number; orders: number }>;
