@@ -1,0 +1,52 @@
+-- =============================================================================
+-- Web Upgrade — why the panel is slow, and what was done about it
+-- =============================================================================
+-- Applied as migrations 'web_upgrade_helpers_parallel_safe' and
+-- 'web_upgrade_performance_narrow_ev'. A third attempt was applied and then
+-- reverted; it is recorded here because the measurement is the useful part.
+--
+-- MEASURED CAUSE — it is I/O, not the query shape.
+-- upgrade_events holds 157k rows / 151MB. The instance has 224MB of
+-- shared_buffers and work_mem of 2MB. Four consecutive calls over the same
+-- 30-day window:
+--     16,023ms → 6,306ms → 3,217ms → 1,998ms
+-- Cold the table is read from disk; warm it is already in cache. Between panel
+-- openings other traffic evicts it, so nearly every open pays the cold price.
+-- No rewrite of this function changes that: the fix is to stop reading 157k raw
+-- events per open at all (pre-aggregate per day, the way the inventory KPI
+-- cache already works). Recorded as pending, not attempted here.
+--
+-- WHAT WAS CHANGED
+--
+-- 1. web_upgrade_helpers_parallel_safe
+--    web_upgrade_baseline_upw, web_upgrade_weeks, web_upgrade_fitment,
+--    web_upgrade_module_of_source and web_upgrade_order_impact were all at the
+--    default PARALLEL UNSAFE. One unsafe function anywhere in a query disables
+--    parallelism for the entire plan, including the 157k-row scans. Measured in
+--    isolation, the same scan runs 470ms as a Parallel Seq Scan and 3.8s
+--    single-process. None of them writes or uses temp tables.
+--
+-- 2. web_upgrade_performance_narrow_ev
+--    The ev CTE selected the whole `payload` jsonb for every event in the
+--    window, and ev is referenced ~20 times downstream, so Postgres materialises
+--    it and re-reads that spool repeatedly — with work_mem at 2MB, from disk.
+--    Only seven payload keys are ever read. They are now extracted once as text
+--    columns (p_source, p_brand, p_machine, p_reward_name, p_variant_id,
+--    p_variant_ids); page_path stays as a raw payload read because its only use
+--    is inside ev's own WHERE, against the base table.
+--    Verified unchanged: byBrand recomputed independently from the base table
+--    matches the RPC across all 31 brands, zero discrepancies.
+--
+-- REVERTED — 'upgrade_events_ts_index_and_sargable_filter'
+--    Rewrote the window filter as a half-open timestamp range plus two indexes,
+--    so it could use an index instead of casting to date. Measured:
+--        empty range     1.65s → 0.42s   (better)
+--        real 30d range  8.1s  → 13.4s   (much worse)
+--    The timestamp form lost the parallel scan the ::date form gets. Since the
+--    event history barely spans two weeks, every useful window reads most of
+--    the table anyway, and a parallel full scan beats an indexed one. Indexes
+--    dropped with it — unused, they would only tax writes on a live table.
+--    Worth revisiting once a month is genuinely a small slice of the table.
+--
+-- ALSO TRIED AND REVERTED: work_mem of 48MB on the function. On a 224MB
+-- instance it made things worse (22-26s), presumably memory pressure.
