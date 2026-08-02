@@ -83,33 +83,53 @@ function Usd({
 const fmtNum = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : Math.round(v).toLocaleString('en-AU');
 
+// Dates are the STORE's calendar days, not the browser's. order_date is stored
+// in store time and Shopify reports in store time, so deriving "yesterday" from
+// the browser's UTC date put this panel a full day behind Shopify for the first
+// ten hours of every Brisbane day — the window in which the store is actually
+// read in the morning.
+const STORE_TZ = 'Australia/Brisbane';
+const storeDateFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: STORE_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+});
+
+/** Today's calendar date in the store's timezone, as YYYY-MM-DD. */
+const storeToday = (): string => storeDateFmt.format(new Date());
+
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 
+/** A calendar date pinned to UTC midnight, so adding days is plain arithmetic
+ *  that no timezone or DST shift can move onto the wrong day. */
+function storeDay(ymd: string = storeToday()): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
 function shiftDays(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
+  const d = storeDay();
+  d.setUTCDate(d.getUTCDate() + n);
   return iso(d);
 }
 
-/** Monday-to-Sunday of the week before the current one. */
+/** Monday-to-Sunday of the week before the current one, in store time. */
 function lastWeek(): { from: string; to: string } {
-  const now = new Date();
-  const dow = (now.getDay() + 6) % 7; // 0 = Monday
+  const now = storeDay();
+  const dow = (now.getUTCDay() + 6) % 7; // 0 = Monday
   const thisMonday = new Date(now);
-  thisMonday.setDate(now.getDate() - dow);
+  thisMonday.setUTCDate(now.getUTCDate() - dow);
   const lastMonday = new Date(thisMonday);
-  lastMonday.setDate(thisMonday.getDate() - 7);
+  lastMonday.setUTCDate(thisMonday.getUTCDate() - 7);
   const lastSunday = new Date(thisMonday);
-  lastSunday.setDate(thisMonday.getDate() - 1);
+  lastSunday.setUTCDate(thisMonday.getUTCDate() - 1);
   return { from: iso(lastMonday), to: iso(lastSunday) };
 }
 
 export const DATE_PRESETS: { label: string; range: () => { from: string; to: string } }[] = [
   { label: 'Yesterday', range: () => ({ from: shiftDays(-1), to: shiftDays(-1) }) },
   { label: 'Last week', range: lastWeek },
-  { label: '30 days', range: () => ({ from: shiftDays(-29), to: iso(new Date()) }) },
-  { label: '90 days', range: () => ({ from: shiftDays(-89), to: iso(new Date()) }) },
-  { label: '12 months', range: () => ({ from: shiftDays(-364), to: iso(new Date()) }) },
+  { label: '30 days', range: () => ({ from: shiftDays(-29), to: storeToday() }) },
+  { label: '90 days', range: () => ({ from: shiftDays(-89), to: storeToday() }) },
+  { label: '12 months', range: () => ({ from: shiftDays(-364), to: storeToday() }) },
 ];
 
 const GRANULARITIES: { key: SalesGranularity; label: string }[] = [
@@ -460,7 +480,7 @@ export function B2CSalesPanel({
             type="date"
             value={to}
             min={from}
-            max={iso(new Date())}
+            max={storeToday()}
             onChange={(e) => onRangeChange(from, e.target.value)}
             className="h-8 rounded-md border bg-background px-2 text-xs"
           />
@@ -495,7 +515,7 @@ export function B2CSalesPanel({
               delta={unitsDelta}
             />
             <StatCard
-              icon={<DollarSign size={15} />} label="Net sales" accent="#10b981"
+              icon={<DollarSign size={15} />} label="Net sales · ex tax" accent="#10b981"
               value={fmtAud(stats.summary.netAud)}
               usd={stats.summary.netUsd}
               sub={`${fmtAud(stats.previous.netAud)} ${fmtUsd(stats.previous.netUsd)} before`}
@@ -741,8 +761,13 @@ export function B2CSalesPanel({
           </div>
 
           <p className="text-[11px] text-muted-foreground/70">
-            Shopify sales only. Amounts in AUD, converted from USD at each order’s month rate —
-            the same rate the rest of the dashboard uses.
+            Shopify sales only. <b className="text-muted-foreground">Every amount here excludes sales tax</b>, so
+            it matches Shopify’s Net sales: Australian prices carry the 10% GST inside the shelf
+            price and other markets add tax at checkout, and that tax is not revenue.
+            {' '}{fmtAud(stats.summary.taxExcludedAud)} <span className="whitespace-nowrap">{fmtUsd(stats.summary.taxExcludedUsd)}</span>{' '}
+            of tax was taken out of this period. Amounts in AUD, converted from USD at each
+            order’s month rate — the same rate the rest of the dashboard uses. Dates are the
+            store’s calendar days in Brisbane time, the same days Shopify reports.
           </p>
         </div>
       )}
