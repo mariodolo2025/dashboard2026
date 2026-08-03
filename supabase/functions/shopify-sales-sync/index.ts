@@ -116,6 +116,8 @@ Deno.serve(async (req: Request) => {
     // One row per refund event; written alongside the sales lines below.
 
     const refundRows: any[] = [];
+    // Refund transactions with no amount_set — reported so a silent gap is visible.
+    let refundTxSkipped = 0;
     const orderIds = new Set<string>();
     // Web Upgrade performance: order-side attribution, captured additively without
     // touching the sales pipeline. Shopify returns properties/note_attributes as
@@ -229,14 +231,24 @@ Deno.serve(async (req: Request) => {
           }
           // What actually left the account. Merchandise alone (returns_usd)
           // misses refunded shipping and goodwill refunds with no goods at all.
+          // Money actually returned. Prefer the transaction amounts, but ONLY via
+          // amount_set: tr.amount alone is in the ORDER's currency, and reading
+          // it as converted stored an Indonesian refund of IDR 2,559,000 as
+          // 2,559,000 rather than 143.75 — 600x out across non-USD/AUD orders.
+          // REST does not always include amount_set, so where it is missing the
+          // amount is rebuilt from components that ARE converted reliably.
+          // Skipping those instead would have blanked most refunds.
           let rfPaid = 0;
+          let rfTxUsable = false;
           for (const tr of (rf.transactions || [])) {
             if (String(tr.status ?? '') !== 'success') continue;
-            rfPaid += conv(
-              num(tr.amount_set?.presentment_money?.amount ?? tr.amount),
-              num(tr.amount_set?.shop_money?.amount ?? tr.amount)
-            );
+            const set = tr.amount_set;
+            if (!set?.shop_money?.amount && !set?.presentment_money?.amount) { refundTxSkipped++; continue; }
+            rfTxUsable = true;
+            rfPaid += conv(num(set?.presentment_money?.amount), num(set?.shop_money?.amount));
           }
+          const rfPaymentSource = rfTxUsable ? 'transactions' : 'derived';
+          if (!rfTxUsable) rfPaid = rfGoods + rfTax + rfShip;
 
           const rfDay = String(rf.created_at ?? o.created_at ?? '').slice(0, 10);
           if (rf.id && rfDay) {
@@ -245,6 +257,7 @@ Deno.serve(async (req: Request) => {
               order_date: day, refund_date: rfDay, currency: cur,
               refunded_qty: r2(rfQty), goods_usd: r2(rfGoods), tax_usd: r2(rfTax),
               shipping_usd: r2(rfShip), refunded_payment_usd: r2(rfPaid),
+              payment_source: rfPaymentSource,
             });
           }
         }
@@ -324,7 +337,7 @@ Deno.serve(async (req: Request) => {
       ...(backfill ? {} : { last_modified_watermark: maxUpdated }),
     });
 
-    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, upgradeAttributed: upgradeRows.length, upgradeErr, refundsCaptured: refundRows.length, refundErr, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
+    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, upgradeAttributed: upgradeRows.length, upgradeErr, refundsCaptured: refundRows.length, refundTxSkipped, refundErr, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
   } catch (e) {
     // Mark the run failed so shopify-export-csv won't publish a partial CSV.
     try {
