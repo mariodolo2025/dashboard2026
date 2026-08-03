@@ -220,9 +220,24 @@ async function syncProducts(
     });
   }
 
-  // Filter out products without a valid SKU and deduplicate
+  // Filter out products without a valid SKU and deduplicate.
+  //
+  // Two payloads, deliberately. PostgREST builds ONE statement per batch using
+  // the UNION of the keys present across the array, and any row missing a key
+  // is sent as NULL for it — so a batch where some rows carry
+  // product_cost_china and others omit it does not leave the others alone: it
+  // WIPES them. On 2026-08-03 that erased the cost of 753 SKUs, took landed
+  // cost to zero across the board, and dropped reported inventory value from
+  // AUD 1.13M to 529K. The old code omitting the key for SKUs that already had
+  // a cost is exactly what selected them for deletion.
+  //
+  // rows      -> metadata only, identical keys for every SKU, safe to upsert.
+  // costRows  -> cost only, and only for SKUs that have none. Written
+  //              separately so a cost from costs.csv can never be in a payload
+  //              that might null it.
   const seenSkus = new Set<string>();
   const rows: any[] = [];
+  const costRows: any[] = [];
 
   for (const p of products) {
     const sku = (p.ProductCode ?? "").trim();
@@ -230,30 +245,43 @@ async function syncProducts(
     seenSkus.add(sku);
 
     const existing = existingMap.get(sku);
-    const row: any = {
+    rows.push({
       sku,
       product_description: p.ProductDescription ?? "",
       product_group: p.ProductGroup?.GroupName ?? "Other",
       supplier: p.Supplier?.SupplierName ?? "Unknown",
       updated_at: new Date().toISOString(),
-    };
+    });
 
-    // Only set cost if the SKU doesn't already have one from costs.csv
+    // Seed a cost only where there is none. Never overwrite costs.csv.
     if (!existing || existing.cost === 0) {
-      row.product_cost_china = Number(p.LastCost ?? p.DefaultPurchasePrice ?? 0);
+      const seed = Number(p.LastCost ?? p.DefaultPurchasePrice ?? 0);
+      if (seed > 0) costRows.push({ sku, product_cost_china: seed });
     }
 
     // NOTE: lead_time_days is NOT set here. The Products list endpoint does not
     // include per-supplier lead times. Lead times are loaded from ProductList.csv
     // via Settings → "Load Lead Times from CSV". This avoids overwriting CSV values.
-
-    rows.push(row);
   }
 
-  console.log(`Products: ${rows.length} unique valid SKUs`);
+  console.log(`Products: ${rows.length} unique valid SKUs, ${costRows.length} needing a seed cost`);
   if (rows.length === 0) return 0;
 
-  // Upsert in batches — ignoreDuplicates: false so it updates existing rows
+  // Costs first, as targeted UPDATEs. An update touches only the column named,
+  // so nothing else on the row can be disturbed, and a SKU that already has a
+  // cost is never in this list at all.
+  for (const c of costRows) {
+    const { error } = await supabase
+      .from("aim2026_sku_parameters")
+      .update({ product_cost_china: c.product_cost_china })
+      .eq("sku", c.sku)
+      .or("product_cost_china.is.null,product_cost_china.eq.0");
+    if (error) console.error(`Error seeding cost for ${c.sku}:`, error.message);
+  }
+
+  // Upsert in batches — ignoreDuplicates: false so it updates existing rows.
+  // Every row here carries exactly the same keys, so the UNION-of-keys
+  // behaviour above cannot null anything.
   let inserted = 0;
   const batchSize = 200;
   for (let i = 0; i < rows.length; i += batchSize) {
