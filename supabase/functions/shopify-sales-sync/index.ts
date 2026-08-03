@@ -112,6 +112,10 @@ Deno.serve(async (req: Request) => {
       : `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'updated_at asc', updated_at_min: updatedSince })}`;
 
     const rows: any[] = [];
+
+    // One row per refund event; written alongside the sales lines below.
+
+    const refundRows: any[] = [];
     const orderIds = new Set<string>();
     // Web Upgrade performance: order-side attribution, captured additively without
     // touching the sales pipeline. Shopify returns properties/note_attributes as
@@ -195,12 +199,53 @@ Deno.serve(async (req: Request) => {
           if (!a.variant) a.variant = li.variant_title ?? '';
         }
         for (const rf of (o.refunds || [])) {
+          // Per-refund record, so the refund can be placed in time. Without the
+          // date, a before/after comparison punishes the newer cohort simply for
+          // having had less time to be returned.
+          let rfGoods = 0, rfTax = 0, rfShip = 0, rfQty = 0;
+
           for (const rli of (rf.refund_line_items || [])) {
             const a = gA(rli.line_item?.sku || '(no sku)');
             const presRet = num(rli.subtotal_set?.presentment_money?.amount ?? rli.subtotal);
             const shopRet = num(rli.subtotal_set?.shop_money?.amount ?? rli.subtotal);
             a.returns += conv(presRet, shopRet); a.qty -= (rli.quantity || 0);
             a.native -= presRet; a.orderUsd -= shopRet;
+
+            rfGoods += conv(presRet, shopRet);
+            rfQty += (rli.quantity || 0);
+            rfTax += conv(
+              num(rli.total_tax_set?.presentment_money?.amount ?? rli.total_tax),
+              num(rli.total_tax_set?.shop_money?.amount ?? rli.total_tax)
+            );
+          }
+          for (const adj of (rf.order_adjustments || [])) {
+            if (String(adj.kind).includes('shipping')) {
+              // Shipping adjustments arrive negative; store the amount given back.
+              rfShip += Math.abs(conv(
+                num(adj.amount_set?.presentment_money?.amount ?? adj.amount),
+                num(adj.amount_set?.shop_money?.amount ?? adj.amount)
+              ));
+            }
+          }
+          // What actually left the account. Merchandise alone (returns_usd)
+          // misses refunded shipping and goodwill refunds with no goods at all.
+          let rfPaid = 0;
+          for (const tr of (rf.transactions || [])) {
+            if (String(tr.status ?? '') !== 'success') continue;
+            rfPaid += conv(
+              num(tr.amount_set?.presentment_money?.amount ?? tr.amount),
+              num(tr.amount_set?.shop_money?.amount ?? tr.amount)
+            );
+          }
+
+          const rfDay = String(rf.created_at ?? o.created_at ?? '').slice(0, 10);
+          if (rf.id && rfDay) {
+            refundRows.push({
+              order_id: oid, refund_id: String(rf.id),
+              order_date: day, refund_date: rfDay, currency: cur,
+              refunded_qty: r2(rfQty), goods_usd: r2(rfGoods), tax_usd: r2(rfTax),
+              shipping_usd: r2(rfShip), refunded_payment_usd: r2(rfPaid),
+            });
           }
         }
         // order taxes + shipping (net of refunds) → allocate to sku rows by net share
@@ -241,6 +286,22 @@ Deno.serve(async (req: Request) => {
       if (error) throw new Error(`insert: ${error.message}`);
     }
 
+    // ── Refunds — same replace-by-order shape as the sales lines, so a refund
+    //    that Shopify later voids disappears instead of lingering. Isolated:
+    //    this table feeds analysis only, and must never hold back the sales
+    //    watermark if it fails. ──
+    let refundErr: string | null = null;
+    try {
+      for (let i = 0; i < ids.length; i += 200) {
+        const { error } = await supabase.from('shopify_refunds').delete().in('order_id', ids.slice(i, i + 200));
+        if (error) throw new Error(error.message);
+      }
+      for (let i = 0; i < refundRows.length; i += 500) {
+        const { error } = await supabase.from('shopify_refunds').insert(refundRows.slice(i, i + 500));
+        if (error) throw new Error(error.message);
+      }
+    } catch (e) { refundErr = e instanceof Error ? e.message : 'failed'; }
+
     // ── Upgrade attribution write — isolated + best-effort: an error here must NEVER
     //    fail the sales sync or hold back the watermark. ──
     let upgradeErr: string | null = null;
@@ -263,7 +324,7 @@ Deno.serve(async (req: Request) => {
       ...(backfill ? {} : { last_modified_watermark: maxUpdated }),
     });
 
-    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, upgradeAttributed: upgradeRows.length, upgradeErr, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
+    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, upgradeAttributed: upgradeRows.length, upgradeErr, refundsCaptured: refundRows.length, refundErr, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
   } catch (e) {
     // Mark the run failed so shopify-export-csv won't publish a partial CSV.
     try {
