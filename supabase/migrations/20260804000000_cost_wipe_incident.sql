@@ -1,0 +1,53 @@
+-- =============================================================================
+-- INCIDENT 2026-08-03 — the products sync erased 753 product costs
+-- =============================================================================
+-- No schema change. Recorded here because the mechanism is not obvious from the
+-- code, and the same shape existed in a second function.
+--
+-- SYMPTOM
+-- Reported inventory value fell from AUD 1.13M to 529K in a day. Average margin
+-- read -345.6%, GMROI 63.9, items at risk jumped 3 -> 195. Stock had not moved;
+-- the system had stopped knowing what it was worth.
+--
+-- CAUSE
+-- syncProducts in aim2026-sync-unleashed built ONE batch in which rows that
+-- already had a cost from costs.csv deliberately OMITTED product_cost_china,
+-- while rows without a cost carried it. That looks like "leave the existing
+-- ones alone". It is the opposite.
+--
+-- PostgREST builds one statement per batch from the UNION of the keys present
+-- across the array, and sends NULL for every row that omits one. So the rows
+-- deliberately left out were precisely the rows selected for deletion:
+--     753 SKUs -> product_cost_china NULL
+--     48 class-A SKUs left with no cost at all
+-- The 554 that still had a cost only had one because they had been empty and
+-- Unleashed's LastCost had just filled them. On the NEXT run those would have
+-- had a cost, been omitted in turn, and been wiped as well — every run eroding
+-- a little more.
+--
+-- FIX (deployed, not a migration)
+--   aim2026-sync-unleashed: split into two payloads. Metadata upserts with
+--   identical keys for every SKU. Costs are written separately, as targeted
+--   UPDATEs, only for SKUs that have none, guarded by
+--   .or('product_cost_china.is.null,product_cost_china.eq.0'). A cost that
+--   exists can no longer appear in any payload that could null it.
+--
+--   aim2026-csv-load (lead times): the same shape, latent — rows carrying
+--   pack_size mixed with rows that do not. Split into homogeneous groups.
+--
+-- RECOVERY
+--   1. Paused cron jobs 5 and 8 before doing anything, since each run eroded more.
+--   2. Snapshotted the table to aim2026_sku_parameters_bkp_20260804.
+--   3. Reloaded costs.csv (906 SKUs), taking costs 554 -> 1,066.
+--   4. Ran the fixed sync: costs 1,066 -> 1,329, NULLs 753 -> 2, class-A without
+--      cost 48 -> 1. Ran it a SECOND time to prove idempotence: 1,329 -> 1,329.
+--      Before the fix a run destroyed costs; now it completes them and holds.
+--   5. Recalculated KPIs. Inventory value AUD 1,269,860; average margin back to
+--      a plausible 57.3% from -345.6%.
+--   6. Re-enabled the cron.
+--
+-- RULE FOR THIS TABLE
+-- Never build a batch upsert whose rows carry different sets of keys. Either
+-- every row carries the same columns, or the varying column is written by a
+-- separate targeted UPDATE. Omitting a key does not preserve the stored value —
+-- it erases it.

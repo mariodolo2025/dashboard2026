@@ -882,28 +882,43 @@ async function loadLeadTimesFromCSV(
 
   if (updates.length === 0) return 0;
 
-  // Upsert in batches
+  // Upsert in batches, SPLIT so every batch carries identical keys.
+  //
+  // PostgREST builds one statement per batch from the UNION of the keys present
+  // across the array, sending NULL for any row that omits one. Mixing rows that
+  // carry pack_size with rows that do not therefore does not leave the latter
+  // alone — it wipes their pack_size. The same shape erased 753 product costs on
+  // 2026-08-03 in the Unleashed products sync.
+  //
+  // Splitting by which fields a row actually has keeps each payload homogeneous,
+  // so a missing value is simply not written rather than written as NULL.
   let updated = 0;
   const batch = 300;
-  for (let i = 0; i < updates.length; i += batch) {
-    const b = updates.slice(i, i + batch).map((u) => {
-      const row: any = {
-        sku: u.sku,
-        updated_at: new Date().toISOString(),
-      };
-      if (u.lead_time_days != null) row.lead_time_days = u.lead_time_days;
-      if (u.pack_size != null) row.pack_size = u.pack_size;
-      return row;
-    });
+  const groups = [
+    { rows: updates.filter((u) => u.lead_time_days != null && u.pack_size != null), lead: true,  pack: true },
+    { rows: updates.filter((u) => u.lead_time_days != null && u.pack_size == null), lead: true,  pack: false },
+    { rows: updates.filter((u) => u.lead_time_days == null && u.pack_size != null), lead: false, pack: true },
+  ];
 
-    const { error } = await supabase
-      .from("aim2026_sku_parameters")
-      .upsert(b, { onConflict: "sku", ignoreDuplicates: false });
+  for (const g of groups) {
+    if (g.rows.length === 0) continue;
+    for (let i = 0; i < g.rows.length; i += batch) {
+      const b = g.rows.slice(i, i + batch).map((u) => {
+        const row: any = { sku: u.sku, updated_at: new Date().toISOString() };
+        if (g.lead) row.lead_time_days = u.lead_time_days;
+        if (g.pack) row.pack_size = u.pack_size;
+        return row;
+      });
 
-    if (!error) {
-      updated += b.length;
-    } else {
-      console.error(`LeadTime upsert batch ${i} error:`, error);
+      const { error } = await supabase
+        .from("aim2026_sku_parameters")
+        .upsert(b, { onConflict: "sku", ignoreDuplicates: false });
+
+      if (!error) {
+        updated += b.length;
+      } else {
+        console.error(`LeadTime upsert batch ${i} error:`, error);
+      }
     }
   }
 
