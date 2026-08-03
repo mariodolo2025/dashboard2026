@@ -5,6 +5,7 @@
 // dashboard. Includes fallback to mock data when Supabase is not configured.
 // =============================================================================
 
+import { supabase } from '@/lib/supabase';
 import type {
   SKURow,
   KPISummary,
@@ -1680,4 +1681,47 @@ export function downloadAsCSV(rows: Record<string, any>[], filename: string): vo
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ─── Web Upgrade — refunds before vs after the launch ────────────────────────
+
+export interface RefundImpactCohort {
+  orders: number;
+  salesAud: number; salesUsd: number;
+  cancelAud: number; cancelUsd: number; cancelCount: number; cancelPct: number | null;
+  returnAud: number; returnUsd: number; returnCount: number; returnPct: number | null;
+  totalAud: number; totalUsd: number; totalPct: number | null;
+}
+
+export interface RefundImpact {
+  launch: string;
+  /** Order age both cohorts are cut at, so neither is flattered by being younger. */
+  maturityDays: number;
+  asOf: string;
+  windowDays: number;
+  after: { from: string; to: string };
+  before: { from: string; to: string };
+  cohorts: { after?: RefundImpactCohort; before?: RefundImpactCohort };
+  weekly: Array<{
+    week: string; salesAud: number;
+    cancelAud: number; returnAud: number;
+    cancelPct: number | null; returnPct: number | null;
+    postLaunch: boolean;
+  }>;
+}
+
+/** Refunds before vs after the launch, both cohorts judged at the same order age.
+ *
+ * Cancellations (0-2 days) and genuine returns (3+ days) come back separately:
+ * they are different behaviours, and a product-page change moves the first long
+ * before the second. */
+export async function fetchRefundImpact(
+  launch = '2026-07-23',
+  maturityDays = 7
+): Promise<RefundImpact | null> {
+  const { data, error } = await supabase.rpc('web_upgrade_refund_impact', {
+    p_launch: launch, p_maturity_days: maturityDays,
+  });
+  if (error) return null;
+  return data as RefundImpact;
 }
