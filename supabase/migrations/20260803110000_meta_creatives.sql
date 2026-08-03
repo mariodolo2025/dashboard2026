@@ -1,0 +1,53 @@
+-- =============================================================================
+-- Meta creatives — per-ad performance in the E-commerce tab
+-- =============================================================================
+-- Applied as migrations 'ecommerce_dashboard_ads' and
+-- 'ecommerce_dashboard_ads_first_seen_global', plus the new edge function
+-- meta-creatives-sync and an orchestrator step.
+--
+-- WHY
+-- "Which ads are working, and by how much" could not be answered from the
+-- dashboard. ecommerce_meta_daily_ads — the per-ad table — had been frozen since
+-- 2026-05-12: its only writer, ecommerce-sync-meta, requires an admin user's JWT
+-- and therefore only ran when somebody pressed a button in the UI. The
+-- account-level table (meta_ads_daily) kept flowing because meta-ads-sync runs
+-- unattended, but account totals cannot tell one creative from another.
+--
+-- meta-creatives-sync is the ad-level twin of meta-ads-sync: service-role, no
+-- user session, added to sync-orchestrate on a 14-day trailing window (ad level
+-- is ~250x the rows of account level, and creative decisions are made on recent
+-- data). The window is deleted and re-inserted each run, so revised attribution
+-- lands and an ad that stopped spending disappears instead of keeping a stale
+-- row.
+--
+-- A REAL BUG FOUND WHILE BACKFILLING
+-- The retired function summed every Meta action_type CONTAINING "purchase".
+-- Meta returns several overlapping types per row — omni_purchase,
+-- offsite_conversion.fb_pixel_purchase, web_in_store_purchase and others — so
+-- the same sale was counted two or three times. It gave itself away as ad-level
+-- ROAS of 10-16x against an account ROAS of 1.9x. March and April were inflated
+-- 3.3x and 3.6x in the stored data.
+-- The new function matches EXACTLY 'omni_purchase', the same field meta-ads-sync
+-- uses and which was probed against the manual CSV to the cent. March through
+-- August were re-pulled with the corrected metric. Verified afterwards: per-ad
+-- spend equals account spend exactly, and per-ad conversion value covers
+-- 99.6-100% of account conversion value.
+--
+-- WHAT THE RPC RETURNS
+-- ecommerce_dashboard gains `ads` (top 25 by spend, honouring the range and the
+-- market filter) and `adsCoverage`.
+--   * Money is converted to AUD before ranking. The US account bills USD and the
+--     AU account AUD; ranking them unconverted compares different units.
+--   * Grouped by ad name + campaign, not ad_id — the same creative gets its own
+--     ad_id per campaign and market, which would split it into slices too small
+--     to judge.
+--   * firstSeen is the first day the creative ever spent, taken from the WHOLE
+--     table. Computed inside the selected range (as it first was) it could never
+--     fall outside it, so every ad was flagged "new" — worse than no flag, since
+--     it labelled long-running creative as fresh.
+--   * adsCoverage reports what the table actually holds, so "no rows" can be
+--     told apart from "nothing was advertised". Per-ad history starts
+--     2026-03-01; anything earlier is genuinely absent, not zero.
+--   * Share of spend is NOT computed here: it must be measured against the
+--     period's whole spend rather than the top 25, and the panel already holds
+--     that in kpis.spend.

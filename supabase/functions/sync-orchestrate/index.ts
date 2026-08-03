@@ -94,6 +94,12 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   // "2-Mario-for-Danshboard.csv" the dashboard reads (native currency per row).
   { name: 'Meta ads', fn: 'meta-ads-sync', body: {} },
   { name: 'Meta CSV', fn: 'meta-export-csv', body: {} },
+  // Per-ad insights, so "which creative is working" is answerable without
+  // opening Meta. The old writer (ecommerce-sync-meta) needed an admin JWT and
+  // therefore only ran when someone pressed a button — the table sat frozen from
+  // 2026-05-12 to 2026-08-03. A shorter window than the account-level step: ad
+  // level is ~250x the rows, and creative decisions are made on recent data.
+  { name: 'Meta creatives', fn: 'meta-creatives-sync', body: { days: 14 } },
   // Rebuild the dashboard's pre-parsed snapshot so the main load serves it
   // instead of re-parsing ~23 MB of CSVs (which intermittently hit the edge
   // resource limit / HTTP 546). endDate defaults to now inside parse-csv-data.
