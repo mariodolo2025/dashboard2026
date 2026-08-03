@@ -33,6 +33,17 @@ interface Dash {
   geo: Array<{ country: string; revenue: number; units: number }>;
   family: Array<{ family: string; revenue: number; units: number; pct: number; aovUnit: number }>;
   products: Array<{ title: string; revenue: number; units: number }>;
+  // Per-creative Meta performance. Money already converted to AUD server-side:
+  // the US account bills USD and the AU account AUD, so the raw rows are not
+  // comparable until converted.
+  ads?: Array<{
+    ad: string; campaign: string | null; firstSeen: string;
+    spend: number; impressions: number; clicks: number; purchases: number;
+    value: number; roas: number | null; ctr: number | null; cpp: number | null;
+  }>;
+  // What the per-ad table actually holds, so an empty list can be told apart
+  // from a period in which nothing was advertised.
+  adsCoverage?: { from: string | null; to: string | null; daysInRange: number };
 }
 
 const HELP: Record<string, string> = {
@@ -56,6 +67,7 @@ const HELP: Record<string, string> = {
   bridge: 'How gross sales become net revenue: subtract discounts, then returns. Shipping and tax sit outside net.',
   signals: 'Conclusions pulled from SKU-level sales: which families carry the business and where the biggest baskets come from.',
   products: 'Top products by net revenue for the selected range and market.',
+  ads: 'Individual Meta ads for the selected range and market, biggest spender first. ROAS is Meta-attributed conversion value over spend, so it is Meta’s own view, not the store MER. Cost/purchase is the number that moves first when a creative starts working.',
 };
 
 // ── formatters ──
@@ -446,8 +458,75 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
               </table>
             </div>
 
+            {/* Ads — which creative is working, and by how much */}
+            <SectionH eyebrow="Meta" title="Ads by spend" help="ads" note="biggest spender first" />
+            <div className="ecom-card">
+              {(() => {
+                const ads = data!.ads ?? [];
+                const cov = data!.adsCoverage;
+                // An empty table means one of two very different things. Say which:
+                // no per-ad data was collected for these dates, or ads ran and
+                // none spent. Only the second is a fact about the business.
+                if (ads.length === 0) {
+                  const noData = !cov?.daysInRange;
+                  return (
+                    <div className="ecom-faint" style={{ padding: '18px 4px', fontSize: 13 }}>
+                      {noData
+                        ? `No per-ad data for these dates. Per-ad history starts ${cov?.from ?? '—'}.`
+                        : 'No ad spend in this range.'}
+                    </div>
+                  );
+                }
+                const totalSpend = k?.spend ?? 0;
+                const mx = ads[0].spend || 1;
+                return (
+                  <table className="ecom-table">
+                    <thead>
+                      <tr>
+                        <th>Ad</th>
+                        <th className="r">Spend</th>
+                        <th style={{ width: '16%' }}>Share</th>
+                        <th className="r">ROAS</th>
+                        <th className="r">CTR</th>
+                        <th className="r">Purch.</th>
+                        <th className="r">Cost / purchase</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ads.map((a2, i) => (
+                        <tr key={`${a2.ad}-${i}`}>
+                          <td>
+                            <div className="pname"><span className="dotrank">{i + 1}</span>{a2.ad}</div>
+                            <div className="ecom-dim" style={{ fontSize: 11, marginLeft: 26 }}>
+                              {a2.campaign ?? '—'}
+                              {a2.firstSeen >= toYMD(range.from!) && <> · <b>new in range</b></>}
+                            </div>
+                          </td>
+                          <td className="r tnum">{money(a2.spend)}</td>
+                          <td>
+                            <div className="inbar" style={{ width: `${(a2.spend / mx) * 100}%` }} />
+                            {totalSpend > 0 && (
+                              <div className="ecom-dim tnum" style={{ fontSize: 10 }}>
+                                {Math.round((100 * a2.spend) / totalSpend)}%
+                              </div>
+                            )}
+                          </td>
+                          <td className="r tnum" style={{ fontFamily: 'Fraunces, Georgia, serif' }}>
+                            {a2.roas == null ? '—' : `${a2.roas.toFixed(2)}×`}
+                          </td>
+                          <td className="r ecom-dim tnum">{a2.ctr == null ? '—' : `${a2.ctr.toFixed(2)}%`}</td>
+                          <td className="r ecom-dim tnum">{int(a2.purchases)}</td>
+                          <td className="r tnum">{a2.cpp == null ? '—' : money(a2.cpp)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+              })()}
+            </div>
+
             <div className="ecom-foot">
-              Aggregated live from <b>meta_ads_daily</b> + <b>shopify_sales_lines</b> (auto-synced 3×/day). Every control recomputes from the database.
+              Aggregated live from <b>meta_ads_daily</b> + <b>ecommerce_meta_daily_ads</b> + <b>shopify_sales_lines</b> (auto-synced 3×/day). Every control recomputes from the database.
               <b> est. POAS</b> uses a 45% blended-margin assumption. Not available yet (needs customer IDs / sessions): LTV, new-vs-returning, cohort retention, site conversion rate.
             </div>
           </>
