@@ -54,21 +54,70 @@ async function downloadFromBucket(
   const namesToTry = [fileName, ...(alternateNames ?? [])];
   const buckets = ["aim-csv-files", "csv-files"];
 
-  for (const name of namesToTry) {
-    for (const bucket of buckets) {
-      const { data, error } = await supabase.storage
-        .from(bucket)
-        .download(name);
+  // Pick the NEWEST copy, not the first bucket that happens to hold one.
+  //
+  // The same file name lives in both buckets, and returning the first hit meant
+  // bucket order silently decided which data won. On 2026-08-03 a cost uploaded
+  // to csv-files/costs.csv was ignored for hours because
+  // aim-csv-files/costs.csv — last touched in January — was found first, and the
+  // load reported success with stale numbers. SalesEnquiryList.csv had the same
+  // split. Reading the older file and calling it a success is worse than
+  // failing: nothing looks wrong.
+  const candidates: { name: string; bucket: string; updatedAt: number }[] = [];
 
-      if (!error && data) {
-        console.log(`✓ Downloaded "${name}" from ${bucket} (${data.size} bytes)`);
-        return data;
-      }
+  for (const name of namesToTry) {
+    const slash = name.lastIndexOf("/");
+    const dir = slash === -1 ? "" : name.slice(0, slash);
+    const base = slash === -1 ? name : name.slice(slash + 1);
+
+    for (const bucket of buckets) {
+      const { data: listed, error } = await supabase.storage
+        .from(bucket)
+        .list(dir, { search: base, limit: 100 });
+      if (error || !listed) continue;
+
+      const hit = listed.find((f: any) => f.name === base);
+      if (!hit) continue;
+
+      const stamp = hit.updated_at ?? hit.created_at ?? null;
+      candidates.push({
+        name,
+        bucket,
+        updatedAt: stamp ? Date.parse(stamp) : 0,
+      });
     }
   }
 
-  console.error(`✗ ${fileName} not found in any bucket (tried: ${namesToTry.join(", ")})`);
-  return null;
+  if (candidates.length === 0) {
+    console.error(`✗ ${fileName} not found in any bucket (tried: ${namesToTry.join(", ")})`);
+    return null;
+  }
+
+  // Preferred name wins over an alternate; among equals, the newest file wins.
+  candidates.sort((a, b) =>
+    namesToTry.indexOf(a.name) - namesToTry.indexOf(b.name) || b.updatedAt - a.updatedAt
+  );
+  const pick = candidates[0];
+
+  if (candidates.length > 1) {
+    console.log(
+      `Multiple copies of "${pick.name}": ` +
+      candidates.map((c) => `${c.bucket}@${new Date(c.updatedAt).toISOString()}`).join(", ") +
+      ` → using ${pick.bucket}`
+    );
+  }
+
+  const { data, error } = await supabase.storage.from(pick.bucket).download(pick.name);
+  if (error || !data) {
+    console.error(`✗ Failed to download "${pick.name}" from ${pick.bucket}: ${error?.message}`);
+    return null;
+  }
+
+  console.log(
+    `✓ Downloaded "${pick.name}" from ${pick.bucket} (${data.size} bytes, ` +
+    `updated ${new Date(pick.updatedAt).toISOString()})`
+  );
+  return data;
 }
 
 // ─── CSV Parsing Helpers ───────────────────────────────────────────────────
