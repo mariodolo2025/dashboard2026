@@ -9,6 +9,7 @@ import { Calendar } from '@/components/ui/calendar';
 import { DateRangePresets } from '@/components/DateRangePresets';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { supabase } from '@/lib/supabase';
+import { fetchRefundImpact, type RefundImpact } from '@/lib/aim2026/api';
 import { cn } from '@/lib/utils';
 import { SkuSalesDialog } from '@/components/SkuSalesDialog';
 
@@ -312,6 +313,19 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Refunds before vs after launch. Its own call: it is anchored to the launch
+  // date and a fixed maturity window, not to the panel's date range — comparing
+  // an arbitrary range would reintroduce the age bias the whole thing exists to
+  // remove.
+  const [refunds, setRefunds] = useState<RefundImpact | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchRefundImpact(toYMD(LAUNCH_DAY), 7)
+      .then((r) => { if (!cancelled) setRefunds(r); })
+      .catch(() => { if (!cancelled) setRefunds(null); });
+    return () => { cancelled = true; };
+  }, []);
+
   const t = data?.totals;
   const noData = !!data && (data.totals.totalEvents === 0);
   const rangeLabel = `${range.from ? format(range.from, 'MMM d') : ''} – ${range.to ? format(range.to, 'MMM d, yyyy') : ''}`;
@@ -469,6 +483,103 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   ) : null;
 
   // ——— Daily brief ———
+  /** Refunds, before vs after the launch.
+   *
+   * Two corrections are baked in and both are stated on screen, because a
+   * reader has no way to know otherwise:
+   *
+   * 1. Both cohorts are cut at the same order age. A refund arrives days or
+   *    weeks after the sale, so a newer cohort always looks better until it
+   *    catches up. Measured over 511 refunds: 41% of the money returns within
+   *    2 days, 53% by day 7, 70% by day 21, 12% only after 45.
+   * 2. Cancellations (0-2 days) are shown apart from returns (3+ days). The
+   *    first is a buyer changing their mind before the parcel moves — which a
+   *    product-page change should affect within days. The second needs the
+   *    goods to travel back and takes weeks to register. One combined number
+   *    would hide both.
+   *
+   * When either side has too few events to mean anything, the panel says so
+   * rather than printing a percentage that invites a conclusion. */
+  const RefundPanel = ({ r }: { r: RefundImpact }) => {
+    const a = r.cohorts.after, b = r.cohorts.before;
+    if (!a || !b) return null;
+    const events = (c: typeof a) => c.cancelCount + c.returnCount;
+    // Below this, a one-event swing moves the percentage more than any real
+    // change would. 30 is the usual floor for treating a proportion as a signal.
+    const thin = Math.min(events(a), events(b)) < 30;
+    const money = (aud: number, usd: number) => (
+      <>${Math.round(aud).toLocaleString('en-AU')}<span style={{ fontSize: '0.72em', color: 'var(--wu-faint)', fontWeight: 400 }}> (US${Math.round(usd).toLocaleString('en-AU')})</span></>
+    );
+    const delta = (after: number | null, before: number | null) => {
+      if (after == null || before == null) return null;
+      const d = after - before;
+      return { d, up: d > 0 };
+    };
+    const rows = [
+      { key: 'cancel', label: 'Cancelled', sub: 'refunded within 2 days — bought, then changed their mind before it shipped' },
+      { key: 'return', label: 'Returned',  sub: `refunded ${'3'}-${r.maturityDays} days in — goods actually travelled back` },
+    ] as const;
+
+    return (
+      <div className="wu-card" style={{ borderRadius: 14, padding: '16px 18px', marginTop: 14 }}>
+        <div className="wu-kicker">Refunds · before vs after launch</div>
+        <div style={{ fontSize: 11.5, color: 'var(--wu-faint)', margin: '6px 0 14px', lineHeight: 1.55 }}>
+          Orders from <b style={{ color: 'var(--wu-dim)' }}>{r.after.from}</b> to <b style={{ color: 'var(--wu-dim)' }}>{r.after.to}</b> against
+          the {r.windowDays} days before launch ({r.before.from} to {r.before.to}).
+          Both sides counted at <b style={{ color: 'var(--wu-dim)' }}>{r.maturityDays} days</b> of order age — a newer order has had less
+          time to be refunded, so comparing them at different ages would flatter the newer one.
+        </div>
+
+        <table className="wu-entry-tbl">
+          <thead>
+            <tr><th>What</th><th className="r">Before</th><th className="r">After</th><th className="r">Change</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const bA = row.key === 'cancel' ? b.cancelAud : b.returnAud;
+              const bU = row.key === 'cancel' ? b.cancelUsd : b.returnUsd;
+              const aA = row.key === 'cancel' ? a.cancelAud : a.returnAud;
+              const aU = row.key === 'cancel' ? a.cancelUsd : a.returnUsd;
+              const bP = row.key === 'cancel' ? b.cancelPct : b.returnPct;
+              const aP = row.key === 'cancel' ? a.cancelPct : a.returnPct;
+              const bN = row.key === 'cancel' ? b.cancelCount : b.returnCount;
+              const aN = row.key === 'cancel' ? a.cancelCount : a.returnCount;
+              const dd = delta(aP, bP);
+              const none = aN === 0 && bN === 0;
+              return (
+                <tr key={row.key}>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{row.label}</div>
+                    <div style={{ fontSize: 10.5, color: 'var(--wu-faint)', lineHeight: 1.4 }}>{row.sub}</div>
+                  </td>
+                  <td className="r tnum">{money(bA, bU)}<div style={{ fontSize: 10.5, color: 'var(--wu-faint)' }}>{bP == null ? '—' : `${bP}% of sales`} · {bN}</div></td>
+                  <td className="r tnum">{money(aA, aU)}<div style={{ fontSize: 10.5, color: 'var(--wu-faint)' }}>{aP == null ? '—' : `${aP}% of sales`} · {aN}</div></td>
+                  <td className="r tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontSize: 15,
+                        color: none ? 'var(--wu-faint)' : !dd ? 'var(--wu-faint)' : Math.abs(dd.d) < 0.05 ? 'var(--wu-dim)' : dd.up ? 'var(--wu-neg)' : 'var(--wu-pos)' }}>
+                    {none ? 'none yet' : dd ? `${dd.d > 0 ? '+' : ''}${dd.d.toFixed(2)} pts` : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        <p style={{ margin: '12px 0 0', fontSize: 10.5, color: 'var(--wu-faint)', lineHeight: 1.55 }}>
+          {thin ? (
+            <><b style={{ color: 'var(--wu-neg)' }}>Too few events to read yet</b> — {events(b)} before and {events(a)} after.
+            At these counts a single refund moves the percentage more than any real change would. The window widens
+            by a day every day; returns in particular need around five more weeks, since 30% of refunded money comes
+            back after three weeks and would not have happened yet.</>
+          ) : (
+            <>Percentages are of each cohort&rsquo;s own net sales, so the two are comparable even if one sold more.
+            Returns still lag: 30% of refunded money comes back after three weeks, so this window sees roughly
+            half of what will eventually land.</>
+          )}
+        </p>
+      </div>
+    );
+  };
+
   const daily = (() => {
     if (!t || !data) return null;
     const tr = data.trend ?? [];
@@ -727,6 +838,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             )}
           </div>
         </div>
+        {refunds && <RefundPanel r={refunds} />}
       </div>
     );
   })();

@@ -1,0 +1,67 @@
+-- =============================================================================
+-- Refunds before vs after the 23 July launch
+-- =============================================================================
+-- Applied as migrations 'shopify_refunds', 'shopify_refunds_payment_source' and
+-- 'web_upgrade_refund_impact', plus changes to the shopify-sales-sync function.
+--
+-- THE QUESTION
+-- "Did the changes move returns?" The obvious comparison — the days since
+-- launch against the same number of days before — gives the wrong answer, and
+-- gives it confidently.
+--
+-- WHY THE OBVIOUS COMPARISON LIES
+-- A refund arrives days or weeks after the sale, so a recent cohort has had
+-- less time to accumulate them. Measured across 511 refunds (Mar-Aug):
+--     0-2 d   41.1%   (cumulative  41.1%)
+--     3-7 d   12.3%                53.3%
+--     8-14 d   7.1%                60.4%
+--     15-21 d  9.6%                70.0%
+--     22-30 d 11.7%                81.7%
+--     31-45 d  6.5%                88.2%
+--     46+ d   11.8%               100.0%
+-- Nearly a third of refunded money returns after three weeks. A 12-day-old
+-- cohort compared against a fully matured one would look better no matter what
+-- the change did.
+--
+-- WHAT WAS BUILT INSTEAD
+-- Both cohorts are cut at the same order AGE: only orders old enough to have
+-- lived p_maturity_days, counting only refunds that happened within that many
+-- days of their own order. Neither side gets more time than the other.
+--
+-- Cancellations (0-2 days) are reported apart from returns (3+ days). The first
+-- bucket is 41% of all refunded money and is not a return at all — it is buyers
+-- changing their mind before the parcel ships, which a product-page change
+-- should move within days. Genuine returns need the goods to travel back and
+-- take weeks to register. One combined number would hide both signals.
+--
+-- The panel refuses to imply a conclusion it cannot support: below 30 events on
+-- either side it says so outright instead of printing a percentage. At the time
+-- of writing that is exactly the case — 2 events before and 9 after — so the
+-- honest reading is "not yet", and the window widens by a day every day.
+--
+-- THE DATA IT NEEDED, AND A BUG FOUND ALONG THE WAY
+-- shopify_refunds stores one row per refund with refund_date, so a refund can
+-- be placed in time rather than only attributed to its order. That is not
+-- reconstructable later: Shopify keeps the date, the dashboard was discarding
+-- it.
+--
+-- It also stores refunded_payment_usd, the money that actually left the account
+-- — returns_usd is merchandise only, so it misses refunded shipping and refunds
+-- issued with no goods coming back.
+--
+-- Getting that figure right took three passes, recorded because the failure
+-- mode is instructive:
+--   1. Falling back to tr.amount when amount_set was absent. tr.amount is in
+--      the ORDER's currency, so an Indonesian refund of IDR 2,559,000 (USD
+--      143.75) was stored as 2,559,000 — 600x out across non-USD/AUD orders. It
+--      announced itself by claiming 98.5% of refunded money moved on days 22-30.
+--   2. Skipping transactions without amount_set. Worse: REST omits it on ~75%
+--      of refund transactions, so most refunds would have recorded zero — a
+--      silent, plausible-looking wrong answer.
+--   3. Current: use amount_set when present, otherwise rebuild from components
+--      that ARE converted reliably (goods + tax + shipping), and record which
+--      path was used in payment_source so the two never blend invisibly. On the
+--      known IDR case the derived route gives 148.44 against Shopify's 143.75.
+--
+-- History was backfilled March-August in fortnightly chunks; monthly ranges
+-- exceeded the function's time limit.
