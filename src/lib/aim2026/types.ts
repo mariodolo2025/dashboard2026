@@ -295,6 +295,10 @@ export interface StockValuationHistoryRecord {
   onProduction: number;
   pesadoKorea: number;
   totalInventory: number;
+  /** true when this snapshot was revalued at current costs. The stored series
+   *  used whatever costs were loaded on the day, so it moved with the cost
+   *  master and not only with stock. */
+  revalued?: boolean;
 }
 
 // ─── AI Insights ────────────────────────────────────────────────────────────

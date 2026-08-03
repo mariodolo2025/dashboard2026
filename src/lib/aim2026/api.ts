@@ -869,16 +869,37 @@ export async function fetchValuationHistory(
       data: any[];
     }>('aim2026-get-dashboard', { action: 'valuation_history', limit });
 
-    return (data.data ?? []).map((r: any) => ({
+    // Prefer the recalculated columns. Each snapshot was originally valued with
+    // whatever costs happened to be loaded that day, so the stored series moved
+    // when the cost master moved rather than when stock did — on 2026-08-01 a
+    // cost wipe recorded AUD 566K against a real figure near 1.38M. The recalc
+    // revalues every snapshot at one cost basis, so a movement in the line is a
+    // movement in stock. Falls back to the original column for any snapshot the
+    // recalc has not covered.
+    const rows = data.data ?? [];
+    const hasRecalc = rows.some((r: any) => r.total_inventory_recalc != null);
+
+    // Mixing the two bases in one line is the very problem being fixed: a point
+    // valued at the day's costs sitting beside points valued at today's makes
+    // the step between them look like stock moving. A snapshot with no SOH rows
+    // to revalue (one exists, 2026-07-06) is therefore DROPPED rather than
+    // filled with its original figure. Only if nothing has been recalculated at
+    // all does the original series show, so the chart is never empty.
+    const usable = hasRecalc
+      ? rows.filter((r: any) => r.total_inventory_recalc != null)
+      : rows;
+
+    return usable.map((r: any) => ({
       id: r.id,
       snapshotDate: r.snapshot_date,
-      mainWarehouse: Number(r.main_warehouse),
-      china: Number(r.china),
-      container: Number(r.container),
-      dhl: Number(r.dhl),
-      onProduction: Number(r.on_production),
-      pesadoKorea: Number(r.pesado_korea),
-      totalInventory: Number(r.total_inventory),
+      mainWarehouse: Number(hasRecalc ? r.main_warehouse_recalc : r.main_warehouse),
+      china:         Number(hasRecalc ? r.china_recalc          : r.china),
+      container:     Number(hasRecalc ? r.container_recalc      : r.container),
+      dhl:           Number(hasRecalc ? r.dhl_recalc            : r.dhl),
+      onProduction:  Number(hasRecalc ? r.on_production_recalc  : r.on_production),
+      pesadoKorea:   Number(hasRecalc ? r.pesado_korea_recalc   : r.pesado_korea),
+      totalInventory: Number(hasRecalc ? r.total_inventory_recalc : r.total_inventory),
+      revalued: hasRecalc,
     }));
   } catch {
     return [];

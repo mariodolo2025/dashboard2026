@@ -1,0 +1,57 @@
+-- =============================================================================
+-- Stock valuation history — revalued on one cost basis
+-- =============================================================================
+-- Applied as migrations 'stock_valuation_history_recalc' and
+-- 'stock_valuation_recalc_read_rates_from_config'.
+--
+-- PROBLEM
+-- The stored series was not comparable across time. Each snapshot was valued
+-- with whatever costs happened to be loaded that day, and costs have been
+-- incomplete more than once. The last week of July alternated
+--     29 Jul 1,142,191 · 30 Jul 561,645 · 31 Jul 1,127,141 · 1 Aug 566,157
+-- — stock did not halve and double every other day; the cost master did. Read
+-- as a trend the chart was worse than useless.
+--
+-- APPROACH
+-- Every snapshot is revalued from aim2026_soh_snapshots, which holds quantities
+-- per SKU and warehouse and was never touched by any of the cost incidents,
+-- using TODAY's costs. One basis across the series means a movement in the line
+-- is a movement in stock.
+--
+-- Stated rather than hidden: this answers "what is that stock worth at today's
+-- costs", not "what was it booked at then". The second is unrecoverable — cost
+-- history was never stored. The original columns are left untouched so the two
+-- can always be compared, and recalc_at records when the revaluation ran.
+--
+-- The formula mirrors aim2026-calc-kpis-v2 and is NOT uniform:
+--   * Main / Container / DHL / Korea -> cost + freight + duty + insurance.
+--   * China and On Production        -> bare product cost, no landed uplift,
+--     because those charges have not been incurred yet.
+--   * China nets out Container and DHL: Unleashed only moves units out of
+--     China-W when Australia receives them, so goods in transit sit in both and
+--     would otherwise be counted twice.
+-- Rates come from aim2026_cost_config (landed_cost_rates), the same row the KPI
+-- function reads, so a rate change flows to both.
+--
+-- VERIFICATION
+-- Before running, the formula was checked against the live KPI figures for
+-- 2026-08-03: main 477,593 · china 320,691 · container 472,516 ·
+-- production 88,229 — identical to the cent. After running, that snapshot's
+-- recalculated total equals the dashboard's 1,359,029 exactly, so the history
+-- joins the present without a step.
+-- 77 of 78 snapshots revalued. The series now holds 1.09M-2.01M with a mean
+-- day-to-day move of 4.2% and a single change above 25%; before, it swung by
+-- half and back within 24 hours.
+--
+-- FRONT END
+-- fetchValuationHistory prefers the recalculated columns and DROPS any snapshot
+-- that could not be revalued (2026-07-06 has no SOH rows) rather than falling
+-- back to its original figure. Mixing bases in one line recreates the exact
+-- problem being fixed: a point valued at that day's costs beside points valued
+-- at today's makes the step between them read as stock moving. If nothing has
+-- been recalculated at all, the original series still shows, so the chart is
+-- never empty.
+--
+-- MAINTENANCE
+-- Run aim2026_recalc_valuation_history() after any cost reload, so the whole
+-- series stays on the newest basis. It is idempotent.
