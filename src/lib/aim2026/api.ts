@@ -1453,7 +1453,7 @@ export type SalesGranularity = 'day' | 'week' | 'month';
 /** What the reader is measuring by. Ranking by units hides the SKU that sells
  * few but expensive pieces; ranking by revenue hides the volume driver. Both
  * figures always come back, so this only decides ordering and emphasis. */
-export type SalesMetric = 'units' | 'revenue';
+export type SalesMetric = 'units' | 'revenue' | 'orders';
 
 export interface ShopifySkuStats {
   skus: string[];
@@ -1495,7 +1495,7 @@ export interface ShopifySkuStats {
   previous: { units: number; orders: number; netAud: number; netUsd: number };
   series: Array<{ bucket: string; units: number; net_aud: number; net_usd: number; orders: number }>;
   perSku: Array<{ sku: string; product_title: string | null; units: number; net_aud: number; net_usd: number; orders: number }>;
-  countries: Array<{ country: string; units: number; net_aud: number; net_usd: number }>;
+  countries: Array<{ country: string; units: number; orders: number; net_aud: number; net_usd: number }>;
   recentOrders: Array<{
     order_date: string;
     sku: string;

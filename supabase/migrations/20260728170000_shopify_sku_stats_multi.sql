@@ -162,6 +162,18 @@ grant execute on function public.shopify_sku_stats_multi(text[], date, date, tex
 -- by units — unbounded it returned every SKU that sold in the range.
 
 -- -----------------------------------------------------------------------------
+-- 2026-08-04 · orders as a third metric (migration
+-- 'shopify_sku_stats_multi_orders_metric'). The countries block reported units
+-- and money but not orders, so "which market buys most often" was unanswerable,
+-- and units alone conflates a market buying one large basket with one buying
+-- many small ones. Country rows now carry count(distinct order_id), and
+-- p_metric accepts 'orders' alongside 'units' and 'revenue' to rank both
+-- countries and perSku by it. Ranking only — every figure is returned either
+-- way, so the panel switches without refetching anything it lacks. Verified:
+-- ranking by orders reorders the tail (4th place SA -> GB) while summary totals
+-- stay identical.
+
+-- -----------------------------------------------------------------------------
 -- 2026-08-03 · money excludes sales tax (migration 'shopify_sku_stats_multi_ex_tax').
 -- Audited against Shopify Analytics for 2026-08-02. Orders (163) and units (225)
 -- already matched to the unit; money ran 5.2% high because gross_usd / net_usd
