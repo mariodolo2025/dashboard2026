@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { RangeCalendar } from '@/components/RangeCalendar';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -957,15 +958,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                     <div className="flex">
                       <DateRangePresets onSelect={(r) => { setDateRange(r); setDatePickerOpen(false); }} />
                       <div>
-                        <Calendar
-                          initialFocus
-                          mode="range"
-                          defaultMonth={dateRange?.from}
-                          selected={dateRange as never}
-                          onSelect={(range) => setDateRange(range || {})}
-                          numberOfMonths={2}
-                          weekStartsOn={1}
-                        />
+                        <RangeCalendar value={dateRange} onChange={setDateRange} />
                         <div className="p-2 border-t flex justify-end">
                           <Button size="sm" onClick={() => setDatePickerOpen(false)}>
                             Apply
@@ -1374,15 +1367,7 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
                         <div className="flex">
                           <DateRangePresets onSelect={(r) => { setDateRange(r); setDatePickerOpen(false); }} />
                           <div>
-                            <Calendar
-                              initialFocus
-                              mode="range"
-                              defaultMonth={dateRange?.from}
-                              selected={dateRange as never}
-                              onSelect={(range) => setDateRange(range || {})}
-                              numberOfMonths={2}
-                              weekStartsOn={1}
-                            />
+                            <RangeCalendar value={dateRange} onChange={setDateRange} />
                             <div className="p-2 border-t flex justify-end">
                               <Button size="sm" onClick={() => setDatePickerOpen(false)}>
                                 Apply

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { RangeCalendar } from '@/components/RangeCalendar';
 import { format, parseISO, isValid, startOfWeek, isWithinInterval, parse, addDays, differenceInDays } from 'date-fns';
 import { Calendar as CalendarIcon, Download, RefreshCw, ChevronDown, ChevronUp, Link2, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Search, X, AlertTriangle, PanelLeftClose, PanelLeft, Settings, LogOut, UserPlus, ShoppingBag } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, BarChart, Bar, Cell, LabelList } from 'recharts';
@@ -2051,15 +2052,7 @@ function App() {
                 <div className="flex">
                   <DateRangePresets onSelect={(r) => { setDateRange(r); setIsCalendarOpen(false); }} />
                   <div>
-                    <Calendar
-                      initialFocus
-                      mode="range"
-                      defaultMonth={dateRange?.from}
-                      selected={dateRange as any}
-                      onSelect={(range) => setDateRange(range || {})}
-                      numberOfMonths={2}
-                      weekStartsOn={1}
-                    />
+                    <RangeCalendar value={dateRange} onChange={setDateRange} />
                     <div className="p-2 border-t flex justify-end">
                       <Button size="sm" onClick={() => setIsCalendarOpen(false)}>
                         Apply
