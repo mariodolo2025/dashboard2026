@@ -94,8 +94,13 @@ const GRANULARITIES: { key: SalesGranularity; label: string }[] = [
 
 const METRICS: { key: SalesMetric; label: string }[] = [
   { key: 'units', label: 'Units' },
+  { key: 'orders', label: 'Orders' },
   { key: 'revenue', label: 'Revenue' },
 ];
+
+/** What the chart and the tables are measuring by. */
+const metricLabel = (m: SalesMetric) =>
+  m === 'revenue' ? 'Net AUD' : m === 'orders' ? 'Orders' : 'Units';
 
 /** Change vs the equivalent previous window. null when there is no previous
  * figure — a first-ever period is not "+100%". */
@@ -120,7 +125,8 @@ function withTrend(
   // The curve has to average the same thing the bars draw, or it reads as a
   // trend for a quantity nobody is looking at.
   const rev = metric === 'revenue';
-  const valueOf = (p: { units: number; net_aud: number }) => (rev ? p.net_aud : p.units);
+  const valueOf = (p: { units: number; net_aud: number; orders: number }) =>
+    rev ? p.net_aud : metric === 'orders' ? p.orders : p.units;
   return series.map((p, i) => {
     const window = series.slice(Math.max(0, i - half), Math.min(series.length, i + half + 1));
     const avg = (f: (w: typeof p) => number) =>
@@ -512,7 +518,7 @@ export function B2CSalesPanel({
           <Card className="p-4">
             <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {metric === 'revenue' ? 'Net AUD' : 'Units'} per {granularity}
+                {metricLabel(metric)} per {granularity}
               </h3>
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-0.5 rounded-lg bg-muted/50 p-0.5">
@@ -594,7 +600,7 @@ export function B2CSalesPanel({
                           <div className="rounded-lg border bg-popover px-2.5 py-2 text-xs shadow-md">
                             <div className="font-medium mb-1">{bucketLabel(String(label), granularity)}</div>
                             <div className="flex items-baseline justify-between gap-4">
-                              <span className="text-muted-foreground">{metric === 'revenue' ? 'Net AUD' : 'Units'}</span>
+                              <span className="text-muted-foreground">{metricLabel(metric)}</span>
                               <span className="font-medium tabular-nums" style={{ color: '#3b82f6' }}>
                                 {metric === 'revenue'
                                   ? <>{fmtAud(p.value)}<Usd value={p.valueUsd} size="table" /></>
@@ -689,6 +695,7 @@ export function B2CSalesPanel({
                     <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
                       <th className="text-left font-medium pb-1.5">Country</th>
                       <th className="text-right font-medium pb-1.5">Units</th>
+                      <th className="text-right font-medium pb-1.5">Orders</th>
                       <th className="text-right font-medium pb-1.5">Net AUD</th>
                     </tr>
                   </thead>
@@ -697,6 +704,7 @@ export function B2CSalesPanel({
                       <tr key={c.country} className="border-t border-border/40">
                         <td className="py-1.5">{countryName(c.country)}</td>
                         <td className="py-1.5 text-right tabular-nums font-medium">{fmtNum(c.units)}</td>
+                        <td className="py-1.5 text-right tabular-nums text-muted-foreground">{fmtNum(c.orders)}</td>
                         <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud(c.net_aud)}<Usd value={c.net_usd} size="table" /></td>
                       </tr>
                     ))}
@@ -789,7 +797,7 @@ export function useB2CExplorerState() {
         granularity: (['day', 'week', 'month'] as const).includes(parsed.granularity as SalesGranularity)
           ? (parsed.granularity as SalesGranularity)
           : d.granularity,
-        metric: (['units', 'revenue'] as const).includes(parsed.metric as SalesMetric)
+        metric: (['units', 'orders', 'revenue'] as const).includes(parsed.metric as SalesMetric)
           ? (parsed.metric as SalesMetric)
           : d.metric,
         showTrend: typeof parsed.showTrend === 'boolean' ? parsed.showTrend : d.showTrend,
