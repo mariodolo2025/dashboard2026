@@ -30,7 +30,7 @@ interface Dash {
   bridge: Record<string, number>;
   funnel: Record<string, number>;
   market: { usa: Record<string, number | null>; australia: Record<string, number | null> };
-  trend: Array<{ ym: string; revenue: number; spend: number; conv: number; orders: number; mer: number | null }>;
+  trend: Array<{ bucket: string; ym: string; revenue: number; spend: number; conv: number; orders: number; mer: number | null }>;
   geo: Array<{ country: string; revenue: number; units: number }>;
   family: Array<{ family: string; revenue: number; units: number; pct: number; aovUnit: number }>;
   products: Array<{ title: string; revenue: number; units: number }>;
@@ -160,6 +160,9 @@ function TrendTip({ active, payload, label }: { active?: boolean; payload?: Arra
 export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
   const report = mode === 'report';
   const [market, setMarket] = useState<Market>('all');
+  // Trend grain, same control the B2C explorer has. Month alone made any range
+  // shorter than a couple of months draw two points and hide its own shape.
+  const [grain, setGrain] = useState<'day' | 'week' | 'month'>('day');
   const [data, setData] = useState<Dash | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -175,11 +178,12 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
     setLoading(true); setError(null);
     const { data: res, error: err } = await supabase.rpc('ecommerce_dashboard', {
       p_from: toYMD(range.from), p_to: toYMD(range.to), p_market: market, p_margin: 0.45,
+      p_granularity: grain,
     });
     if (err) { setError(err.message); setLoading(false); return; }
     setData(res as Dash);
     setLoading(false);
-  }, [range.from, range.to, market]);
+  }, [range.from, range.to, market, grain]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -188,15 +192,19 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
   // "2025-07" used to render as "25/07", which reads as a day and a month. Each
   // point is a MONTH, so the label says so: "Jul 25". The year rides on every
   // label because the default range spans two of them.
+  // The label has to follow the grain: "Jul 26" reads as a month, which is wrong
+  // for a day or a week bucket and was why a 30-day range looked like two months.
   const trend = useMemo(
     () =>
       (data?.trend ?? []).map((t) => {
-        const [y, m] = t.ym.split('-');
-        const month = new Date(Date.UTC(Number(y), Number(m) - 1, 1))
-          .toLocaleDateString('en', { month: 'short', timeZone: 'UTC' });
-        return { ...t, label: `${month} ${y.slice(2)}` };
+        const d = new Date(`${t.bucket ?? `${t.ym}-01`}T00:00:00Z`);
+        const label =
+          grain === 'month'
+            ? d.toLocaleDateString('en', { month: 'short', year: '2-digit', timeZone: 'UTC' })
+            : d.toLocaleDateString('en', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+        return { ...t, label };
       }),
-    [data]
+    [data, grain]
   );
   const funnelSteps = useMemo(() => {
     const f = data?.funnel; if (!f) return [];
@@ -329,7 +337,18 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
             </div>
 
             {/* Trend */}
-            <SectionH eyebrow="Trend" title="Revenue vs Ad Spend" help="trend" note="hover for detail · follows the filters" />
+            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+              <SectionH eyebrow="Trend" title="Revenue vs Ad Spend" help="trend" note="hover for detail · follows the filters" />
+              {/* Same grain control as the B2C explorer. Fixed to months, any range
+                  under a couple of months collapsed to two points and hid its shape. */}
+              <div className="ecom-seg" role="group" aria-label="Trend grain" style={{ marginBottom: 10 }}>
+                {(['day', 'week', 'month'] as const).map((g) => (
+                  <button key={g} aria-pressed={grain === g} onClick={() => setGrain(g)}>
+                    {g === 'day' ? 'Day' : g === 'week' ? 'Week' : 'Month'}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="ecom-card">
               {/* Each swatch is shaped like the mark it stands for — the CSS default
                   drew all three as identical little lines, so nothing told you that

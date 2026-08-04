@@ -1,0 +1,26 @@
+-- =============================================================================
+-- E-commerce trend — day / week / month
+-- =============================================================================
+-- Applied as migrations 'ecommerce_dashboard_trend_granularity' and
+-- 'ecommerce_dashboard_drop_old_overload'.
+--
+-- The Revenue vs Ad Spend trend was hardcoded to monthly buckets, so a 30-day
+-- range drew exactly two points and said nothing about the shape inside it —
+-- the same range in the B2C explorer showed 31 daily bars. p_granularity adds
+-- day and week, matching that control.
+--
+-- The bucket label had to change with the grain. The payload keyed on
+-- to_char(d,'YYYY-MM'), which cannot label a day or a week; there is now a
+-- `bucket` full date the client formats, with `ym` kept alongside for anything
+-- still reading it. A day bucket rendered through the old month formatter is
+-- what produced "Jul 26" for a range that started on 5 July.
+--
+-- NOTE ON THE SECOND MIGRATION: adding a parameter with CREATE OR REPLACE does
+-- not replace the function, it creates an OVERLOAD — only a matching signature
+-- is replaced. With both present a 4-argument call is ambiguous and PostgREST
+-- could route to the old month-only version, so the new control would silently
+-- do nothing. The 4-argument function is dropped; the 5-argument one defaults
+-- p_granularity to 'month', so any existing 4-argument caller is unaffected.
+--
+-- Verified for 2026-07-05..2026-08-04: day 31 points, week 6, month 2, and a
+-- call with no granularity still returns 2.
