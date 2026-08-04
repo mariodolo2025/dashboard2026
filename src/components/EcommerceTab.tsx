@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { RangeCalendar } from '@/components/RangeCalendar';
 import { format, subMonths, subDays, startOfMonth, endOfMonth } from 'date-fns';
 import { Calendar as CalendarIcon, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
 import {
@@ -256,8 +257,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                 <div className="flex">
                   <DateRangePresets onSelect={(r) => { applyRange(r); setPickerOpen(false); }} />
                   <div>
-                    <Calendar initialFocus mode="range" defaultMonth={range.from} selected={range as never}
-                      onSelect={(r) => applyRange((r as DateRange) || {})} numberOfMonths={2} weekStartsOn={1} />
+                    <RangeCalendar value={range} onChange={(r) => applyRange(r)} />
                     <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => setPickerOpen(false)}>Apply</Button></div>
                   </div>
                 </div>

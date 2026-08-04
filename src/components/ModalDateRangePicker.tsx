@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { RangeCalendar } from '@/components/RangeCalendar';
 import { format } from 'date-fns';
 import { Calendar as CalendarIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -51,15 +52,7 @@ export default function ModalDateRangePicker({ dateRange, setDateRange, classNam
         <div className="flex">
           <DateRangePresets onSelect={(r) => { setDateRange(r); setOpen(false); }} />
           <div>
-            <Calendar
-              initialFocus
-              mode="range"
-              defaultMonth={dateRange?.from}
-              selected={dateRange as never}
-              onSelect={(range) => setDateRange(range || {})}
-              numberOfMonths={2}
-              weekStartsOn={1}
-            />
+            <RangeCalendar value={dateRange} onChange={setDateRange} />
             <div className="p-2 border-t flex justify-end">
               <Button size="sm" onClick={() => setOpen(false)}>
                 Apply

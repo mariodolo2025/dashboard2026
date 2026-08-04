@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { RangeCalendar } from '@/components/RangeCalendar';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -867,18 +868,10 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
               <div className="flex">
                 <DateRangePresets onSelect={(r) => { setDateRange(r); setIsCalendarOpen(false); }} />
                 <div>
-                  <Calendar
-                    initialFocus
-                    mode="range"
-                    defaultMonth={dateRange?.from}
-                    selected={dateRange as any}
-                    onSelect={(range) => {
-                      setDateRange(range || {});
-                      if (range && range.from && range.to) {
-                        setIsCalendarOpen(false);
-                      }
-                    }}
-                    numberOfMonths={2}
+                  <RangeCalendar
+                    value={dateRange}
+                    onChange={setDateRange}
+                    onComplete={() => setIsCalendarOpen(false)}
                   />
                 </div>
               </div>

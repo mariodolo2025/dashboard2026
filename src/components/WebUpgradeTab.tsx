@@ -9,6 +9,7 @@ import { Calendar } from '@/components/ui/calendar';
 import { DateRangePresets } from '@/components/DateRangePresets';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { supabase } from '@/lib/supabase';
+import { RangeCalendar } from '@/components/RangeCalendar';
 import { fetchRefundImpact, type RefundImpact } from '@/lib/aim2026/api';
 import { cn } from '@/lib/utils';
 import { SkuSalesDialog } from '@/components/SkuSalesDialog';
@@ -263,7 +264,6 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   // In-progress calendar selection. Without it, a half-picked range (start only)
   // never reaches `selected`, so the calendar keeps extending the old range and
   // the start date appears unclickable.
-  const [draft, setDraft] = useState<DateRange | undefined>(undefined);
   const [screenFilter, setScreenFilter] = useState<'all' | 'up' | 'down' | 'sold'>('all');
   const [screenGroup, setScreenGroup] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
@@ -1374,7 +1374,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <option value="blocks">View: Module blocks</option>
           </select>
           {/* Manual calendar — same picker as the rest of the dashboard */}
-          <Popover open={pickerOpen} onOpenChange={(o) => { setPickerOpen(o); if (!o) setDraft(undefined); }} modal>
+          <Popover open={pickerOpen} onOpenChange={setPickerOpen} modal>
             <PopoverTrigger asChild>
               <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs font-medium">
                 <CalendarIcon className="h-3.5 w-3.5" />
@@ -1383,22 +1383,12 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
               <div className="flex">
-                <DateRangePresets onSelect={(r) => { setDraft(undefined); applyRange(r); setPickerOpen(false); }} />
+                <DateRangePresets onSelect={(r) => { applyRange(r); setPickerOpen(false); }} />
                 <div>
-                  <Calendar initialFocus mode="range" defaultMonth={range.from} selected={(draft ?? range) as never}
-                    onSelect={(_sel: unknown, day: Date) => {
-                      // Deterministic two-click pick: first click always STARTS a new
-                      // range (the default picker instead extended the old one, which
-                      // made the start date feel unclickable); second click ends it.
-                      if (!draft?.from || draft.to) {
-                        setDraft({ from: day, to: undefined });
-                      } else {
-                        const r: DateRange = day < draft.from ? { from: day, to: draft.from } : { from: draft.from, to: day };
-                        setDraft(r);
-                        applyRange(r);
-                      }
-                    }} numberOfMonths={2} weekStartsOn={1} />
-                  <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => { setDraft(undefined); setPickerOpen(false); }}>Apply</Button></div>
+                  {/* Same component every other picker uses now — the two-click
+                      behaviour started here and is shared so it cannot drift. */}
+                  <RangeCalendar value={range} onChange={(r) => applyRange(r)} />
+                  <div className="p-2 border-t flex justify-end"><Button size="sm" onClick={() => setPickerOpen(false)}>Apply</Button></div>
                 </div>
               </div>
             </PopoverContent>
