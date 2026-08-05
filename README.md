@@ -2,6 +2,35 @@
 
 React + TypeScript dashboard: análisis por canal (Unleashed, Shopify, Meta), **AIM 2026** (inventario, demanda, KPIs), costes Xero y e-commerce. Datos centralizados en **Supabase** (Auth, Storage, Postgres, Edge Functions).
 
+## Documentación
+
+| Documento | Qué cubre |
+|---|---|
+| [`docs/HANDOVER-2026-08-04.md`](docs/HANDOVER-2026-08-04.md) | **El más reciente.** Tres incidentes de datos, rendimiento del Web Upgrade, calendario, refunds, revaluación del stock histórico. |
+| [`docs/HANDOVER.md`](docs/HANDOVER.md) | 28-jul: incidente de demanda destruida, auditoría de AIM 2026. |
+| [`docs/HANDOVER-WEB-UPGRADE.md`](docs/HANDOVER-WEB-UPGRADE.md) | El panel de Web Upgrade en detalle. |
+| [`docs/HANDOVER-META-COMPATIBILITY-CAMPAIGN.md`](docs/HANDOVER-META-COMPATIBILITY-CAMPAIGN.md) | Evidencia y restricciones para una campaña de Meta hacia el Compatibility Guide. |
+| [`docs/AUDIT-AIM2026-TAB.md`](docs/AUDIT-AIM2026-TAB.md) | Los 26 hallazgos de la auditoría del tab AIM 2026. |
+| [`docs/FIX-DEMAND-GAP.md`](docs/FIX-DEMAND-GAP.md) | El incidente de demanda, alcance y verificación. |
+
+## Reglas que cuestan caro romper
+
+Cada una salió de un incidente real; el detalle está en los handovers.
+
+1. **Nunca un upsert por lotes con filas de claves distintas.** PostgREST manda
+   `NULL` por lo que se omite: no preserva, borra. Así se perdieron 753 costos.
+   Prueba de aceptación: correr el sync dos veces y ver que la cuenta no baje.
+2. **`null` nunca es `0`.** Sin costo, sin demanda o sin dato se excluye del
+   promedio; contarlo como cero deformó turnover, GMROI y cobertura.
+3. **Nunca sumar `net_native`** — son 43 monedas.
+4. **Convertir antes de comparar.** La cuenta de Meta de EE.UU. factura en USD y
+   la australiana en AUD.
+5. **Un evento nombrado por una página tiene que probar que ocurrió ahí.**
+6. **Fechas: sólo `src/lib/storeDate.ts`.** Ni `toISOString()` ni la hora del
+   navegador.
+7. **Un espejo o caché que deriva en silencio es peor que no tenerlo** — siempre
+   con función de reconciliación.
+
 ## Features
 
 - **Authentication**: login restringido a correos `@dolo.com.au` (Supabase Auth)
@@ -10,7 +39,10 @@ React + TypeScript dashboard: análisis por canal (Unleashed, Shopify, Meta), **
   channel** que recalculan demanda, cover, ROP, sug. qty y status server-side (no ocultan filas)
 - **B2C Sales Explorer**: buscás uno o varios SKUs y ves sus ventas de Shopify — units, net sales,
   orders, precio real por unidad, descuentos, devoluciones, países y últimas ventas, contra el
-  período anterior equivalente. Importes en AUD (ver nota de moneda más abajo)
+  período anterior equivalente. Métrica **Units / Orders / Revenue**. Importes en AUD con USD entre
+  paréntesis y **sin impuesto** (ver nota de moneda más abajo)
+- **E-commerce**: MER, ROAS y embudo de Meta, con **"Ads by spend"** — rendimiento por aviso
+  (ROAS, CTR, costo por compra) y grano **día / semana / mes** en el trend
 - **Costs Analysis / By channel**: costes desde Xero (edge `parse-xero-costs`) o entradas manuales legacy
 - **Currency**: tipos de cambio en tabla `currency_exchange_rates` donde aplica
 
@@ -166,6 +198,10 @@ Panel modal (`src/components/WebUpgradeTab.tsx`, abierto desde `App.tsx`) que mi
 | Delta de familias | Regla deliberada: el filtro define la población y el delta de familia es el **promedio** de los % de sus variantes visibles (no el ratio de sumas). Documentada en el código y en el tooltip de la columna. |
 | Tooltips | ~36 definiciones `data-def` con una sola tarjeta flotante delegada en la raíz del panel (funciona sobre SVG). |
 | Frescura | Cron `shopify-sales-fast` cada ~5 min (configurable en Config → Connections) + reconciliación completa 3×/día. |
+| Lectura | La RPC lee **`upgrade_events_slim`**, espejo estrecho de `upgrade_events` mantenido por trigger (7 claves del payload + el día ya calculado). 151 MB → 41 MB; abrir el panel pasó de ~16 s en frío a 0,55 s (1 día) / 4,3 s (30 días). `upgrade_events_slim_reconcile()` lo reconstruye si deriva. |
+| Entry point | `compatibilityBar` mide la barra móvil y el botón de escritorio **por separado**, y está **excluido del CTE de módulos**: adentro contaría cada página del sitio como sesión expuesta de la guía. Se mide **fuera** de la guía — es adquisición. |
+| Refunds | Panel en el daily brief: corta ambas cohortes a la misma **edad de pedido** y separa cancelaciones (0-2 d) de devoluciones (3+ d). Con menos de 30 eventos por lado dice que no alcanza en vez de mostrar un porcentaje. |
+| Calendario | Los eventos se agrupan por **día UTC**; las ventas por **día de Brisbane**. Decisión tomada — los totales por rango son comparables entre tabs, las comparaciones día a día no. |
 | Estilos | Todo en el bloque `WU_CSS` al final del componente (clases `.wu-*` + variables); dark mode heredado por `.dark .wu`. |
 
 Las migraciones de la RPC siguen el patrón de **parche in-place** (`DO` + `pg_get_functiondef` + `replace` con guardas que fallan si el anchor no matchea); cada archivo en `supabase/migrations/` espeja el parche aplicado.
@@ -184,7 +220,7 @@ mezcla mayorista con component usage y el tab de E-commerce es de toda la tienda
 |---|---|
 | Cuerpo | `src/components/B2CSalesPanel.tsx`, compartido. El tab lo usa con buscador; `SkuSalesDialog` lo usa sin buscador cuando se clickea un SKU en la tabla de productos de **Web Upgrade**. |
 | Datos | `shopify_sales_lines` (sync `shopify-sales-sync`, cron cada ~5 min). RPCs `shopify_sku_list`, `shopify_sku_stats_multi(skus[], from, to, granularity)`, `usd_to_aud_rate(date)`. |
-| Controles | Multi-selección de SKUs · presets Yesterday / Last week / 30 / 90 días / 12 meses o rango propio · barras por día/semana/mes · curva de tendencia on/off. |
+| Controles | Multi-selección de SKUs · presets Yesterday / Last week / 30 / 90 días / 12 meses o rango propio · métrica **Units / Orders / Revenue** · barras por día/semana/mes · curva de tendencia on/off. Sin SKU seleccionado muestra **toda la tienda**. |
 | Persistencia | Selección, fechas, granularidad y toggle en `localStorage['b2c-sales-explorer.v1']`. El dialog tiene su propia fecha para no mover la del tab. |
 | Comparación | Cada métrica se compara contra la ventana **inmediatamente anterior del mismo largo**, no contra el mes calendario. |
 
@@ -192,6 +228,15 @@ mezcla mayorista con component usage y el tab de E-commerce es de toda la tienda
 distintas** (AUD, USD, JPY, KRW…). Sumar esa columna produce un número sin sentido. Todo el panel
 convierte `net_usd` a AUD con `currency_exchange_rates` (tasa por mes de la orden), la misma que
 usa el resto del dashboard, así que los números cierran con los otros tabs.
+
+**Impuesto — todo importe lo excluye**, para que cuadre con el Net sales de Shopify. En Australia
+el GST del 10% viene dentro del precio de lista y otros mercados lo suman en el checkout; el factor
+por línea es `1 - taxes_usd/(net_usd + shipping_usd)`. Reproduce Shopify al centavo (net 11.950,31
+vs 11.950,74 el 2-ago). Dos reglas más simples fallan: restar el impuesto entero se pasa $45 porque
+saca el del envío, que nunca estuvo en el neto; restar sólo el GST australiano queda $157 corto.
+
+**Fechas**: días calendario de **Brisbane**, los mismos que reporta Shopify. Derivadas de
+`src/lib/storeDate.ts`.
 
 El tab **AIM** viejo (`InventoryReorderDashboard`) quedó archivado: AIM 2026 lo reemplazó. Solo se
 sacó el botón del menú; el modal sigue montado y se restaura poniendo `activeModal = 'aim'`.
