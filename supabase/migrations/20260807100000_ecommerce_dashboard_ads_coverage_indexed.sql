@@ -1,0 +1,37 @@
+-- =============================================================================
+-- ecommerce_dashboard — adsCoverage stops scanning the whole ads table
+-- =============================================================================
+-- Applied as migration 'ecommerce_dashboard_ads_coverage_indexed' (in-place
+-- CREATE OR REPLACE of ecommerce_dashboard; only the adsCoverage block changed).
+-- Context: HANDOVER-2026-08-05-TIMEOUT.md §5 / option B.
+--
+-- BEFORE — one aggregate over the full table (36,204 rows on 2026-08-07),
+-- every call, regardless of the selected range:
+--
+--   'adsCoverage', (select jsonb_build_object(
+--       'from', min(x.date), 'to', max(x.date),
+--       'daysInRange', count(distinct x.date) filter (where x.date between p_from and p_to))
+--     from ecommerce_meta_daily_ads x),
+--
+-- AFTER — three scalar subselects. min/max become single-probe index-only
+-- scans on idx_ecommerce_meta_daily_ads_date; daysInRange scans only the
+-- selected range:
+--
+--   'adsCoverage', jsonb_build_object(
+--       'from', (select min(date) from ecommerce_meta_daily_ads),
+--       'to',   (select max(date) from ecommerce_meta_daily_ads),
+--       'daysInRange', (select count(distinct date) from ecommerce_meta_daily_ads
+--                       where date between p_from and p_to)),
+--
+-- VERIFIED after applying (2026-08-07):
+--   * output byte-identical (md5 over jsonb::text) for
+--     ('2026-07-01','2026-08-07','all',0.45,'month') and
+--     ('2026-07-24','2026-08-07','usa',0.45,'day');
+--   * block alone: full scan of 36,204 index entries + 4,766 heap fetches
+--     -> two 1-row probes + a range scan of the window;
+--   * FY call 1,261ms -> 716ms warm. The win is larger cold, where the old
+--     shape paid the whole table's heap pages on every dashboard open.
+--
+-- This is deliberately the ONLY change: the ads block's min(g.first_ever)
+-- full-table pass stays — computing firstSeen inside the range would mark
+-- every ad as new (see handover §5, decision was deliberate).
