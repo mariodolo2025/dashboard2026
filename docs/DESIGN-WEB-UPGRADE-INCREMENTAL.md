@@ -1,6 +1,9 @@
 # Diseño — conteo incremental para el panel Web Upgrade
 
-> Estado: **diseño v2, revisado, nada aplicado**. Contexto: [`HANDOVER-2026-08-05-TIMEOUT.md`](HANDOVER-2026-08-05-TIMEOUT.md).
+> Estado: **IMPLEMENTADO el 2026-08-07** — tablas, trigger, backfill y swap de la
+> RPC aplicados y verificados (8/8 salidas byte-idénticas; 30 días 10,7–46,7 s → ~1 s).
+> Números finales: [`20260807120000_web_upgrade_performance_read_rollups.sql`](../supabase/migrations/20260807120000_web_upgrade_performance_read_rollups.sql).
+> Contexto: [`HANDOVER-2026-08-05-TIMEOUT.md`](HANDOVER-2026-08-05-TIMEOUT.md).
 > Complementa la opción A (una vista por sesión, en curso con Codex) y la B (aplicada el 7-ago).
 > v2 = v1 + correcciones de una revisión adversarial (3 revisores + refutadores
 > independientes contra la base real). Hallazgos al final (§10).

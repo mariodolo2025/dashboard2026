@@ -1,0 +1,48 @@
+-- =============================================================================
+-- web_upgrade_performance now reads the daily rollups
+-- =============================================================================
+-- Applied on 2026-08-07 as migrations 'web_upgrade_performance_v2_staging'
+-- (staged copy under a temp name) and 'web_upgrade_performance_read_rollups'
+-- (in-place swap + drop of the staged copy). Same signature, same output,
+-- frontend untouched. Design: docs/DESIGN-WEB-UPGRADE-INCREMENTAL.md §5.
+--
+-- WHAT CHANGED
+-- Every event-derived block now reads web_upgrade_daily_counts /
+-- _brand_model / _variant / _rewards / web_upgrade_sessions_daily instead of
+-- scanning upgrade_events_slim. The Shopify sales blocks (sales, basket,
+-- prelaunch, storeShare, orderImpact, bySource, byMachine, byFamily) are
+-- verbatim from the old body. Implementation rules that matter:
+--   * readers exclude module '__bar' and '__meta' from module-space sums;
+--   * p_environment='all' resolves to environment = any(<distinct envs>),
+--     never an omitted filter (PG17 cannot bound the index without a leading
+--     equality; the count(distinct) still absorbs cross-env duplicates);
+--   * module scopes are enumerated as an exact array (a scope LIKE prefix
+--     range would defeat the (environment, scope, d, ...) index order);
+--   * reward scopes are enumerated from daily_rewards over the window;
+--   * SET work_mem '16MB' is per-function — NOT the failed global 48MB
+--     attempt of 4-Aug, which is documented as reverted.
+--
+-- BACKFILL (2026-08-07, before the swap)
+-- web_upgrade_daily_reconcile run in 2-day batches over 2026-07-22..08-07
+-- (short EXCLUSIVE locks so blocked ingest inserts never near their
+-- statement_timeout). Rollups-vs-slim verification, single snapshot each:
+--   ev-space events   174,401 = 174,401
+--   bar/button events  77,375 =  77,375
+--   complete-kit          399 =     399
+--   exposed sessions   60,289 =  60,289
+--   session-days       66,827 =  66,827
+--   brand selects       5,244 =   5,244
+--   reward unlocks      3,171 =   3,171
+--   variant clicks+adds 11,849 = 11,849       negative counters: 0
+--
+-- EQUALITY GATE (old vs new inside one statement -> same snapshot)
+-- 8/8 byte-identical jsonb: 1/7/30 days x production/all, a range starting
+-- 2026-07-20 (before the slim's first day), and 2026-07-28..08-02 (crossing
+-- the 30-Jul theme incident, where a bar misclassification would diverge most).
+--
+-- MEASURED (warm, quiet instance)
+--   30 days  10,700-46,700ms  ->    994ms
+--    7 days           3,269ms ->    506ms
+--    1 day            2,005ms ->    185ms
+-- First call after the swap paid ~4.1s (cold plan); steady state is ~1s.
+-- The remaining ~1s floor is the untouched sales blocks (design §2).

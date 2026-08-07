@@ -59,6 +59,8 @@
 -- cascade decrements the rollups to zero and the panel loses exactly the
 -- history these tables exist to preserve.
 --
--- STATE AT COMMIT TIME
--- Tables, classify, trigger and reconcile are LIVE (new events roll up as
--- they arrive). Historical backfill + RPC swap pending — see design §6.
+-- STATE
+-- Tables, classify, trigger and reconcile LIVE since 2026-08-07. Backfill and
+-- RPC swap completed the same day — see
+-- 20260807120000_web_upgrade_performance_read_rollups.sql for the
+-- verification numbers and measured timings.
