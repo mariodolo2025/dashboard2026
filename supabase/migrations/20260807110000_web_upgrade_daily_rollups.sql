@@ -1,0 +1,64 @@
+-- =============================================================================
+-- Web Upgrade — incremental daily rollups (tables + trigger + reconcile)
+-- =============================================================================
+-- Applied as migration 'web_upgrade_daily_rollups' on 2026-08-07.
+-- Full design, rationale and adversarial-review findings:
+--   docs/DESIGN-WEB-UPGRADE-INCREMENTAL.md  (v2 — read it before touching this)
+--
+-- WHY
+-- web_upgrade_performance recounted every event from scratch on each panel
+-- open: 254k rows for 30 days, 10.7-46.7s measured on 2026-08-07, against a
+-- 25s statement_timeout. Root cause and measurements:
+--   docs/HANDOVER-2026-08-05-TIMEOUT.md
+--
+-- WHAT WAS CREATED
+--   web_upgrade_daily_counts       (d, environment, module, action, n)
+--   web_upgrade_daily_brand_model  (d, environment, brand, model, 3 metrics)
+--       unique nulls not distinct — model can be NULL; a plain unique would
+--       treat NULLs as distinct and the upsert would insert forever
+--   web_upgrade_daily_variant      (d, environment, variant_id, 2 metrics)
+--   web_upgrade_daily_rewards      (d, environment, reward_name, unlocks)
+--   web_upgrade_sessions_daily     (d, environment, scope, attribution_id)
+--       one row per session per day per scope; read index has d THIRD
+--       (environment, scope, d, attribution_id) so cost scales with the
+--       window, not the table's age
+--
+--   web_upgrade_rollup_module()  / web_upgrade_rollup_scopes()
+--       the classify — single source of truth for trigger AND reconcile.
+--       bar/button resolved BEFORE the module case (the case alone would
+--       label them 'Compatibility Guide'); page_view guard identical to the
+--       RPC's ev CTE; module '__bar' = bar/button counts, '__meta' =
+--       synthetic counters (action '__complete_kit'). Readers MUST exclude
+--       '__bar'/'__meta' from module-space sums.
+--
+--   web_upgrade_rollup_apply()   trigger on upgrade_events_slim (chained after
+--       upgrade_events -> slim). Honors transaction-local kill switch
+--       app.web_upgrade_rollup_skip='1'. NEVER raises: any error degrades to
+--       no-rollup with a warning — an exception here would lose the ingested
+--       event itself.
+--
+--   web_upgrade_daily_reconcile(p_from, p_to)
+--       rebuild of a range. Takes LOCK ... IN EXCLUSIVE MODE on the 5 rollup
+--       tables first: serializes against writer triggers (their uncommitted
+--       slim row is invisible to the rebuild snapshot; their increment applies
+--       after -> exactly-once). Reads are not blocked. Keep ranges small
+--       (~2 days) while ingest is live: a blocked ingest insert dies at the
+--       role's statement_timeout and 57014 is NOT catchable by the trigger.
+--
+--   upgrade_events_slim_reconcile() patched:
+--     * sets the skip GUC (transaction-local) instead of any DDL trigger
+--       disable — ALTER TABLE DISABLE TRIGGER would block ingest for minutes
+--       (one tx) or leave silent gaps (two txs)
+--     * upsert gained `where (s.*) is distinct from (excluded.*)` — it used
+--       to rewrite all 255k rows even when nothing changed
+--     * chains web_upgrade_daily_reconcile over the slim's min..max at the end
+--
+-- INVARIANT (retention / future purges)
+-- Rollups of closed days are immutable under purges. Any future retention on
+-- upgrade_events must run with app.web_upgrade_rollup_skip='1', or the delete
+-- cascade decrements the rollups to zero and the panel loses exactly the
+-- history these tables exist to preserve.
+--
+-- STATE AT COMMIT TIME
+-- Tables, classify, trigger and reconcile are LIVE (new events roll up as
+-- they arrive). Historical backfill + RPC swap pending — see design §6.
