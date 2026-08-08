@@ -30,6 +30,7 @@ import { ReportsOverlay } from '@/components/ReportsOverlay';
 import { ConnectionsPanel } from '@/components/ConnectionsPanel';
 import EcommerceTab from '@/components/EcommerceTab';
 import WebUpgradeTab from '@/components/WebUpgradeTab';
+import AdvertisingTab from '@/components/AdvertisingTab';
 import { fetchDashboardData, recalcKPIsForDateRange } from '@/lib/aim2026/api';
 import type { SKURow } from '@/lib/aim2026/types';
 import { TrendIndicator } from '@/components/aim2026/TrendIndicator';
@@ -143,7 +144,7 @@ function App() {
   // Modal for each nav pill - pills open modals instead of inline content
   // 'aim' is the archived Inventory Reorder view: no tab points at it any more,
   // but the modal is still mounted so it can be restored without a rebuild.
-  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | 'web-upgrade' | 'b2c-explorer' | 'fy-report' | null>(null);
+  const [activeModal, setActiveModal] = useState<'channel' | 'brand' | 'top-skus' | 'sales-evolution' | 'aim' | 'aim-2026' | 'ecommerce' | 'web-upgrade' | 'b2c-explorer' | 'fy-report' | 'advertising' | null>(null);
   
   // Configurable financial parameters
   const [shippingCostPercent, setShippingCostPercent] = useState<number>(0.157);
@@ -2015,6 +2016,17 @@ function App() {
                 size="sm"
                 className={cn(
                   "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
+                  activeModal === 'advertising' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setActiveModal(activeModal === 'advertising' ? null : 'advertising')}
+              >
+                Advertising
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 rounded-xl px-3.5 py-1.5 text-sm font-medium",
                   activeModal === 'fy-report' ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
                 )}
                 onClick={() => setActiveModal(activeModal === 'fy-report' ? null : 'fy-report')}
@@ -3481,6 +3493,19 @@ function App() {
               <DialogTitle>Web Upgrade performance</DialogTitle>
             </DialogHeader>
             <WebUpgradeTab dateRange={dateRange} setDateRange={setDateRange} />
+          </DialogContent>
+        </Dialog>
+
+        {/* Advertising modal (Meta vs Google, own attribution) */}
+        <Dialog open={activeModal === 'advertising'} onOpenChange={(o) => !o && setActiveModal(null)}>
+          <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Advertising</DialogTitle>
+              <DialogDescription>Meta vs Google — medición propia (maqueta)</DialogDescription>
+            </DialogHeader>
+            <div className="mt-4">
+              <AdvertisingTab />
+            </div>
           </DialogContent>
         </Dialog>
 
