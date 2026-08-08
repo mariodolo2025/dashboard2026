@@ -18,6 +18,14 @@ discuten contra el panel del otro — discuten contra la tienda.
 
 ## 2. Principios (no negociables)
 
+0. **No romper lo existente.** Este proyecto crea SOLO tablas nuevas
+   (`shopify_order_attribution`, `shopify_order_journey_moments`,
+   `meta_ads_campaign_daily`, `google_ads_daily`); las tablas y funciones
+   actuales se tocan cero — solo lecturas (ventas para el MER, meta_ads_daily
+   por cuenta). El orquestador gana un paso nuevo sin modificar los que corren.
+   Nada de lo que hoy funciona puede dejar de funcionar por este proyecto,
+   salvo pedido expreso de Mario. Misma base de Supabase (separarla rompería
+   los cruces con ventas), compartimentado en tablas propias.
 1. **Una sola vara.** Todos los canales medidos igual, desde las órdenes reales.
 2. **No creerle a nadie.** Lo que cada plataforma declara se muestra AL LADO de
    lo que la tienda le reconoce — la brecha es información, no error.
@@ -203,6 +211,20 @@ Dos alturas, sin toggles (superficies separadas):
 7. Backlog v2 documentado al cierre (API Google, pixel, ventanas, IA).
 
 Regla: **nunca conectar dos piezas nuevas a la vez.**
+
+**Reglas de implementación (fijadas con Mario, 2026-08-08):**
+- Mismo repo (el tab comparte dashboard, auth y deploy); rama nueva
+  `feat/advertising-tab`, separada del trabajo en curso.
+- **CSV donde se puede, API donde el CSV no existe:** el gasto histórico de
+  Meta (export por campaña/día del Ads Manager) y de Google se cargan por CSV
+  (patrón `ecommerce-load-csv` ya probado). El recorrido por orden NO existe
+  en ningún export de Shopify — solo por API, y es un backfill de UNA sola
+  vez, paginado, en horario valle.
+- **Incremental por diseño:** sync por marca de agua (updated_at por orden,
+  como el de ventas); en operación normal se leen ~600 órdenes/día, jamás la
+  historia completa. Tablas angostas con índice por fecha; si el volumen
+  algún día lo pide, el patrón de rollups diarios ya está probado en Web
+  Upgrade.
 
 ## 9. Tests de aceptación (ejecutables, no vibes)
 
