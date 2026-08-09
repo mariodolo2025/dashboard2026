@@ -407,6 +407,13 @@ export function B2CSalesPanel({
   const netDelta = stats ? delta(stats.summary.netAud, stats.previous.netAud) : null;
   const ordersDelta = stats ? delta(stats.summary.orders, stats.previous.orders) : null;
 
+  // AOV is net per ORDER — the figure the business tracks. The RPC's
+  // avgNetPrice (net per unit) stays available but is no longer shown.
+  const aov = stats && stats.summary.orders > 0 ? stats.summary.netAud / stats.summary.orders : null;
+  const aovUsd = stats && stats.summary.orders > 0 ? stats.summary.netUsd / stats.summary.orders : null;
+  const prevAov = stats && stats.previous.orders > 0 ? stats.previous.netAud / stats.previous.orders : null;
+  const aovDelta = aov !== null && prevAov !== null ? delta(aov, prevAov) : null;
+
   return (
     <div className="space-y-4">
       {/* ── Controls ───────────────────────────────────────────────── */}
@@ -490,11 +497,12 @@ export function B2CSalesPanel({
               delta={ordersDelta}
             />
             <StatCard
-              icon={<Tag size={15} />} label="Realised price" accent="#f59e0b"
-              value={fmtAud2(stats.summary.avgNetPriceAud)}
-              usd={stats.summary.avgNetPriceUsd}
+              icon={<Tag size={15} />} label="AOV" accent="#f59e0b"
+              value={fmtAud2(aov)}
+              usd={aovUsd}
               usdDecimals
-              sub="net per unit, after discounts"
+              sub="net per order, after discounts & returns"
+              delta={aovDelta}
             />
             <StatCard
               icon={<Tag size={15} />} label="Discounts" accent="#ef4444"
