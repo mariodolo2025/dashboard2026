@@ -177,9 +177,11 @@ Deno.serve(async (req: Request) => {
       return json({ success: true, runId: created?.id, status: 'running', cursor: 0, total: STEPS.length, created: true });
     }
 
-    // Nothing left → mark done.
+    // Nothing left → mark done. Also refresh total_steps: if a deploy REMOVED
+    // steps mid-run, the frozen value would otherwise overstate the total on a
+    // finished run forever.
     if (run.cursor >= STEPS.length) {
-      await supabase.from('sync_runs').update({ status: 'done', finished_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', run.id);
+      await supabase.from('sync_runs').update({ status: 'done', total_steps: STEPS.length, finished_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', run.id);
       return json({ success: true, runId: run.id, status: 'done' });
     }
 
@@ -188,7 +190,12 @@ Deno.serve(async (req: Request) => {
     // interval). The claim succeeds only if the lock is free or dead; otherwise
     // another tick owns it → no-op. (Done in raw SQL because a supabase-js
     // update+select re-filters on the just-set locked_at and returns no row.)
-    const { data: claimedRows } = await supabase.rpc('sync_claim_step', { p_run_id: run.id, p_lock_minutes: LOCK_MINUTES, p_max_attempts: MAX_ATTEMPTS });
+    // p_total_steps carries this deploy's live STEPS.length: the RPC gates on it
+    // and refreshes the row's total_steps (frozen at kickoff), so a deploy that
+    // changes the step count mid-run can neither wedge the run behind the stale
+    // gate nor skip the final step — the deployed constant is the one source of
+    // truth, the column is display-only.
+    const { data: claimedRows } = await supabase.rpc('sync_claim_step', { p_run_id: run.id, p_lock_minutes: LOCK_MINUTES, p_max_attempts: MAX_ATTEMPTS, p_total_steps: STEPS.length });
     const claimed = Array.isArray(claimedRows) ? claimedRows[0] : claimedRows;
     if (!claimed) return json({ success: true, busy: true, runId: run.id });
     run = claimed; // authoritative cursor + lock token at claim time
