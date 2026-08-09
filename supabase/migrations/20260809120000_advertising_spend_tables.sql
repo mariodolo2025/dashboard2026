@@ -4,6 +4,8 @@
 -- Applied as migration 'advertising_spend_tables' on 2026-08-09 via MCP.
 -- Design: docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 2.
 -- Plan: docs/PLAN-ADVERTISING-03-GASTO.md (Task 1).
+-- 2026-08-09: security_invoker=on added (migration 'ad_spend_unified_security_invoker')
+-- — the view must not bypass the base tables' RLS.
 
 -- Advertising Bloque 2 — spend & claims (spec DESIGN-ADVERTISING-TAB §4).
 -- New tables only. meta_ads_daily (account level) stays untouched and remains
@@ -54,7 +56,7 @@ alter table public.meta_ads_campaign_sync_state enable row level security;
 -- One AUD spend series for the motor. Meta converts USD rows at the month's
 -- rate with latest-known fallback (fx_fallback_latest_known_rate convention);
 -- AU rows are already AUD. Google is loaded in AUD directly.
-create view public.ad_spend_unified as
+create view public.ad_spend_unified with (security_invoker = on) as
 select m.date, 'meta'::text as platform,
        sum(case when m.currency = 'USD'
                 then m.spend * coalesce(r.rate, (select rate from public.currency_exchange_rates
