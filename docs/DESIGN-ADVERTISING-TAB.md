@@ -190,7 +190,11 @@ Dos alturas, sin toggles (superficies separadas):
   (CAPI enrichment). Es ESCRIBIR hacia Meta/Google — otra liga de riesgo;
   recién se piensa con el motor maduro.
 
-- Capa IA — v2, sobre el motor verificado.
+- Capa IA — v2, sobre el motor verificado. Referencia de UX (captura de Mario,
+  2026-08-09, "Moby" de TW): panel lateral acoplado AL LADO de las métricas (no
+  una página aparte), input libre "Ask Anything" con adjuntos y voz, asistente
+  con nombre. La nuestra respondería sobre el motor propio (buckets, MER,
+  brechas) vía API de Claude.
 - Pixel propio y multi-touch con ventanas — v2 (los `moments` de v1 ya dejan
   la materia prima lista).
 - La planilla profit/CAC/MER objetivo de Juan — proyecto aparte.
