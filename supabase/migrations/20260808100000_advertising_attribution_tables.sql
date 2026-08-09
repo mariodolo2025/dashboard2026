@@ -4,6 +4,8 @@
 -- Applied as migration 'advertising_attribution_tables' on 2026-08-09 via MCP.
 -- Design: docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 1.
 -- 2026-08-09: singleton guard added as migration 'advertising_sync_state_singleton_guard'.
+-- 2026-08-09: order_created_at added + order_date redefined to Brisbane day
+-- (migration 'advertising_attribution_created_at').
 
 -- Advertising Bloque 1 — raw journey capture (spec DESIGN-ADVERTISING-TAB §4).
 -- RAW: exactly what Shopify returns, no interpretation. Buckets/models compute
@@ -11,7 +13,8 @@
 
 create table public.shopify_order_attribution (
   order_id text primary key,
-  order_date date not null,
+  order_created_at timestamptz,      -- raw Shopify createdAt (UTC)
+  order_date date not null,          -- Brisbane day (UTC+10, no DST) — same calendar as shopify_sales_lines
   order_updated_at timestamptz,
   ready boolean not null default false,
   moments_count int,

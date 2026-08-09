@@ -352,6 +352,38 @@ git add supabase/functions/shopify-attribution-sync/index.ts
 git commit -m "feat(advertising): shopify-attribution-sync — raw journey capture"
 ```
 
+#### Post-review fixes (2026-08-09)
+
+Senior code review returned "fix first" (1 critical, 2 important, 4 minor) on the
+first commit. All applied, redeployed, wiped-and-repulled, verified — the
+committed `supabase/functions/shopify-attribution-sync/index.ts` supersedes the
+code block in Step 2.1 above.
+
+- **Critical — dedupe race:** paging by `updated_at` could return the same
+  order twice in one run → duplicate `order_id` in one upsert batch →
+  Postgres error after the deletes ran → `ready=false` retry rows deleted
+  forever. Fixed: collect into a `Map<order_id, {attr, moments}>` (last copy
+  wins), never delete from `shopify_order_attribution` (upsert overwrites
+  every column), delete+insert only `shopify_order_journey_moments`, upsert
+  attr LAST so a crash mid-run leaves the old row alive for the next retry
+  to self-heal.
+- **Important — Brisbane day:** `order_date` was the UTC day; 42% of rows
+  landed one day off vs `shopify_sales_lines`. Added raw `order_created_at`
+  column, redefined `order_date` to Brisbane day (+10, no DST) via migration
+  `advertising_attribution_created_at`.
+- **Important — moments pagination:** orders with >50 visits silently
+  truncated. Added `pageInfo` to the `moments` connection; when
+  `momentsCount.count > 50`, refetch the full list per-order via a
+  paginated `MOMENTS_PAGE_QUERY` / `fetchAllMoments`.
+- **Minor:** capped responses now include a `message` explaining the cap;
+  the `ready=false` retry select orders by `order_date` ascending before the
+  200 limit; the retry-scope `ids` var renamed to `pendingIds`; `backfill`
+  dates are validated as `YYYY-MM-DD` at entry (400 otherwise).
+
+Verified after wipe-and-repull (425 orders, 904 moments): rows missing
+`order_created_at` = 0, Brisbane-day mismatch vs `shopify_sales_lines` = 0
+(was 42%), moments-count integrity mismatches = 0.
+
 ---
 
 ### Task 3: Register the step in the orchestrator (one additive entry)
