@@ -96,6 +96,8 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   // (trailing 30d re-pull for attribution revisions), then regenerate the
   // "2-Mario-for-Danshboard.csv" the dashboard reads (native currency per row).
   { name: 'Meta ads', fn: 'meta-ads-sync', body: {} },
+  // Advertising: campaign-level Meta detail (claimed vs actual per campaign).
+  { name: 'Meta campaigns', fn: 'meta-ads-campaign-sync', body: {} },
   { name: 'Meta CSV', fn: 'meta-export-csv', body: {} },
   // Per-ad insights, so "which creative is working" is answerable without
   // opening Meta. The old writer (ecommerce-sync-meta) needed an admin JWT and
