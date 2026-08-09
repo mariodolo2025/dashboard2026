@@ -4,6 +4,9 @@
 -- Applied as migration 'advertising_engine' on 2026-08-10 via MCP.
 -- Design: docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 3.
 -- Plan: docs/PLAN-ADVERTISING-04-MOTOR.md (Task 1).
+-- 2026-08-10: search_path pinned on advertising_bucket (migration
+-- 'advertising_bucket_search_path') — closes the security advisor WARN
+-- "Function Search Path Mutable"; SQL below reflects the final state.
 --
 -- Verification (2026-08-10, full table, 59,108 orders / 138,403 moments):
 --   last_bucket distribution:
@@ -59,7 +62,8 @@
 create or replace function public.advertising_bucket(
   p_source text, p_medium text, p_campaign text, p_referrer text, p_date date
 ) returns text
-language sql immutable as $$
+language sql immutable
+set search_path = '' as $$
   select case
     -- Meta pago (fb|facebook|ig; el {{campaign_name}} roto sigue siendo Meta pago)
     when lower(coalesce(p_source, '')) in ('facebook', 'fb', 'ig')
