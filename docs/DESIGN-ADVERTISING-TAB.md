@@ -230,6 +230,10 @@ Dos alturas, sin toggles (superficies separadas):
 Regla: **nunca conectar dos piezas nuevas a la vez.**
 
 **Reglas de implementación (fijadas con Mario, 2026-08-08):**
+- **Toda vista nueva lleva `with (security_invoker = on)`** — sin eso la vista
+  ejecuta con permisos del dueño y saltea el RLS de las tablas de abajo (agujero
+  real encontrado en revisión el 2026-08-09: la anon key leía todo el gasto por
+  `ad_spend_unified`; corregido). Patrón bueno: `shopify_sales_by_variant`.
 - Mismo repo (el tab comparte dashboard, auth y deploy); rama nueva
   `feat/advertising-tab`, separada del trabajo en curso.
 - **CSV donde se puede, API donde el CSV no existe:** el gasto histórico de
