@@ -310,6 +310,17 @@ Deploy, then: (a) a valid 2-row load with `actor: 'smoke-test'` → success, row
 
 - [ ] **Step 3.3: Commit** (`feat(advertising): google-ads-load — validated manual spend entry`)
 
+#### Post-review fixes (2026-08-09)
+
+Code review found 2 MEDIUM + 2 LOW issues in the Step 3.1 code; all four applied post-deploy:
+
+- **MEDIUM — auth gate required + server-derived `updated_by`:** the anon key alone was accepted as auth. Now requires a real logged-in user (house pattern from `supabase/functions/invite-user/index.ts`): `Authorization: Bearer <token>` is validated via an anon-key client's `auth.getUser()`; no user → 401 `authentication required`. `updated_by` is derived server-side from the session (`user.email ?? user.id`); the client-supplied `actor` field was removed entirely (validation and response echo both deleted) so the audit trail can no longer be spoofed. DB write still uses the service-role client, unchanged.
+- **MEDIUM — payload dedupe, last-wins:** rows are collapsed by `(date, campaign)` with a `Map` before the upsert, last value in the payload wins — consistent with the documented cross-call overwrite semantics. The success response now includes `deduped: <count_removed>`.
+- **LOW — real calendar-date validation:** after the `YYYY-MM-DD` regex, each date is re-checked via a `new Date(date + 'T00:00:00Z')` round-trip so overflow/invalid dates (e.g. `2026-13-45`, `2026-02-30`) are rejected instead of silently normalized.
+- **LOW — plausible date range:** dates before `2024-01-01` or more than 7 days in the future are rejected.
+
+Note: the smoke tests recorded in Step 3.2 predate the auth gate — they were run with the anon key alone, which the loader no longer accepts. Post-fix, an anon-key call and a call with no `Authorization` header both verified 401 empirically; the success path needs a real dashboard session and will next be exercised when Plan 5's form wires the tab to this loader.
+
 ---
 
 ### Task 4: Meta campaign backfill (13 months) + verification
