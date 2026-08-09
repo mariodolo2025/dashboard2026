@@ -6,6 +6,24 @@
 -- 2026-08-09: singleton guard added as migration 'advertising_sync_state_singleton_guard'.
 -- 2026-08-09: order_created_at added + order_date redefined to Brisbane day
 -- (migration 'advertising_attribution_created_at').
+-- 2026-08-09: historical backfill complete, 2025-06-30..2026-08-09 (13 months
+-- + comparable period, newest-first, via shopify-attribution-sync backfill
+-- mode): 59,046 orders, 138,269 moments. Coverage (attr vs shopify_sales_lines)
+-- = exactly 100% every month 2025-07..2026-07; 99.9% (1,402/1,404) for the
+-- still-open 2026-08 partial month (gap = orders placed after the last
+-- backfill call — not a data issue). One transient Shopify fetch failure
+-- (2025-12-07..09) self-healed on the built-in 60s retry; no window needed
+-- more than 2 attempts; no capped window left unsplit.
+-- 2026-08-09: Meta UTM convention (spec §8 gate) — no clean flip date exists.
+-- The literal '{{campaign_name}}' placeholder (unresolved Shopify URL macro)
+-- coexists with numeric Meta campaign IDs in EVERY month from 2025-06 through
+-- 2026-08, at a stable ~2-5% placeholder / ~95-98% numeric split. Earliest
+-- numeric-ID order: 2025-06-30. Latest placeholder order: 2026-08-06. Both
+-- dates span almost the entire dataset, so neither is a usable cutover —
+-- the placeholder is an ongoing per-campaign misconfiguration, not a
+-- one-time historical convention change. Plan 4 (motor) must treat
+-- '{{campaign_name}}' as an "unknown campaign" bucket for all dates, not
+-- gate its handling on order date.
 
 -- Advertising Bloque 1 — raw journey capture (spec DESIGN-ADVERTISING-TAB §4).
 -- RAW: exactly what Shopify returns, no interpretation. Buckets/models compute
