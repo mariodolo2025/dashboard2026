@@ -81,6 +81,9 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   // Shopify sales: pull from the API into shopify_sales_lines, then regenerate the
   // "Total sales by product variant" CSV the dashboard reads (frozen history + live).
   { name: 'Shopify sales', fn: 'shopify-sales-sync', body: {} },
+  // Advertising: raw order journeys (first/last visit + moments). Additive and
+  // isolated — its failure must never block the sales steps that follow.
+  { name: 'Shopify attribution', fn: 'shopify-attribution-sync', body: {} },
   // variant_id -> sku bridge for the Web Upgrade tab. The pixel identifies products
   // by variant_id, every sales table keys on sku. Built from order line items (which
   // carry both) rather than the catalogue, because the app's token has read_orders
