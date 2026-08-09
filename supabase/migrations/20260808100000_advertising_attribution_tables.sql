@@ -1,8 +1,9 @@
 -- =============================================================================
 -- Advertising — attribution capture tables (Bloque 1, raw journey)
 -- =============================================================================
--- Applied as migration 'advertising_attribution_tables' on 2026-08-08 via MCP.
+-- Applied as migration 'advertising_attribution_tables' on 2026-08-09 via MCP.
 -- Design: docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 1.
+-- 2026-08-09: singleton guard added as migration 'advertising_sync_state_singleton_guard'.
 
 -- Advertising Bloque 1 — raw journey capture (spec DESIGN-ADVERTISING-TAB §4).
 -- RAW: exactly what Shopify returns, no interpretation. Buckets/models compute
@@ -42,7 +43,7 @@ create table public.shopify_order_journey_moments (
 );
 
 create table public.shopify_attribution_sync_state (
-  id int primary key,
+  id int primary key default 1 check (id = 1),
   last_modified_watermark timestamptz,
   last_run_at timestamptz,
   last_run_status text,
