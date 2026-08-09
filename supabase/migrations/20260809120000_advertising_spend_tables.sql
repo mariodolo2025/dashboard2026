@@ -6,6 +6,10 @@
 -- Plan: docs/PLAN-ADVERTISING-03-GASTO.md (Task 1).
 -- 2026-08-09: security_invoker=on added (migration 'ad_spend_unified_security_invoker')
 -- — the view must not bypass the base tables' RLS.
+-- 2026-08-10: Task 4 (Plan 3) — Meta campaign backfill, 13 months, verified.
+-- 2025-07..2026-07: 5063 rows, 53 campaigns; camp_spend reconciles acct_spend
+-- exactly every month (worst daily diff $0.00; 2026-08 partial day = $0.08, rounding).
+-- Journey join rate (last_utm_campaign -> campaign_id): 25089/25096 = 99.97%.
 
 -- Advertising Bloque 2 — spend & claims (spec DESIGN-ADVERTISING-TAB §4).
 -- New tables only. meta_ads_daily (account level) stays untouched and remains
