@@ -177,6 +177,19 @@ Dos alturas, sin toggles (superficies separadas):
 
 ## 6. Fuera de alcance (v1)
 
+- **Referencia viva (2026-08-09):** la cuenta GRATIS de Triple Whale está activa
+  en Pesado 58.5 con datos corriendo (explica los tags `tw_` en los avisos).
+  Usarla como calibración del motor: contrastar nuestros buckets/first-click
+  contra su tabla de Attribution. Ojo convención: TW muestra "MER 36%"
+  (gasto÷ventas, %); el nuestro es ventas÷gasto (×) — 36% ≈ 2,79×. Documentar
+  en el tooltip para que la diferencia de presentación no parezca discrepancia.
+- **Familia "new customer" (candidata v2):** TW separa NC-ROAS / NCPA / NC
+  revenue. Computable con lo ya capturado (`customer_order_index = 1`).
+- **Estilo "Sonar" de TW (idea v3, pedido de Mario 2026-08-09):** devolverle a
+  las plataformas datos first-party de conversión para mejorar su targeting
+  (CAPI enrichment). Es ESCRIBIR hacia Meta/Google — otra liga de riesgo;
+  recién se piensa con el motor maduro.
+
 - Capa IA — v2, sobre el motor verificado.
 - Pixel propio y multi-touch con ventanas — v2 (los `moments` de v1 ya dejan
   la materia prima lista).
