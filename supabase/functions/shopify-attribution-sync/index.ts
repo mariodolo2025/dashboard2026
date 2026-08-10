@@ -53,7 +53,7 @@ type Visit = {
 
 const numericId = (gid: string) => gid.split('/').pop() ?? gid;
 
-function attrRow(oid: string, createdAt: string, updatedAt: string | null, j: any) {
+function attrRow(oid: string, name: string | null, createdAt: string, updatedAt: string | null, j: any) {
   const v = (x: Visit | null | undefined, p: 'first' | 'last') => ({
     [`${p}_occurred_at`]: x?.occurredAt ?? null,
     [`${p}_source`]: x?.source ?? null,
@@ -68,6 +68,8 @@ function attrRow(oid: string, createdAt: string, updatedAt: string | null, j: an
   const createdMs = Date.parse(createdAt);
   return {
     order_id: oid,
+    // Visible order number (PSD#65185) for the Live Orders block — v2 2026-08-11.
+    order_name: name ?? null,
     order_created_at: createdAt,
     // Brisbane day (+10, no DST) — same calendar as shopify_sales_lines
     order_date: new Date(createdMs + 10 * 3600e3).toISOString().slice(0, 10),
@@ -165,7 +167,7 @@ Deno.serve(async (req: Request) => {
       query($q: String!, $after: String) {
         orders(first: ${PAGE}, query: $q, sortKey: ${backfill ? 'CREATED_AT' : 'UPDATED_AT'}, after: $after) {
           pageInfo { hasNextPage endCursor }
-          nodes { id createdAt updatedAt customerJourneySummary { ${JOURNEY_FIELDS} } }
+          nodes { id name createdAt updatedAt customerJourneySummary { ${JOURNEY_FIELDS} } }
         }
       }`;
 
@@ -179,7 +181,7 @@ Deno.serve(async (req: Request) => {
         if (upd > maxUpdated) maxUpdated = upd;
         const j = o.customerJourneySummary;
         const visits = (j?.momentsCount?.count ?? 0) > 50 ? await fetchAllMoments(gql, o.id) : (j?.moments?.nodes ?? []);
-        orders.set(oid, { attr: attrRow(oid, String(o.createdAt), o.updatedAt ?? null, j), moments: momentRows(oid, visits) });
+        orders.set(oid, { attr: attrRow(oid, o.name ?? null, String(o.createdAt), o.updatedAt ?? null, j), moments: momentRows(oid, visits) });
       }
       after = d.orders.pageInfo.hasNextPage ? d.orders.pageInfo.endCursor : null;
       pages++;
@@ -198,7 +200,7 @@ Deno.serve(async (req: Request) => {
       const pendingIds = (pending ?? []).map((p) => p.order_id).filter((id) => !already.has(id));
       const nodeQuery = `
         query($ids: [ID!]!) {
-          nodes(ids: $ids) { ... on Order { id createdAt updatedAt customerJourneySummary { ${JOURNEY_FIELDS} } } }
+          nodes(ids: $ids) { ... on Order { id name createdAt updatedAt customerJourneySummary { ${JOURNEY_FIELDS} } } }
         }`;
       for (let i = 0; i < pendingIds.length; i += 25) {
         const d = await gql(nodeQuery, { ids: pendingIds.slice(i, i + 25).map((id) => `gid://shopify/Order/${id}`) });
@@ -207,7 +209,7 @@ Deno.serve(async (req: Request) => {
           const oid = numericId(o.id);
           const j = o.customerJourneySummary;
           const visits = (j?.momentsCount?.count ?? 0) > 50 ? await fetchAllMoments(gql, o.id) : (j?.moments?.nodes ?? []);
-          orders.set(oid, { attr: attrRow(oid, String(o.createdAt), o.updatedAt ?? null, j), moments: momentRows(oid, visits) });
+          orders.set(oid, { attr: attrRow(oid, o.name ?? null, String(o.createdAt), o.updatedAt ?? null, j), moments: momentRows(oid, visits) });
           retried++;
         }
       }
