@@ -37,6 +37,10 @@ export const ADVERTISING_MOCK: AdvertisingDashboard = {
       revenueAud: revenue,
       spendAud: spend,
       mer: spend === null ? null : Math.round((revenue / spend) * 100) / 100,
+      // The fixture window (6–19 Aug 2026) is entirely after google_active_from
+      // (2026-06-25), so every day with spend loaded carries BOTH platforms;
+      // the two days missing the Google row are incomplete by definition.
+      spendComplete: spend !== null,
     };
   }),
   channels: [

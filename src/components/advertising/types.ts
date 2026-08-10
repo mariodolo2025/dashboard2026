@@ -5,6 +5,12 @@ export interface MerPoint {
   revenueAud: number;        // Net sales ex tax (same figure as E-commerce tab)
   spendAud: number | null;   // null = Google spend not loaded that day
   mer: number | null;        // null when spendAud is null/incomplete — never 0
+  // true only when spendAud covers EVERY platform with coverage that day.
+  // false on days before google_active_from (Meta-only spend: Google did not
+  // exist yet, so that MER is NOT comparable with a both-platform MER — the
+  // 24-jun 2.74 → 25-jun 2.51 step is Google entering the denominator, not a
+  // performance drop) and false whenever a platform row is missing (mer null).
+  spendComplete: boolean;
 }
 
 export interface ChannelCampaign {
@@ -24,6 +30,7 @@ export interface ChannelView {
   storeLastAud: number;
   storeFirstAud: number;
   campaigns: ChannelCampaign[];
+  note?: string;             // channel-level caveat (e.g. Google pre-gate under-count)
 }
 
 export interface GoogleBucketRow {

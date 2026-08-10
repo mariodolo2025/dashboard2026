@@ -10,31 +10,93 @@
 --   equivalence proven 634/634 orders, 0 mismatches on
 --   last_bucket/first_bucket/last_campaign/first_campaign. The view stays
 --   untouched as the shared object for acceptance/ad-hoc queries.)
+--   Re-applied 2026-08-10 as `advertising_dashboard_rpc_review_fixes` — see the
+--   review-fixes block below. The body in this file IS the deployed body.
+--
+-- MAINTENANCE RULE: this body inlines the classification logic of the view
+--   advertising_order_channels (for window pushdown). A change to advertising_bucket
+--   or to the view's first/last-non-direct resolution MUST be mirrored here, and the
+--   equivalence re-proven (per-bucket last-click revenue, RPC vs view, on a window
+--   with data — the last proof was 2026-07-01..31, exact).
 --
 -- Plan:     docs/PLAN-ADVERTISING-04-MOTOR.md — Task 2
 -- Spec:     docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 3, §2 principios
--- Contract: src/components/advertising/mockData.ts (AdvertisingMock) — the RPC
---           returns EXACTLY that shape, key by key. Tab wiring = Plan 5.
+-- Contract: src/components/advertising/types.ts (AdvertisingDashboard) — the RPC
+--           returns EXACTLY that shape, key by key. Fixture: mockData.ts.
+--
+-- -----------------------------------------------------------------------------
+-- 2026-08-10 review fixes (migration `advertising_dashboard_rpc_review_fixes`)
+-- -----------------------------------------------------------------------------
+--   1. merSeries.spendComplete (new boolean, contract change). A day before
+--      google_active_from (2026-06-25) carried a Meta-only MER that looked exactly
+--      like a both-platform MER: 06-24 MER 2.74 → 06-25 MER 2.51 read as a
+--      performance drop when it is only Google entering the denominator. true ONLY
+--      when the day's spendAud covers every platform with coverage that day; false
+--      when Meta-only because the day precedes google_active_from, and false when a
+--      platform row is missing (those days already carry mer null).
+--      Verified 2026-06-20..30: false 20→24, true 25→30 (google_active_from
+--      2026-06-25). Verified 2026-08-06..10: true 06→09, false on 08-10 (Meta not
+--      loaded yet for today; spend/mer null).
+--   2. Meta campaigns table now reconciles. `order by spend desc limit 15` dropped
+--      every store-only key — July hid '(sin campaña)' A$6,639.64 / 68 orders and
+--      '{{campaign_name}}' A$3,533.87 / 41 orders, the unidentified-campaign tramo
+--      the spec wants surfaced (locked decision #3) — and hid A$4,622 of spend with
+--      no residual row. Now ordered by (spend + storeLastClick) desc, still limit 15,
+--      plus ONE aggregate row '(otras N campañas)' summing the remainder with a note.
+--      The rendered rows add up to the channel totals.
+--      Verified 2026-07-01..31: Σ campaigns spendAud 191,177.09 == channel spendAud
+--      191,177.09 (diff 0.00); Σ storeLastClickAud 199,068.41 == storeLastAud
+--      199,068.41 (diff 0.00); Σ claimedValueAud 372,994.16 == claimedAud 372,994.16;
+--      Σ storeFirstClickAud 204,732.37 vs 204,732.36 (0.01, per-row rounding).
+--      16 rows: '(sin campaña)' renders at position 12; '{{campaign_name}}' falls
+--      inside '(otras 15 campañas)'.
+--      CAVEAT (source data, not this RPC): the spend identity holds only while the
+--      two Meta tables agree. channels[meta].spendAud comes from ad_spend_unified →
+--      meta_ads_daily (account level); the campaign rows come from
+--      meta_ads_campaign_daily. They match to the cent through 2026-08-07, then
+--      drift on the freshest days (08-08 A$0.11, 08-09 A$176.93 — Meta still
+--      settling), so a window ending on the last synced day can show that residual.
+--   3. channels[google].note (new optional field, contract change). For windows
+--      starting before 2026-08-06 the Google channel reads as a catastrophe that is
+--      arithmetically right and commercially wrong (July: spend 15,190.53, claimed
+--      177,917.01, storeLast 128.25 — the paid Google clicks of that tramo live in
+--      google-mixto-pre, outside the paid denominator). The caveat existed only on a
+--      googleBuckets row; now it travels with the channel. No number changed.
+--      Verified: note present for 2026-07-01..31, absent for 2026-08-06..10.
+--   4. SECURITY DEFINER search_path now includes pg_temp.
+--      NOTE: written `set search_path to 'public', 'pg_temp'` — two quoted elements,
+--      NOT the single string 'public, pg_temp'. In a function SET clause the
+--      single-string form is stored verbatim as one schema name
+--      (proconfig `search_path="public, pg_temp"`) and the function stops resolving
+--      public relations altogether (CREATE fails: relation
+--      "currency_exchange_rates" does not exist). Probed both forms before applying.
+--      Deployed proconfig: {search_path=public, pg_temp, statement_timeout=25s,
+--      work_mem=16MB}.
+--   Post-fix re-verification: contract keys unchanged apart from the two additions
+--   (top [blended, channels, from, googleBuckets, merSeries, to]; blended 10 keys;
+--   merSeries [d, mer, revenueAud, spendAud, spendComplete]; channels 7 keys + note
+--   on google pre-gate; campaigns 5 keys + optional note; googleBuckets
+--   [bucket, orders, revenueAud] + optional note). Conservation 2026-07-01..31:
+--   all-bucket last-click revenue 449,641.88 == window revenue 449,641.88
+--   (diff 0.00, 4,304 orders). Runtime 30-day windows: 2026-07-01..30 427ms;
+--   2026-07-11..08-09 614ms (previous record 1.23s). Frontend typecheck
+--   `npx tsc -b --noEmit` exit 0 after the types.ts/mockData.ts contract edits.
+-- -----------------------------------------------------------------------------
 --
 -- Acceptance battery (2026-08-10, window 2026-08-06 → current_date unless noted):
---   a. Contract keys — exact match, no extras/missing:
---      top [blended, channels, from, googleBuckets, merSeries, to];
---      blended 10 keys; merSeries [d, mer, revenueAud, spendAud];
---      channels 7 keys, [0]=meta [1]=google always; campaigns 5 keys
---      (+ optional note, present only on google shopping); googleBuckets
---      [bucket, orders, revenueAud] + optional note.
+--   a. Contract keys — exact match, no extras/missing (re-run after the review
+--      fixes, see above).
 --   b. Conservation — sum of ALL last-click bucket revenues == window total
 --      from the same per-order source: 66,684.90 == 66,684.90 (diff 0.00,
 --      634 orders). 12-month window: 6,120,131.49 == 6,120,131.49 (diff 0.00).
 --   c. merSeries length == days in window (4 == 4; 12-month 366 == 366).
---      Google rule: google_active_from null today → meta-only MER on every day
---      with meta spend loaded, spend/mer null on days without (null never 0).
---      Other side exercised with a simulated google_active_from = 2026-08-08:
---      days before → meta-only; days on/after without google row → null. PASS.
+--      Google rule + spendComplete: days before google_active_from → meta-only
+--      spend, spendComplete false; days on/after without a google row → spend and
+--      mer null (never 0), spendComplete false.
 --   d. blended.revenueAud == E-commerce figure (shopify_sales_by_variant
 --      net_aud): 66,684.90 both. PASS.
 --   e. Runtime (explain analyze): ('2026-08-06', current_date) 80ms;
---      true 30-day window 1.23s (< 2s target, PASS);
+--      true 30-day window 0.4–0.6s (< 2s target, PASS);
 --      12-month ('2025-08-01','2026-08-01') 15.1s — slow but under the 25s
 --      timeout; the tab defaults to short windows, noted, not optimized (the
 --      cost is ~59k orders x ~135k moment classifications + per-order revenue;
@@ -63,7 +125,7 @@ create or replace function public.advertising_dashboard(p_from date, p_to date)
 returns jsonb
 language sql
 stable security definer
-set search_path to 'public'
+set search_path to 'public', 'pg_temp'
 set statement_timeout to '25s'
 set work_mem to '16MB'
 as $function$
@@ -159,6 +221,11 @@ mer_days as (
   -- spend rule (locked): meta missing -> null; day >= google_active_from without a
   -- loaded google spend row -> null; otherwise meta (+ google when loaded).
   -- google_active_from null (Google not started) -> meta-only MER. Null never 0.
+  -- spendComplete (review 2026-08-10): true ONLY when the day's spend covers every
+  -- platform with coverage that day. Days before google_active_from are Meta-only by
+  -- construction (Google did not exist yet) -> false, so a one-platform MER is never
+  -- read as comparable to a both-platform one. Days with a platform row missing
+  -- (spend/mer already null) -> false too.
   select days.d,
          coalesce(rd.rev, 0) rev,
          case
@@ -166,7 +233,14 @@ mer_days as (
            when (select d from gaf) is not null and days.d >= (select d from gaf)
                 and sd.goog_s is null then null
            else sd.meta_s + coalesce(sd.goog_s, 0)
-         end spend
+         end spend,
+         case
+           when sd.meta_s is null then false
+           when (select d from gaf) is null then false
+           when days.d < (select d from gaf) then false
+           when sd.goog_s is null then false
+           else true
+         end spend_complete
   from (select generate_series(p_from, p_to, interval '1 day')::date d) days
   left join spend_daily sd on sd.date = days.d
   left join rev_daily rd on rd.d = days.d
@@ -201,7 +275,7 @@ meta_keys as (
   union select cid from meta_store_last
   union select cid from meta_store_first
 ),
-meta_campaigns as (
+meta_all as (
   -- display = campaign_name (latest known); store side joins utm campaign_id::text.
   -- Unmatched store keys (e.g. the {{campaign_name}} literal tramo) fall back to the raw key.
   select coalesce(mc.campaign_name, k.cid) display,
@@ -213,8 +287,27 @@ meta_campaigns as (
   left join meta_c mc on mc.campaign_id = k.cid
   left join meta_store_last sl on sl.cid = k.cid
   left join meta_store_first sf on sf.cid = k.cid
-  order by coalesce(mc.spend_aud, 0) desc, coalesce(sl.rev, 0) desc
-  limit 15
+),
+meta_ranked as (
+  -- relevance = spend + what the store recognises (review 2026-08-10). Ordering by
+  -- spend alone hid every store-only key — '(sin campaña)' and the '{{campaign_name}}'
+  -- literal tramo — which is precisely the unidentified-campaign tramo the spec wants
+  -- surfaced (locked decision #3).
+  select display, spend, claimed, s_last, s_first,
+         row_number() over (order by (spend + s_last) desc, s_last desc, display) rn
+  from meta_all
+),
+meta_campaigns as (
+  -- top 15 + ONE residual row: the rendered rows always add up to the channel totals,
+  -- so the table can be reconciled against channels[0] (review 2026-08-10).
+  select display, spend, claimed, s_last, s_first, null::text note, rn sort_ord
+  from meta_ranked where rn <= 15
+  union all
+  select '(otras ' || count(*) || ' campañas)',
+         sum(spend), sum(claimed), sum(s_last), sum(s_first),
+         'agrupadas: la tabla reconcilia con el total del canal', 16
+  from meta_ranked where rn > 15
+  having count(*) > 0
 ),
 g as (
   select campaign, sum(spend_aud) spend, sum(claimed_value_aud) claimed
@@ -281,7 +374,8 @@ select jsonb_build_object(
     'd', to_char(d, 'YYYY-MM-DD'),
     'revenueAud', round(rev, 2),
     'spendAud', round(spend, 2),
-    'mer', round(rev / nullif(spend, 0), 2)
+    'mer', round(rev / nullif(spend, 0), 2),
+    'spendComplete', spend_complete
   ) order by d), '[]'::jsonb) from mer_days),
   'channels', jsonb_build_array(
     (select jsonb_build_object(
@@ -292,13 +386,14 @@ select jsonb_build_object(
       'claimedAud', round((select coalesce(sum(claimed_aud), 0) from meta_c), 2),
       'storeLastAud', round(coalesce((select rev from bucket_last where b = 'meta-paid'), 0), 2),
       'storeFirstAud', round(coalesce((select rev from bucket_first where b = 'meta-paid'), 0), 2),
-      'campaigns', (select coalesce(jsonb_agg(jsonb_build_object(
+      'campaigns', (select coalesce(jsonb_agg((jsonb_build_object(
           'campaign', display,
           'spendAud', round(spend, 2),
           'claimedValueAud', round(claimed, 2),
           'storeLastClickAud', round(s_last, 2),
           'storeFirstClickAud', round(s_first, 2)
-        ) order by spend desc, s_last desc), '[]'::jsonb) from meta_campaigns)
+        ) || case when note is not null then jsonb_build_object('note', note) else '{}'::jsonb end
+        ) order by sort_ord), '[]'::jsonb) from meta_campaigns)
     )),
     (select jsonb_build_object(
       'key', 'google',
@@ -318,7 +413,14 @@ select jsonb_build_object(
           'storeFirstClickAud', round(s_first, 2)
         ) || case when note is not null then jsonb_build_object('note', note) else '{}'::jsonb end
         ) order by sort_ord), '[]'::jsonb) from goog_campaigns)
-    ))
+    )
+    -- pre-gate caveat (review 2026-08-10): before 2026-08-06 the paid Google clicks
+    -- were not distinguishable from organic (no UTMs) and land in google-mixto-pre,
+    -- outside this channel's storeLast. Numbers unchanged; the caveat now travels
+    -- with the channel instead of hiding on a googleBuckets row.
+    || case when p_from < date '2026-08-06' then jsonb_build_object('note',
+         'Antes del 6-ago los clicks pagos de Google no eran distinguibles del orgánico (sin UTMs): la columna "la tienda le reconoce" subcuenta este canal en ese tramo.')
+       else '{}'::jsonb end)
   ),
   'googleBuckets', (select coalesce(jsonb_agg((jsonb_build_object(
       'bucket', v.bucket,
