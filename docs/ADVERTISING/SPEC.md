@@ -1,8 +1,8 @@
 # Diseño — Tab Advertising (Triple Whale propio)
 
 > Estado: **spec v2, revisada adversarialmente, nada construido**. Fecha: 2026-08-08.
-> Contexto obligatorio: [`GOOGLE VS META/5-handover-medicion-ads.md`](GOOGLE%20VS%20META/5-handover-medicion-ads.md)
-> y [`GOOGLE VS META/HANDOVER_atribucion_meta_vs_google.md`](GOOGLE%20VS%20META/HANDOVER_atribucion_meta_vs_google.md) —
+> Contexto obligatorio: [`context/handover-medicion-ads.md`](context/handover-medicion-ads.md)
+> y [`context/handover-atribucion-meta-vs-google.md`](context/handover-atribucion-meta-vs-google.md) —
 > ahí viven la teoría, los hechos verificados y la taxonomía UTM vigente. Esta spec no los repite.
 > v2 = v1 + correcciones de una revisión adversarial (3 revisores + refutadores contra la
 > tienda y la base vivas). Hallazgos al final (§10).

@@ -2,8 +2,8 @@
 -- Advertising — attribution engine: bucket classifier + order channels view (Bloque 3)
 -- =============================================================================
 -- Applied as migration 'advertising_engine' on 2026-08-10 via MCP.
--- Design: docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 3.
--- Plan: docs/PLAN-ADVERTISING-04-MOTOR.md (Task 1).
+-- Design: docs/ADVERTISING/SPEC.md §4 Bloque 3.
+-- Plan: docs/ADVERTISING/plans/04-motor.md (Task 1).
 -- 2026-08-10: search_path pinned on advertising_bucket (migration
 -- 'advertising_bucket_search_path') — closes the security advisor WARN
 -- "Function Search Path Mutable"; SQL below reflects the final state.

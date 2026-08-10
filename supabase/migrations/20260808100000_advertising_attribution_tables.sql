@@ -2,7 +2,7 @@
 -- Advertising — attribution capture tables (Bloque 1, raw journey)
 -- =============================================================================
 -- Applied as migration 'advertising_attribution_tables' on 2026-08-09 via MCP.
--- Design: docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 1.
+-- Design: docs/ADVERTISING/SPEC.md §4 Bloque 1.
 -- 2026-08-09: singleton guard added as migration 'advertising_sync_state_singleton_guard'.
 -- 2026-08-09: order_created_at added + order_date redefined to Brisbane day
 -- (migration 'advertising_attribution_created_at').
@@ -25,7 +25,7 @@
 -- '{{campaign_name}}' as an "unknown campaign" bucket for all dates, not
 -- gate its handling on order date.
 
--- Advertising Bloque 1 — raw journey capture (spec DESIGN-ADVERTISING-TAB §4).
+-- Advertising Bloque 1 — raw journey capture (spec ADVERTISING/SPEC.md §4).
 -- RAW: exactly what Shopify returns, no interpretation. Buckets/models compute
 -- at read time (motor, Plan 4). New tables only — touches nothing existing.
 

@@ -6,7 +6,7 @@
 
 **Architecture:** Two new files (mock data module + tab component) plus three small edits to register the tab in App.tsx. The mock data module's TypeScript interfaces ARE the contract: the future RPC (Plan 4) must return exactly this shape, so wiring later means swapping one import. No DB, no edge functions, no new deps.
 
-**Tech Stack:** React + TypeScript + Vite, shadcn/ui (Card, Button, Dialog), recharts (already in the repo), Tailwind. Spec: `docs/DESIGN-ADVERTISING-TAB.md` (v2.1). Verification: `npx tsc -b --noEmit` + visual check in the dev server (`.claude/launch.json` → `aim2026-dev`). The repo has no unit-test runner; executable acceptance tests start in Plan 2 (SQL, per spec §9).
+**Tech Stack:** React + TypeScript + Vite, shadcn/ui (Card, Button, Dialog), recharts (already in the repo), Tailwind. Spec: `docs/ADVERTISING/SPEC.md` (v2.1). Verification: `npx tsc -b --noEmit` + visual check in the dev server (`.claude/launch.json` → `aim2026-dev`). The repo has no unit-test runner; executable acceptance tests start in Plan 2 (SQL, per spec §9).
 
 **Branch:** all work on `feat/advertising-tab` (Task 0). Nothing existing may break: this plan only ADDS files and three additive edits to App.tsx (spec §2 principio 0).
 
@@ -195,7 +195,7 @@ Follows the house style of `B2CSalesPanel.tsx` (local StatCard, recharts Compose
 // =============================================================================
 // Advertising tab — mini Triple Whale (STATIC MOCKUP)
 // =============================================================================
-// Spec: docs/DESIGN-ADVERTISING-TAB.md (v2.1). This stage renders MOCK data
+// Spec: docs/ADVERTISING/SPEC.md (v2.1). This stage renders MOCK data
 // only (spec §8 paso 2): the screens get approved before any pipeline exists.
 // The data shape is the RPC contract — see advertising/mockData.ts.
 

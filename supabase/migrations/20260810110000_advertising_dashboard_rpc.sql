@@ -21,8 +21,8 @@
 --   equivalence re-proven (per-bucket last-click revenue, RPC vs view, on a window
 --   with data — the last proof was 2026-07-01..31, exact).
 --
--- Plan:     docs/PLAN-ADVERTISING-04-MOTOR.md — Task 2
--- Spec:     docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 3, §2 principios
+-- Plan:     docs/ADVERTISING/plans/04-motor.md — Task 2
+-- Spec:     docs/ADVERTISING/SPEC.md §4 Bloque 3, §2 principios
 -- Contract: src/components/advertising/types.ts (AdvertisingDashboard) — the RPC
 --           returns EXACTLY that shape, key by key. Fixture: mockData.ts.
 --
