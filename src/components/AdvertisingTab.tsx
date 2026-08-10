@@ -4,7 +4,7 @@
 // Spec: docs/DESIGN-ADVERTISING-TAB.md (v2.1). Reads public.advertising_dashboard
 // (Plan 4). The data shape is the RPC contract — see advertising/types.ts.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
   Tooltip as RTooltip, CartesianGrid,
@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { STORE_DATE_PRESETS, storeToday } from '@/lib/storeDate';
+import GoogleSpendForm from '@/components/advertising/GoogleSpendForm';
 import type {
   AdvertisingDashboard, ChannelView, MerPoint, GoogleBucketRow,
 } from '@/components/advertising/types';
@@ -95,18 +96,24 @@ export default function AdvertisingTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  // A sequence number rather than a boolean closure, so `load` can be called
+  // both by the range-change effect AND on demand (GoogleSpendForm's
+  // onSaved) without the two races stepping on each other — only the result
+  // of the most recent call is ever applied.
+  const loadSeq = useRef(0);
+  const load = useCallback(() => {
+    const seq = ++loadSeq.current;
     setLoading(true); setError(null);
     supabase.rpc('advertising_dashboard', { p_from: range.from, p_to: range.to })
       .then(({ data: res, error: err }) => {
-        if (cancelled) return;
+        if (loadSeq.current !== seq) return;
         if (err) { setError(err.message); setData(null); }
         else setData(res as AdvertisingDashboard);
         setLoading(false);
       });
-    return () => { cancelled = true; };
   }, [range.from, range.to]);
+
+  useEffect(() => { load(); }, [load]);
 
   // > 92 days: the 90-day preset stays quiet, 12 months (and anything past it)
   // warns — that range measured ~15s.
@@ -248,6 +255,13 @@ export default function AdvertisingTab() {
                 </p>
               )}
               <GoogleBuckets rows={data.googleBuckets} />
+
+              <Card className="p-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+                  Carga manual de gasto · Google Ads
+                </h3>
+                <GoogleSpendForm onSaved={load} />
+              </Card>
             </div>
           )}
         </div>
