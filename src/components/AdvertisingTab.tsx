@@ -1,7 +1,7 @@
 // =============================================================================
 // Advertising tab — mini Triple Whale
 // =============================================================================
-// Spec: docs/DESIGN-ADVERTISING-TAB.md (v2.1). Reads public.advertising_dashboard
+// Spec: docs/ADVERTISING/SPEC.md (v2.1). Reads public.advertising_dashboard
 // (Plan 4). The data shape is the RPC contract — see advertising/types.ts.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
