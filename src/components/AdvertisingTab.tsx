@@ -12,9 +12,8 @@ import {
 } from 'recharts';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import {
-  ADVERTISING_MOCK, type ChannelView, type MerPoint, type GoogleBucketRow,
-} from '@/components/advertising/mockData';
+import { ADVERTISING_MOCK } from '@/components/advertising/mockData';
+import type { ChannelView, MerPoint, GoogleBucketRow } from '@/components/advertising/types';
 
 const fmtAud = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : `$${Math.round(v).toLocaleString('en-AU')}`;

@@ -1,62 +1,11 @@
 // =============================================================================
-// Advertising tab — mock data & types
+// Advertising tab — mock data (fixture)
 // =============================================================================
-// These interfaces are the CONTRACT with the future advertising RPC (Plan 4):
-// it must return exactly this shape. The numbers are fake but realistic, for
-// the visual-approval stage (spec §8 paso 2). Money is AUD, dates Brisbane.
+// This is the empty-state/dev fallback fixture, not the source: the tab reads
+// public.advertising_dashboard. The shape below must match AdvertisingDashboard
+// in ./types — see that file for the RPC contract. Money is AUD, dates Brisbane.
 
-export interface MerPoint {
-  d: string;                 // 'YYYY-MM-DD'
-  revenueAud: number;        // Net sales ex tax (same figure as E-commerce tab)
-  spendAud: number | null;   // null = Google spend not loaded that day
-  mer: number | null;        // null when spendAud is null/incomplete — never 0
-}
-
-export interface ChannelCampaign {
-  campaign: string;          // Meta: campaign name · Google: brand-search | non-brand | shopping
-  spendAud: number;
-  claimedValueAud: number;   // what the platform's panel claims
-  storeLastClickAud: number; // what the store recognises (last non-direct)
-  storeFirstClickAud: number;// sales this campaign INITIATED
-  note?: string;             // e.g. shopping proxy caveat
-}
-
-export interface ChannelView {
-  key: 'meta' | 'google';
-  label: string;
-  spendAud: number;
-  claimedAud: number;
-  storeLastAud: number;
-  storeFirstAud: number;
-  campaigns: ChannelCampaign[];
-}
-
-export interface GoogleBucketRow {
-  bucket: string;
-  orders: number;
-  revenueAud: number;
-  note?: string;
-}
-
-export interface AdvertisingMock {
-  from: string;
-  to: string;
-  blended: {
-    spendAud: number;
-    revenueAud: number;
-    mer: number;
-    claimedTotalAud: number;     // Meta claims + Google claims, summed
-    doubleCountRatio: number;    // claimedTotal / real attributed revenue
-    overlapOrders: number;       // journeys touched by BOTH paid platforms
-    cacBlended: number;          // spend ÷ first-time-customer orders
-    newCustomerOrders: number;
-    unclassifiedOrders: number;  // UTM drift alarm (spec §7)
-    noJourneyOrders: number;     // ready=false aged out (spec Bloque 1)
-  };
-  merSeries: MerPoint[];
-  channels: ChannelView[];
-  googleBuckets: GoogleBucketRow[];
-}
+import type { AdvertisingDashboard } from './types';
 
 const day = (n: number) => {
   const d = new Date(Date.UTC(2026, 7, 6 + n)); // 2026-08-06 + n
@@ -64,7 +13,7 @@ const day = (n: number) => {
 };
 
 // 14 days, 6–19 Aug. Revenue ~16-18k/day, Meta ~1.9k/day, Google ~0.6k/day.
-export const ADVERTISING_MOCK: AdvertisingMock = {
+export const ADVERTISING_MOCK: AdvertisingDashboard = {
   from: day(0),
   to: day(13),
   blended: {
