@@ -61,7 +61,7 @@ export default function GoogleSpendForm({ onSaved }: GoogleSpendFormProps) {
     });
 
     if (payloadRows.length === 0) {
-      setStatus({ kind: 'error', message: 'Cargá al menos un gasto.' });
+      setStatus({ kind: 'error', message: 'Enter at least one spend.' });
       return;
     }
 
@@ -70,7 +70,7 @@ export default function GoogleSpendForm({ onSaved }: GoogleSpendFormProps) {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
-        setStatus({ kind: 'error', message: 'Tu sesión expiró — recargá la página.' });
+        setStatus({ kind: 'error', message: 'Your session expired — reload the page.' });
         return;
       }
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-ads-load`, {
@@ -84,13 +84,13 @@ export default function GoogleSpendForm({ onSaved }: GoogleSpendFormProps) {
       });
 
       if (res.status === 401) {
-        setStatus({ kind: 'error', message: 'Tu sesión expiró — recargá la página.' });
+        setStatus({ kind: 'error', message: 'Your session expired — reload the page.' });
         return;
       }
 
-      const body = await res.json().catch(() => ({ success: false, message: 'Respuesta inválida del servidor' }));
+      const body = await res.json().catch(() => ({ success: false, message: 'Invalid server response' }));
       if (!res.ok || body?.success === false) {
-        setStatus({ kind: 'error', message: body?.message ?? 'Error al guardar', errors: body?.errors });
+        setStatus({ kind: 'error', message: body?.message ?? 'Error saving', errors: body?.errors });
         return;
       }
 
@@ -98,7 +98,7 @@ export default function GoogleSpendForm({ onSaved }: GoogleSpendFormProps) {
       setRows(emptyState());
       onSaved();
     } catch (e) {
-      setStatus({ kind: 'error', message: e instanceof Error ? e.message : 'Error de red' });
+      setStatus({ kind: 'error', message: e instanceof Error ? e.message : 'Network error' });
     } finally {
       setSaving(false);
     }
@@ -107,7 +107,7 @@ export default function GoogleSpendForm({ onSaved }: GoogleSpendFormProps) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <label className="text-xs text-muted-foreground" htmlFor="google-spend-date">Fecha</label>
+        <label className="text-xs text-muted-foreground" htmlFor="google-spend-date">Date</label>
         <input
           id="google-spend-date"
           type="date"
@@ -120,10 +120,10 @@ export default function GoogleSpendForm({ onSaved }: GoogleSpendFormProps) {
       <table className="w-full text-sm">
         <thead>
           <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            <th className="text-left font-medium pb-1.5">Campaña</th>
-            <th className="text-right font-medium pb-1.5">Gasto AUD</th>
-            <th className="text-right font-medium pb-1.5">Conversiones reclamadas</th>
-            <th className="text-right font-medium pb-1.5">Valor reclamado AUD</th>
+            <th className="text-left font-medium pb-1.5">Campaign</th>
+            <th className="text-right font-medium pb-1.5">Spend AUD</th>
+            <th className="text-right font-medium pb-1.5">Claimed conversions</th>
+            <th className="text-right font-medium pb-1.5">Claimed value AUD</th>
           </tr>
         </thead>
         <tbody>
@@ -161,11 +161,11 @@ export default function GoogleSpendForm({ onSaved }: GoogleSpendFormProps) {
 
       <div className="flex items-center gap-3">
         <Button size="sm" onClick={handleSave} disabled={saving}>
-          {saving ? 'Guardando…' : 'Guardar'}
+          {saving ? 'Saving…' : 'Save'}
         </Button>
         {status?.kind === 'success' && (
           <span className="text-xs text-emerald-600 dark:text-emerald-400">
-            Guardado: {status.upserted} filas
+            Saved: {status.upserted} rows
           </span>
         )}
       </div>

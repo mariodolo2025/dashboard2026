@@ -5,6 +5,7 @@
 // (Plan 4). The data shape is the RPC contract — see advertising/types.ts.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
   Tooltip as RTooltip, CartesianGrid,
@@ -16,7 +17,7 @@ import { supabase } from '@/lib/supabase';
 import { STORE_DATE_PRESETS, storeToday } from '@/lib/storeDate';
 import GoogleSpendForm from '@/components/advertising/GoogleSpendForm';
 import type {
-  AdvertisingDashboard, ChannelView, MerPoint, GoogleBucketRow,
+  AdvertisingDashboard, ChannelView, MerPoint, GoogleBucketRow, ChannelMixRow,
 } from '@/components/advertising/types';
 
 const fmtAud = (v: number | null | undefined) =>
@@ -25,9 +26,32 @@ const fmtNum = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : Math.round(v).toLocaleString('en-AU');
 const fmtX = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : `${v.toFixed(2)}×`;
+const fmtUsd = (v: number | null | undefined) =>
+  v === null || v === undefined ? '' : `(US$${Math.round(v).toLocaleString('en-AU')})`;
 
-function StatCard({ label, value, sub, accent, warn }: {
-  label: string; value: string; sub: string; accent?: string; warn?: boolean;
+/** The USD companion of an AUD figure: same number, source currency, set smaller
+ *  so it never competes with the amount it annotates. Copied from B2CSalesPanel's
+ *  <Usd> — house convention for every AUD figure in the dashboard. */
+function Usd({ value, size = 'card' }: {
+  value: number | null | undefined;
+  size?: 'card' | 'table';
+}) {
+  const text = fmtUsd(value);
+  if (!text) return null;
+  return (
+    <span
+      className={cn(
+        'ml-1 font-normal text-muted-foreground align-baseline',
+        size === 'table' ? 'text-[11px]' : 'text-[0.58em]'
+      )}
+    >
+      {text}
+    </span>
+  );
+}
+
+function StatCard({ label, value, usd, sub, accent, warn }: {
+  label: string; value: string; usd?: number | null; sub: ReactNode; accent?: string; warn?: boolean;
 }) {
   return (
     <Card className="relative overflow-hidden p-4 border border-border/60">
@@ -37,7 +61,10 @@ function StatCard({ label, value, sub, accent, warn }: {
       )}
       <p className="text-xs font-medium tracking-wide uppercase text-muted-foreground mb-2 truncate">{label}</p>
       <p className={cn('text-2xl font-semibold tracking-tight tabular-nums leading-none',
-                       warn && 'text-amber-600 dark:text-amber-400')}>{value}</p>
+                       warn && 'text-amber-600 dark:text-amber-400')}>
+        {value}
+        {usd !== undefined && <Usd value={usd} />}
+      </p>
       {/* The definition lives ON the card (spec §2.5) — no hidden formulas. */}
       <p className="text-[11px] text-muted-foreground/70 leading-tight mt-1.5">{sub}</p>
     </Card>
@@ -64,11 +91,11 @@ function MerChart({ series }: { series: MerPoint[] }) {
               return (
                 <div className="rounded-lg border bg-popover px-2.5 py-2 text-xs shadow-md space-y-0.5">
                   <div className="font-medium">{String(label)}</div>
-                  <div className="flex justify-between gap-4"><span className="text-muted-foreground">Revenue</span><span className="tabular-nums">{fmtAud(p.revenueAud)}</span></div>
-                  <div className="flex justify-between gap-4"><span className="text-muted-foreground">Spend</span><span className="tabular-nums">{p.spendAud === null ? 'incompleto' : fmtAud(p.spendAud)}</span></div>
-                  <div className="flex justify-between gap-4"><span className="text-muted-foreground">MER</span><span className="tabular-nums font-medium" style={{ color: '#f59e0b' }}>{p.mer === null ? '— (gasto sin cargar)' : fmtX(p.mer)}</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-muted-foreground">Revenue</span><span className="tabular-nums">{fmtAud(p.revenueAud)}<Usd value={p.revenueUsd} size="table" /></span></div>
+                  <div className="flex justify-between gap-4"><span className="text-muted-foreground">Spend</span><span className="tabular-nums">{p.spendAud === null ? 'incomplete' : <>{fmtAud(p.spendAud)}<Usd value={p.spendUsd} size="table" /></>}</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-muted-foreground">MER</span><span className="tabular-nums font-medium" style={{ color: '#f59e0b' }}>{p.mer === null ? '— (spend not loaded)' : fmtX(p.mer)}</span></div>
                   {p.spendComplete === false && p.mer !== null && (
-                    <div className="text-[11px] text-amber-700 dark:text-amber-400">Solo gasto de Meta — Google todavía no gastaba</div>
+                    <div className="text-[11px] text-amber-700 dark:text-amber-400">Meta spend only — Google wasn't spending yet</div>
                   )}
                 </div>
               );
@@ -86,11 +113,83 @@ function MerChart({ series }: { series: MerPoint[] }) {
   );
 }
 
+// Raw bucket keys from advertising_bucket → English labels. Unknown key falls
+// through unchanged rather than crashing (spec Change 3).
+const CHANNEL_MIX_LABELS: Record<string, string> = {
+  'meta-paid': 'Meta (paid)',
+  'google-brand': 'Google Brand (paid)',
+  'google-nonbrand': 'Google Non-brand (paid)',
+  'google-shopping-proxy': 'Google Shopping (paid, proxy)',
+  'google-paid-other': 'Google other (paid)',
+  'google-organic': 'Google organic',
+  'google-mixto-pre': 'Google mixed (before 6 Aug — paid and organic indistinguishable)',
+  direct: 'Direct',
+  email: 'Email',
+  'social-organic': 'Social organic',
+  'search-other': 'Other search engines',
+  'referral-other': 'Referrals',
+  'other-tagged': 'Other tagged',
+  'sin-journey': 'No journey captured yet',
+};
+const channelMixLabel = (bucket: string) => CHANNEL_MIX_LABELS[bucket] ?? bucket;
+
+/** The reconciliation: paid channels are a SLICE of total net sales, not a rival
+ *  figure. sum(rows.revenueAud) === blended.revenueAud (±rounding) by contract. */
+function ChannelMix({ rows, totalAud }: { rows: ChannelMixRow[]; totalAud: number }) {
+  const paidRows = rows.filter((r) => r.isPaid);
+  const paidAud = paidRows.reduce((s, r) => s + r.revenueAud, 0);
+  const paidUsd = paidRows.reduce((s, r) => s + r.revenueUsd, 0);
+  const paidPct = totalAud > 0 ? (paidAud / totalAud) * 100 : 0;
+
+  return (
+    <Card className="p-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+        Where the sales came from
+      </h3>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            <th className="text-left font-medium pb-1.5">Channel</th>
+            <th className="text-right font-medium pb-1.5">Orders</th>
+            <th className="text-right font-medium pb-1.5">Net AUD</th>
+            <th className="text-right font-medium pb-1.5">% of total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const pct = totalAud > 0 ? (r.revenueAud / totalAud) * 100 : 0;
+            return (
+              <tr key={r.bucket} className="border-t border-border/40">
+                <td className="py-1.5">
+                  {channelMixLabel(r.bucket)}
+                  {r.isPaid && (
+                    <span className="ml-1.5 inline-block rounded-full bg-emerald-100 dark:bg-emerald-950/40 px-1.5 py-0 text-[10px] font-medium text-emerald-700 dark:text-emerald-400 align-middle">
+                      paid
+                    </span>
+                  )}
+                </td>
+                <td className="py-1.5 text-right tabular-nums">{fmtNum(r.orders)}</td>
+                <td className={cn('py-1.5 text-right tabular-nums', r.isPaid && 'font-medium')}>
+                  {fmtAud(r.revenueAud)}<Usd value={r.revenueUsd} size="table" />
+                </td>
+                <td className="py-1.5 text-right tabular-nums text-muted-foreground">{pct.toFixed(1)}%</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="text-[11px] text-muted-foreground/70 mt-2">
+        Paid channels: {fmtAud(paidAud)}<Usd value={paidUsd} size="table" /> ({paidPct.toFixed(1)}% of net sales)
+      </p>
+    </Card>
+  );
+}
+
 const PRESETS = STORE_DATE_PRESETS;                    // from '@/lib/storeDate'
 const DEFAULT = PRESETS.find((p) => p.label === '30 days')!.range();
 
 export default function AdvertisingTab() {
-  const [view, setView] = useState<'direccion' | 'meta' | 'google'>('direccion');
+  const [view, setView] = useState<'leadership' | 'meta' | 'google'>('leadership');
   const [range, setRange] = useState<{ from: string; to: string }>(DEFAULT);
   const [data, setData] = useState<AdvertisingDashboard | null>(null);
   const [loading, setLoading] = useState(true);
@@ -127,7 +226,7 @@ export default function AdvertisingTab() {
       {/* ── View switch + date controls ── */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-0.5 rounded-lg bg-muted/50 p-0.5">
-          {([['direccion', 'Dirección'], ['meta', 'Meta'], ['google', 'Google']] as const).map(([k, label]) => (
+          {([['leadership', 'Leadership'], ['meta', 'Meta'], ['google', 'Google']] as const).map(([k, label]) => (
             <button key={k} onClick={() => setView(k)}
               className={cn('rounded-md px-3 py-1 text-xs font-medium transition-colors',
                 view === k ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground')}>
@@ -176,7 +275,7 @@ export default function AdvertisingTab() {
 
       {longRange && (
         <p className="text-[11px] text-amber-700 dark:text-amber-400">
-          Rangos largos tardan (12 meses ≈ 15 s).
+          Long ranges are slow (12 months ≈ 15s).
         </p>
       )}
 
@@ -186,56 +285,62 @@ export default function AdvertisingTab() {
         </Card>
       )}
 
-      {loading && !data && <p className="text-sm text-muted-foreground animate-pulse">Cargando…</p>}
+      {loading && !data && <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>}
 
       {data && (
         <div className={cn('space-y-4', loading && 'opacity-60')}>
-          {view === 'direccion' && (
+          {view === 'leadership' && (
             <div className="space-y-4">
               <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
                 <StatCard label="MER" value={fmtX(data.blended.mer)} accent="#f59e0b"
-                  sub="Ventas netas ÷ gasto total (Meta+Google). No depende de ninguna atribución: es el árbitro." />
-                <StatCard label="Gasto total" value={fmtAud(data.blended.spendAud)} accent="#94a3b8"
-                  sub="Meta (API) + Google (carga de Juan). AUD." />
-                <StatCard label="Ventas netas" value={fmtAud(data.blended.revenueAud)} accent="#3b82f6"
-                  sub="Mismo número que el tab E-commerce (net ex tax, AUD, día Brisbane)." />
-                <StatCard label="Doble conteo" value={`${data.blended.doubleCountRatio.toFixed(2)}×`} warn accent="#ef4444"
-                  sub={`Las plataformas reclaman ${fmtAud(data.blended.claimedTotalAud)} — se pisan entre sí. Reclamado ÷ reconocido.`} />
+                  sub="Net sales ÷ total ad spend (Meta + Google). Attribution-independent: this is the arbiter." />
+                <StatCard label="Total spend" value={fmtAud(data.blended.spendAud)} usd={data.blended.spendUsd} accent="#94a3b8"
+                  sub="Meta (API) + Google (loaded by Juan). AUD." />
+                <StatCard label="Net sales" value={fmtAud(data.blended.revenueAud)} usd={data.blended.revenueUsd} accent="#3b82f6"
+                  sub="Same figure as the E-commerce tab: AUD, Brisbane day, GST included on AU orders (the B2C explorer strips it — that tab shows ex-tax)." />
+                <StatCard label="Double counting" value={`${data.blended.doubleCountRatio.toFixed(2)}×`} warn accent="#ef4444"
+                  sub={<>The platforms claim {fmtAud(data.blended.claimedTotalAud)}<Usd value={data.blended.claimedTotalUsd} size="table" /> — they overlap each other. Claimed ÷ recognised.</>} />
                 <StatCard label="Overlap" value={fmtNum(data.blended.overlapOrders)} accent="#8b5cf6"
-                  sub="Órdenes con Meta Y Google pagos en el mismo recorrido — el corazón de la discusión." />
-                <StatCard label="CAC blended" value={fmtAud(data.blended.cacBlended)} accent="#10b981"
-                  sub={`Gasto ÷ ${fmtNum(data.blended.newCustomerOrders)} clientes nuevos (1ª compra).`} />
+                  sub="Orders with BOTH Meta and Google paid clicks in the same journey — the heart of the argument." />
+                <StatCard label="Blended CAC" value={fmtAud(data.blended.cacBlended)} usd={data.blended.cacBlendedUsd} accent="#10b981"
+                  sub={`Spend ÷ ${fmtNum(data.blended.newCustomerOrders)} new customers (first purchase).`} />
               </div>
 
               {range.from < '2026-08-06' && (
                 <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                  Ojo: en el tramo anterior al 6-ago los clicks pagos de Google no eran distinguibles del orgánico, así que "doble conteo" y el ROAS de Google de ese período subcuentan a la tienda.
+                  Note: before 6-Aug the paid Google clicks were not distinguishable from organic, so
+                  "double counting" and Google's ROAS for that period under-count the store.
                 </p>
               )}
 
               <Card className="p-4">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                  MER diario · revenue vs spend
+                  Daily MER · revenue vs spend
                 </h3>
                 <MerChart series={data.merSeries} />
                 <p className="text-[11px] text-muted-foreground/70 mt-2">
-                  Los días sin gasto de Google cargado no calculan MER (hueco en la línea) — nunca un cero falso.
+                  Days without loaded Google spend don't compute a MER (gap in the line) — never a false zero.
                 </p>
                 <p className="text-[11px] text-muted-foreground/70 mt-1">
-                  Las órdenes de los últimos 2-3 días pueden aparecer sin recorrido: Shopify tarda en procesarlo. El contador “sin journey” lo muestra.
+                  Orders from the last 2-3 days may show up without a journey: Shopify takes time to
+                  process it. The "no journey" counter reflects this.
                 </p>
                 {data.merSeries.some((p) => p.spendComplete === false && p.mer !== null) && (
                   <p className="text-[11px] text-muted-foreground/70 mt-1">
-                    Los días marcados en el tooltip son MER de Meta solo: Google empezó a gastar el 25-jun-2026, antes no había nada que sumar.
+                    The days flagged in the tooltip are Meta-only MER: Google started spending on
+                    25-Jun-2026, before that there was nothing to add.
                   </p>
                 )}
               </Card>
 
+              <ChannelMix rows={data.channelMix} totalAud={data.blended.revenueAud} />
+
               <p className="text-[11px] text-muted-foreground/70">
-                Regla de lectura: nuestra medición <b>subcuenta</b> (no ve view-through ni cross-device),
-                las plataformas <b>sobrecuentan</b> (se pisan). La verdad queda acotada entre ambas.
-                {' '}Sin clasificar: {fmtNum(data.blended.unclassifiedOrders)} órdenes (drift de UTM) ·
-                sin journey: {fmtNum(data.blended.noJourneyOrders)}.
+                Reading rule: our measurement <b>under-counts</b> (it doesn't see view-through or
+                cross-device), the platforms <b>over-count</b> (they overlap each other). The truth
+                sits bounded between the two.
+                {' '}Unclassified: {fmtNum(data.blended.unclassifiedOrders)} orders (UTM drift) ·
+                no journey: {fmtNum(data.blended.noJourneyOrders)}.
               </p>
             </div>
           )}
@@ -246,19 +351,20 @@ export default function AdvertisingTab() {
               <ChannelPanel ch={data.channels[1]} />
               {range.from < '2026-08-06' && (
                 <p className="text-[11px] text-muted-foreground/70">
-                  Antes del 6-ago Google pago y orgánico eran indistinguibles (sin UTMs): ese tramo aparece como “google mixto”, no como orgánico.
+                  Before 6-Aug Google paid and organic were indistinguishable (no UTMs): that period
+                  shows as "Google mixed", not organic.
                 </p>
               )}
               {range.from < '2026-06-25' && (
                 <p className="text-[11px] text-muted-foreground/70">
-                  Google no gastó nada antes del 25-jun-2026.
+                  Google spent nothing before 25-Jun-2026.
                 </p>
               )}
               <GoogleBuckets rows={data.googleBuckets} />
 
               <Card className="p-4">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                  Carga manual de gasto · Google Ads
+                  Manual spend entry · Google Ads
                 </h3>
                 <GoogleSpendForm onSaved={load} />
               </Card>
@@ -274,19 +380,20 @@ export default function AdvertisingTab() {
  *  The two ROAS side by side ARE the product — never show only one. */
 function ChannelPanel({ ch }: { ch: ChannelView }) {
   const gap = ch.claimedAud - ch.storeLastAud;
+  const gapUsd = ch.claimedUsd - ch.storeLastUsd;
   return (
     <div className="space-y-4">
       <div className="grid gap-3 grid-cols-2 md:grid-cols-5">
-        <StatCard label="Gasto" value={fmtAud(ch.spendAud)} accent="#94a3b8"
-          sub={ch.key === 'google' ? 'Carga manual de Juan hasta que llegue la API.' : 'API de Meta, por campaña.'} />
-        <StatCard label={`${ch.label} reclama`} value={fmtAud(ch.claimedAud)} accent="#ef4444"
-          sub="Lo que declara el panel de la plataforma (su pixel, sus ventanas, view-through incluido)." />
-        <StatCard label="La tienda le reconoce" value={fmtAud(ch.storeLastAud)} accent="#3b82f6"
-          sub="Last click no-directo medido en las órdenes reales — la vara común." />
-        <StatCard label="Brecha" value={fmtAud(gap)} warn accent="#f59e0b"
-          sub="Reclamado − reconocido. No es error: es view-through + pisadas con el otro canal." />
-        <StatCard label="Inició" value={fmtAud(ch.storeFirstAud)} accent="#8b5cf6"
-          sub="First click: ventas cuyo PRIMER contacto fue este canal, las cierre quien las cierre." />
+        <StatCard label="Spend" value={fmtAud(ch.spendAud)} usd={ch.spendUsd} accent="#94a3b8"
+          sub={ch.key === 'google' ? "Manually loaded by Juan until the API arrives." : 'Meta API, by campaign.'} />
+        <StatCard label={`${ch.label} claims`} value={fmtAud(ch.claimedAud)} usd={ch.claimedUsd} accent="#ef4444"
+          sub="What the platform's dashboard reports (its pixel, its windows, view-through included)." />
+        <StatCard label="The store credits it" value={fmtAud(ch.storeLastAud)} usd={ch.storeLastUsd} accent="#3b82f6"
+          sub="Non-direct last click measured on real orders — the common yardstick." />
+        <StatCard label="Gap" value={fmtAud(gap)} usd={gapUsd} warn accent="#f59e0b"
+          sub="Claimed minus recognised. Not an error: it's view-through plus overlap with the other channel." />
+        <StatCard label="Initiated" value={fmtAud(ch.storeFirstAud)} usd={ch.storeFirstUsd} accent="#8b5cf6"
+          sub="First click: sales whose FIRST touch was this channel, whoever closed them." />
       </div>
 
       {ch.note && (
@@ -295,18 +402,18 @@ function ChannelPanel({ ch }: { ch: ChannelView }) {
 
       <Card className="p-4">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-          Por campaña · dos varas lado a lado
+          By campaign · two yardsticks side by side
         </h3>
         <table className="w-full text-sm">
           <thead>
             <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
-              <th className="text-left font-medium pb-1.5">Campaña</th>
-              <th className="text-right font-medium pb-1.5">Gasto</th>
-              <th className="text-right font-medium pb-1.5">Reclama</th>
-              <th className="text-right font-medium pb-1.5">ROAS panel</th>
-              <th className="text-right font-medium pb-1.5">Tienda (cerró)</th>
-              <th className="text-right font-medium pb-1.5">ROAS tienda</th>
-              <th className="text-right font-medium pb-1.5">Inició</th>
+              <th className="text-left font-medium pb-1.5">Campaign</th>
+              <th className="text-right font-medium pb-1.5">Spend</th>
+              <th className="text-right font-medium pb-1.5">Claims</th>
+              <th className="text-right font-medium pb-1.5">Platform ROAS</th>
+              <th className="text-right font-medium pb-1.5">Store (closed)</th>
+              <th className="text-right font-medium pb-1.5">Store ROAS</th>
+              <th className="text-right font-medium pb-1.5">Initiated</th>
             </tr>
           </thead>
           <tbody>
@@ -316,12 +423,12 @@ function ChannelPanel({ ch }: { ch: ChannelView }) {
                   <span className="font-medium">{c.campaign}</span>
                   {c.note && <span className="block text-[10px] text-amber-700 dark:text-amber-400">{c.note}</span>}
                 </td>
-                <td className="py-1.5 text-right tabular-nums">{fmtAud(c.spendAud)}</td>
-                <td className="py-1.5 text-right tabular-nums text-muted-foreground">{fmtAud(c.claimedValueAud)}</td>
+                <td className="py-1.5 text-right tabular-nums">{fmtAud(c.spendAud)}<Usd value={c.spendUsd} size="table" /></td>
+                <td className="py-1.5 text-right tabular-nums text-muted-foreground">{fmtAud(c.claimedValueAud)}<Usd value={c.claimedValueUsd} size="table" /></td>
                 <td className="py-1.5 text-right tabular-nums text-muted-foreground">{fmtX(c.claimedValueAud / c.spendAud)}</td>
-                <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud(c.storeLastClickAud)}</td>
+                <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud(c.storeLastClickAud)}<Usd value={c.storeLastClickUsd} size="table" /></td>
                 <td className="py-1.5 text-right tabular-nums font-medium">{fmtX(c.storeLastClickAud / c.spendAud)}</td>
-                <td className="py-1.5 text-right tabular-nums">{fmtAud(c.storeFirstClickAud)}</td>
+                <td className="py-1.5 text-right tabular-nums">{fmtAud(c.storeFirstClickAud)}<Usd value={c.storeFirstClickUsd} size="table" /></td>
               </tr>
             ))}
           </tbody>
@@ -336,17 +443,17 @@ function GoogleBuckets({ rows }: { rows: GoogleBucketRow[] }) {
   return (
     <Card className="p-4">
       <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-        Google por bucket · desde el 6-ago
+        Google by bucket · since 6-Aug
       </h3>
       <p className="text-[11px] text-muted-foreground/70 mb-3">
-        Antes del 6-ago Google pago y orgánico eran un solo bucket (sin UTMs): esa historia se
-        muestra aparte como “google mixto”, nunca como orgánico.
+        Before 6-Aug Google paid and organic were a single bucket (no UTMs): that history is shown
+        separately as "Google mixed", never as organic.
       </p>
       <table className="w-full text-sm">
         <thead>
           <tr className="text-[11px] uppercase tracking-wider text-muted-foreground">
             <th className="text-left font-medium pb-1.5">Bucket</th>
-            <th className="text-right font-medium pb-1.5">Órdenes</th>
+            <th className="text-right font-medium pb-1.5">Orders</th>
             <th className="text-right font-medium pb-1.5">Net AUD</th>
           </tr>
         </thead>
@@ -358,7 +465,7 @@ function GoogleBuckets({ rows }: { rows: GoogleBucketRow[] }) {
                 {r.note && <span className="block text-[10px] text-muted-foreground/70">{r.note}</span>}
               </td>
               <td className="py-1.5 text-right tabular-nums">{fmtNum(r.orders)}</td>
-              <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud(r.revenueAud)}</td>
+              <td className="py-1.5 text-right tabular-nums font-medium">{fmtAud(r.revenueAud)}<Usd value={r.revenueUsd} size="table" /></td>
             </tr>
           ))}
         </tbody>
