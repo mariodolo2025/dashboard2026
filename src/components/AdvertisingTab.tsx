@@ -1,19 +1,22 @@
 // =============================================================================
-// Advertising tab — mini Triple Whale (STATIC MOCKUP)
+// Advertising tab — mini Triple Whale
 // =============================================================================
-// Spec: docs/DESIGN-ADVERTISING-TAB.md (v2.1). This stage renders MOCK data
-// only (spec §8 paso 2): the screens get approved before any pipeline exists.
-// The data shape is the RPC contract — see advertising/mockData.ts.
+// Spec: docs/DESIGN-ADVERTISING-TAB.md (v2.1). Reads public.advertising_dashboard
+// (Plan 4). The data shape is the RPC contract — see advertising/types.ts.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
   Tooltip as RTooltip, CartesianGrid,
 } from 'recharts';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { ADVERTISING_MOCK } from '@/components/advertising/mockData';
-import type { ChannelView, MerPoint, GoogleBucketRow } from '@/components/advertising/types';
+import { supabase } from '@/lib/supabase';
+import { STORE_DATE_PRESETS, storeToday } from '@/lib/storeDate';
+import type {
+  AdvertisingDashboard, ChannelView, MerPoint, GoogleBucketRow,
+} from '@/components/advertising/types';
 
 const fmtAud = (v: number | null | undefined) =>
   v === null || v === undefined ? '—' : `$${Math.round(v).toLocaleString('en-AU')}`;
@@ -79,13 +82,39 @@ function MerChart({ series }: { series: MerPoint[] }) {
   );
 }
 
+const PRESETS = STORE_DATE_PRESETS;                    // from '@/lib/storeDate'
+const DEFAULT = PRESETS.find((p) => p.label === '30 days')!.range();
+
 export default function AdvertisingTab() {
   const [view, setView] = useState<'direccion' | 'meta' | 'google'>('direccion');
-  const m = ADVERTISING_MOCK;
+  const [range, setRange] = useState<{ from: string; to: string }>(DEFAULT);
+  const [data, setData] = useState<AdvertisingDashboard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError(null);
+    supabase.rpc('advertising_dashboard', { p_from: range.from, p_to: range.to })
+      .then(({ data: res, error: err }) => {
+        if (cancelled) return;
+        if (err) { setError(err.message); setData(null); }
+        else setData(res as AdvertisingDashboard);
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [range.from, range.to]);
+
+  // > 92 days: the 90-day preset stays quiet, 12 months (and anything past it)
+  // warns — that range measured ~15s.
+  const rangeDays = Math.round(
+    (new Date(range.to).getTime() - new Date(range.from).getTime()) / 86_400_000
+  );
+  const longRange = rangeDays > 92;
 
   return (
     <div className="space-y-4">
-      {/* ── Mock banner + view switch (surfaces, not toggles per metric) ── */}
+      {/* ── View switch + date controls ── */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-0.5 rounded-lg bg-muted/50 p-0.5">
           {([['direccion', 'Dirección'], ['meta', 'Meta'], ['google', 'Google']] as const).map(([k, label]) => (
@@ -96,52 +125,104 @@ export default function AdvertisingTab() {
             </button>
           ))}
         </div>
-        <span className="text-[11px] font-medium text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-300/60 rounded-full px-2.5 py-0.5">
-          MAQUETA · números falsos · {m.from} → {m.to}
-        </span>
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1 flex-wrap">
+            {PRESETS.map((p) => (
+              <Button
+                key={p.label}
+                variant="ghost"
+                size="sm"
+                onClick={() => setRange(p.range())}
+                className={cn(
+                  'h-8 rounded-lg px-2.5 text-xs',
+                  p.range().from === range.from && p.range().to === range.to && 'bg-muted text-foreground font-medium'
+                )}
+              >
+                {p.label}
+              </Button>
+            ))}
+            <input
+              type="date"
+              value={range.from}
+              max={range.to}
+              onChange={(e) => setRange({ ...range, from: e.target.value })}
+              className="h-8 rounded-md border bg-background px-2 text-xs ml-1"
+            />
+            <span className="text-xs text-muted-foreground">→</span>
+            <input
+              type="date"
+              value={range.to}
+              min={range.from}
+              max={storeToday()}
+              onChange={(e) => setRange({ ...range, to: e.target.value })}
+              className="h-8 rounded-md border bg-background px-2 text-xs"
+            />
+          </div>
+          <span className="text-[11px] text-muted-foreground/70 whitespace-nowrap">
+            {data ? `${data.from} → ${data.to}` : ''}
+          </span>
+        </div>
       </div>
 
-      {view === 'direccion' && (
-        <div className="space-y-4">
-          <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
-            <StatCard label="MER" value={fmtX(m.blended.mer)} accent="#f59e0b"
-              sub="Ventas netas ÷ gasto total (Meta+Google). No depende de ninguna atribución: es el árbitro." />
-            <StatCard label="Gasto total" value={fmtAud(m.blended.spendAud)} accent="#94a3b8"
-              sub="Meta (API) + Google (carga de Juan). AUD." />
-            <StatCard label="Ventas netas" value={fmtAud(m.blended.revenueAud)} accent="#3b82f6"
-              sub="Mismo número que el tab E-commerce (net ex tax, AUD, día Brisbane)." />
-            <StatCard label="Doble conteo" value={`${m.blended.doubleCountRatio.toFixed(2)}×`} warn accent="#ef4444"
-              sub={`Las plataformas reclaman ${fmtAud(m.blended.claimedTotalAud)} — se pisan entre sí. Reclamado ÷ reconocido.`} />
-            <StatCard label="Overlap" value={fmtNum(m.blended.overlapOrders)} accent="#8b5cf6"
-              sub="Órdenes con Meta Y Google pagos en el mismo recorrido — el corazón de la discusión." />
-            <StatCard label="CAC blended" value={fmtAud(m.blended.cacBlended)} accent="#10b981"
-              sub={`Gasto ÷ ${fmtNum(m.blended.newCustomerOrders)} clientes nuevos (1ª compra).`} />
-          </div>
-
-          <Card className="p-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-              MER diario · revenue vs spend
-            </h3>
-            <MerChart series={m.merSeries} />
-            <p className="text-[11px] text-muted-foreground/70 mt-2">
-              Los días sin gasto de Google cargado no calculan MER (hueco en la línea) — nunca un cero falso.
-            </p>
-          </Card>
-
-          <p className="text-[11px] text-muted-foreground/70">
-            Regla de lectura: nuestra medición <b>subcuenta</b> (no ve view-through ni cross-device),
-            las plataformas <b>sobrecuentan</b> (se pisan). La verdad queda acotada entre ambas.
-            {' '}Sin clasificar: {fmtNum(m.blended.unclassifiedOrders)} órdenes (drift de UTM) ·
-            sin journey: {fmtNum(m.blended.noJourneyOrders)}.
-          </p>
-        </div>
+      {longRange && (
+        <p className="text-[11px] text-amber-700 dark:text-amber-400">
+          Rangos largos tardan (12 meses ≈ 15 s).
+        </p>
       )}
 
-      {view === 'meta' && <ChannelPanel ch={m.channels[0]} />}
-      {view === 'google' && (
-        <div className="space-y-4">
-          <ChannelPanel ch={m.channels[1]} />
-          <GoogleBuckets rows={m.googleBuckets} />
+      {error && (
+        <Card className="p-4 border-red-200 bg-red-50 dark:bg-red-950/30">
+          <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
+        </Card>
+      )}
+
+      {loading && !data && <p className="text-sm text-muted-foreground animate-pulse">Cargando…</p>}
+
+      {data && (
+        <div className={cn('space-y-4', loading && 'opacity-60')}>
+          {view === 'direccion' && (
+            <div className="space-y-4">
+              <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
+                <StatCard label="MER" value={fmtX(data.blended.mer)} accent="#f59e0b"
+                  sub="Ventas netas ÷ gasto total (Meta+Google). No depende de ninguna atribución: es el árbitro." />
+                <StatCard label="Gasto total" value={fmtAud(data.blended.spendAud)} accent="#94a3b8"
+                  sub="Meta (API) + Google (carga de Juan). AUD." />
+                <StatCard label="Ventas netas" value={fmtAud(data.blended.revenueAud)} accent="#3b82f6"
+                  sub="Mismo número que el tab E-commerce (net ex tax, AUD, día Brisbane)." />
+                <StatCard label="Doble conteo" value={`${data.blended.doubleCountRatio.toFixed(2)}×`} warn accent="#ef4444"
+                  sub={`Las plataformas reclaman ${fmtAud(data.blended.claimedTotalAud)} — se pisan entre sí. Reclamado ÷ reconocido.`} />
+                <StatCard label="Overlap" value={fmtNum(data.blended.overlapOrders)} accent="#8b5cf6"
+                  sub="Órdenes con Meta Y Google pagos en el mismo recorrido — el corazón de la discusión." />
+                <StatCard label="CAC blended" value={fmtAud(data.blended.cacBlended)} accent="#10b981"
+                  sub={`Gasto ÷ ${fmtNum(data.blended.newCustomerOrders)} clientes nuevos (1ª compra).`} />
+              </div>
+
+              <Card className="p-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+                  MER diario · revenue vs spend
+                </h3>
+                <MerChart series={data.merSeries} />
+                <p className="text-[11px] text-muted-foreground/70 mt-2">
+                  Los días sin gasto de Google cargado no calculan MER (hueco en la línea) — nunca un cero falso.
+                </p>
+              </Card>
+
+              <p className="text-[11px] text-muted-foreground/70">
+                Regla de lectura: nuestra medición <b>subcuenta</b> (no ve view-through ni cross-device),
+                las plataformas <b>sobrecuentan</b> (se pisan). La verdad queda acotada entre ambas.
+                {' '}Sin clasificar: {fmtNum(data.blended.unclassifiedOrders)} órdenes (drift de UTM) ·
+                sin journey: {fmtNum(data.blended.noJourneyOrders)}.
+              </p>
+            </div>
+          )}
+
+          {view === 'meta' && <ChannelPanel ch={data.channels[0]} />}
+          {view === 'google' && (
+            <div className="space-y-4">
+              <ChannelPanel ch={data.channels[1]} />
+              <GoogleBuckets rows={data.googleBuckets} />
+            </div>
+          )}
         </div>
       )}
     </div>
