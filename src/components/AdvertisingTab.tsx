@@ -66,6 +66,9 @@ function MerChart({ series }: { series: MerPoint[] }) {
                   <div className="flex justify-between gap-4"><span className="text-muted-foreground">Revenue</span><span className="tabular-nums">{fmtAud(p.revenueAud)}</span></div>
                   <div className="flex justify-between gap-4"><span className="text-muted-foreground">Spend</span><span className="tabular-nums">{p.spendAud === null ? 'incompleto' : fmtAud(p.spendAud)}</span></div>
                   <div className="flex justify-between gap-4"><span className="text-muted-foreground">MER</span><span className="tabular-nums font-medium" style={{ color: '#f59e0b' }}>{p.mer === null ? '— (gasto sin cargar)' : fmtX(p.mer)}</span></div>
+                  {p.spendComplete === false && p.mer !== null && (
+                    <div className="text-[11px] text-amber-700 dark:text-amber-400">Solo gasto de Meta — Google todavía no gastaba</div>
+                  )}
                 </div>
               );
             }}
@@ -197,6 +200,12 @@ export default function AdvertisingTab() {
                   sub={`Gasto ÷ ${fmtNum(data.blended.newCustomerOrders)} clientes nuevos (1ª compra).`} />
               </div>
 
+              {range.from < '2026-08-06' && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                  Ojo: en el tramo anterior al 6-ago los clicks pagos de Google no eran distinguibles del orgánico, así que "doble conteo" y el ROAS de Google de ese período subcuentan a la tienda.
+                </p>
+              )}
+
               <Card className="p-4">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
                   MER diario · revenue vs spend
@@ -208,6 +217,11 @@ export default function AdvertisingTab() {
                 <p className="text-[11px] text-muted-foreground/70 mt-1">
                   Las órdenes de los últimos 2-3 días pueden aparecer sin recorrido: Shopify tarda en procesarlo. El contador “sin journey” lo muestra.
                 </p>
+                {data.merSeries.some((p) => p.spendComplete === false && p.mer !== null) && (
+                  <p className="text-[11px] text-muted-foreground/70 mt-1">
+                    Los días marcados en el tooltip son MER de Meta solo: Google empezó a gastar el 25-jun-2026, antes no había nada que sumar.
+                  </p>
+                )}
               </Card>
 
               <p className="text-[11px] text-muted-foreground/70">
@@ -260,6 +274,10 @@ function ChannelPanel({ ch }: { ch: ChannelView }) {
         <StatCard label="Inició" value={fmtAud(ch.storeFirstAud)} accent="#8b5cf6"
           sub="First click: ventas cuyo PRIMER contacto fue este canal, las cierre quien las cierre." />
       </div>
+
+      {ch.note && (
+        <p className="text-[11px] text-amber-700 dark:text-amber-400">{ch.note}</p>
+      )}
 
       <Card className="p-4">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
