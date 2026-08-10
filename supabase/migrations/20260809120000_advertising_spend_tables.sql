@@ -2,8 +2,8 @@
 -- Advertising — spend & claims tables (Bloque 2)
 -- =============================================================================
 -- Applied as migration 'advertising_spend_tables' on 2026-08-09 via MCP.
--- Design: docs/ADVERTISING/SPEC.md §4 Bloque 2.
--- Plan: docs/ADVERTISING/plans/03-gasto.md (Task 1).
+-- Design: ADVERTISING/SPEC.md §4 Bloque 2.
+-- Plan: ADVERTISING/plans/03-gasto.md (Task 1).
 -- 2026-08-09: security_invoker=on added (migration 'ad_spend_unified_security_invoker')
 -- — the view must not bypass the base tables' RLS.
 -- 2026-08-10: Task 4 (Plan 3) — Meta campaign backfill, 13 months, verified.

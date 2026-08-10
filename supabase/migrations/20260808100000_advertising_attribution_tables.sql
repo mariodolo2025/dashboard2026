@@ -2,7 +2,7 @@
 -- Advertising — attribution capture tables (Bloque 1, raw journey)
 -- =============================================================================
 -- Applied as migration 'advertising_attribution_tables' on 2026-08-09 via MCP.
--- Design: docs/ADVERTISING/SPEC.md §4 Bloque 1.
+-- Design: ADVERTISING/SPEC.md §4 Bloque 1.
 -- 2026-08-09: singleton guard added as migration 'advertising_sync_state_singleton_guard'.
 -- 2026-08-09: order_created_at added + order_date redefined to Brisbane day
 -- (migration 'advertising_attribution_created_at').

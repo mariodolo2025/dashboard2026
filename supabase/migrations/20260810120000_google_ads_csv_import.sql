@@ -4,7 +4,7 @@
 -- Applied 2026-08-10 via MCP as two migrations:
 --   'google_ads_daily_campaign_name_raw'          (schema)
 --   'google_ads_daily_csv_import_202606_202608'   (data)
--- Design: docs/ADVERTISING/SPEC.md §4 Bloque 2 · Plan: docs/ADVERTISING/plans/03-gasto.md
+-- Design: ADVERTISING/SPEC.md §4 Bloque 2 · Plan: ADVERTISING/plans/03-gasto.md
 --
 -- WHY A CSV AT ALL
 -- The Google Ads API needs a developer token (an application to Google, still
