@@ -1,6 +1,11 @@
 -- =============================================================================
 -- Advertising Bloque 3 — advertising_dashboard(p_from, p_to) RPC
 -- =============================================================================
+-- SUPERSEDED 2026-08-11: the deployed body now lives in
+-- 20260811110000_advertising_dashboard_v3.sql (additive: orders/NC counters,
+-- overlap split, liveOrders, unitEconomics, plan). This file stays as the
+-- v1/v2 history and verification record.
+-- =============================================================================
 -- Applied: 2026-08-10 via MCP apply_migration, name `advertising_dashboard_rpc`
 --   (applied twice: first version read advertising_order_channels directly and
 --   cost ~7.9s ANY window — the view's inner CTE is referenced 3x, so Postgres
