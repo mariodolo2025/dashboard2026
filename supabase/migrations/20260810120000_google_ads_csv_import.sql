@@ -1,0 +1,60 @@
+-- =============================================================================
+-- Google Ads — manual CSV load path (schema + first import)
+-- =============================================================================
+-- Applied 2026-08-10 via MCP as two migrations:
+--   'google_ads_daily_campaign_name_raw'          (schema)
+--   'google_ads_daily_csv_import_202606_202608'   (data)
+-- Design: docs/DESIGN-ADVERTISING-TAB.md §4 Bloque 2 · Plan: docs/PLAN-ADVERTISING-03-GASTO.md
+--
+-- WHY A CSV AT ALL
+-- The Google Ads API needs a developer token (an application to Google, still
+-- pending). Mario is admin on the account, so the account's own daily export is
+-- the bridge until the API lands. The loader edge function `google-ads-load`
+-- exists for the tab's form (Plan 5) and requires a real dashboard session; a
+-- bulk historical import is done here instead, service-role, with the same
+-- validation applied in the parser.
+--
+-- 1) SCHEMA
+alter table public.google_ads_daily add column campaign_name_raw text;
+comment on column public.google_ads_daily.campaign_name_raw is
+  'Campaign name as it appears in the Google Ads account. Several campaigns can map to one enum value (e.g. PMax + Standard Shopping -> shopping); joined with " + " when a day aggregates more than one.';
+--
+-- The account runs FOUR campaigns; the closed enum has three values. Mapping:
+--   'Search - Brand - Pesado 58.5 - 2026'              -> brand-search
+--   'Pesado 58.5 - Non Brand Search Categories - 2026' -> non-brand
+--   'Pesado58.5 - Smart Shopping - All Catalog - 2026' -> shopping   (Performance Max, last spend 2026-07-31)
+--   'Pesado 58.5 - Standar Shopping - AU'              -> shopping   (Standard Shopping, first spend 2026-08-02)
+-- The two shopping-shaped campaigns never overlap on a day (PMax stopped the
+-- day before Standard started), so no (date, campaign) collision occurred. The
+-- parser aggregates by (date, mapped) regardless, so a future overlap sums
+-- instead of failing. campaign_name_raw preserves which one it was — the enum
+-- alone would erase a real distinction (PMax also serves search/display/YouTube,
+-- Standard Shopping does not).
+--
+-- 2) DATA — how to reproduce / repeat
+-- Export: Google Ads -> Campaigns -> Report editor -> Custom -> Table,
+--   rows Day + Campaign, columns Cost + Conversions + Conv. value, date range,
+--   Download .csv. (The Campaigns table's Segment > Time > Day is greyed out on
+--   this account; Report editor has no such restriction.)
+-- Load:  node scripts/parse-google-ads-csv.js <export.csv> out.sql
+--   -> prints totals + campaigns seen, writes an idempotent upsert.
+--   The parser FAILS LOUD on an unmapped campaign name rather than dropping it.
+--
+-- First import: export "May 1 2026 - August 10 2026", 119 rows.
+--   account currency AUD (no conversion — google_ads_daily.spend_aud is AUD)
+--   first spending day 2026-06-25 (nothing before it, though May was requested)
+--   47 calendar days, 47 days present -> NO gaps, so no MER holes in the window
+--   totals loaded: spend A$21,872.96 · conversions 2,031.99 · claimed value A$231,251.60
+--   Google's own UI for the same range showed A$21,871.80 / 2,032.00 / 231,251.57
+--   (delta A$1.16 on spend: the UI figure was read minutes before the export and
+--    the current day was still accruing — immaterial, 0.005%).
+--
+-- CAVEAT FOR WHOEVER READS THESE NUMBERS
+-- Google reports conversions on the date of the CLICK, not the date of the
+-- purchase. The store side (advertising_dashboard) books revenue on the order's
+-- Brisbane day. Claimed-vs-actual per day is therefore not a like-for-like
+-- comparison; over a window it is.
+--
+-- The 119-row insert itself is not reproduced here: it is regenerated from the
+-- export by the parser above, and the table is the record. What matters for
+-- review is the mapping, the totals, and the gap check — all stated above.
