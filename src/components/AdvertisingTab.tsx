@@ -205,6 +205,9 @@ export default function AdvertisingTab() {
                 <p className="text-[11px] text-muted-foreground/70 mt-2">
                   Los días sin gasto de Google cargado no calculan MER (hueco en la línea) — nunca un cero falso.
                 </p>
+                <p className="text-[11px] text-muted-foreground/70 mt-1">
+                  Las órdenes de los últimos 2-3 días pueden aparecer sin recorrido: Shopify tarda en procesarlo. El contador “sin journey” lo muestra.
+                </p>
               </Card>
 
               <p className="text-[11px] text-muted-foreground/70">
@@ -220,6 +223,16 @@ export default function AdvertisingTab() {
           {view === 'google' && (
             <div className="space-y-4">
               <ChannelPanel ch={data.channels[1]} />
+              {range.from < '2026-08-06' && (
+                <p className="text-[11px] text-muted-foreground/70">
+                  Antes del 6-ago Google pago y orgánico eran indistinguibles (sin UTMs): ese tramo aparece como “google mixto”, no como orgánico.
+                </p>
+              )}
+              {range.from < '2026-06-25' && (
+                <p className="text-[11px] text-muted-foreground/70">
+                  Google no gastó nada antes del 25-jun-2026.
+                </p>
+              )}
               <GoogleBuckets rows={data.googleBuckets} />
             </div>
           )}
