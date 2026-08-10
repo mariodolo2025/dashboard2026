@@ -35,6 +35,8 @@ export interface ChannelCampaign {
   storeLastClickUsd: number;
   storeFirstClickAud: number;// sales this campaign INITIATED
   storeFirstClickUsd: number;
+  orders: number;            // last-click orders the store credits to this campaign
+  newCustomerOrders: number; // of those, first purchases (customer_order_index = 1)
   note?: string;             // e.g. shopping proxy caveat
 }
 
@@ -49,6 +51,8 @@ export interface ChannelView {
   storeLastUsd: number;
   storeFirstAud: number;
   storeFirstUsd: number;
+  orders: number;            // last-click orders credited to this channel
+  newCustomerOrders: number; // of those, first purchases — CPA/NC-CPA divide these
   campaigns: ChannelCampaign[];
   note?: string;             // channel-level caveat (e.g. Google pre-gate under-count)
 }
@@ -74,6 +78,61 @@ export interface ChannelMixRow {
   isPaid: boolean;           // meta-paid + the google-*paid* buckets
 }
 
+/** Paid-touch split of the window's journeys (C1 Channel Overlap). Sides are
+ * exclusive: 'only*' = touched that platform's paid click and NOT the other's.
+ * bothOrders === blended.overlapOrders by construction. */
+export interface OverlapSplit {
+  bothOrders: number;
+  onlyMetaOrders: number;
+  onlyGoogleOrders: number;
+  bothRevenueAud: number;
+  bothRevenueUsd: number;
+  onlyMetaRevenueAud: number;
+  onlyMetaRevenueUsd: number;
+  onlyGoogleRevenueAud: number;
+  onlyGoogleRevenueUsd: number;
+}
+
+/** One row of the Live Orders ticker (C2). WINDOW-INDEPENDENT: always the 12
+ * most recent orders by creation time, whatever range the tab shows. */
+export interface LiveOrder {
+  name: string;              // visible number (PSD#65185); '#'+id when not yet captured
+  createdAt: string;         // 'YYYY-MM-DD HH:MM' Brisbane
+  netAud: number | null;     // null = sales lines not synced yet (mid-sync) — never 0
+  netUsd: number | null;
+  lastBucket: string;        // raw bucket keys — UI owns labels
+  firstBucket: string;
+  touchesMeta: boolean;      // a Meta paid click anywhere in the journey
+  touchesGoogle: boolean;
+}
+
+/** Juan's unit-economics constants (monthly workbook, stored in
+ * advertising_unit_economics). USD as the workbook states them. The two MER
+ * lines are DERIVED by the RPC from the inputs so they can never drift:
+ * breakevenMer = 1/cm1Pct · targetMer = 1/(cm1Pct - targetMarginPct -
+ * fixedCostsUsd/baselineRevenueUsd). null when no row covers the window. */
+export interface UnitEconomics {
+  month: string;             // 'YYYY-MM' the workbook describes
+  cm1Pct: number;            // 0.706
+  fixedCostsUsd: number;
+  revenuePerOrderUsd: number;
+  pctNewCustomers: number;   // 0.924
+  targetMarginPct: number;   // 0.20
+  baselineRevenueUsd: number;
+  breakevenMer: number;      // 1.42
+  targetMer: number | null;  // 2.77 · null = target unreachable at current economics
+  source: string;
+}
+
+/** Committed monthly budget plan (B4). null = no plan committed for the month
+ * of p_to; the MTD-vs-plan tracking only renders when present. */
+export interface MonthlyPlan {
+  month: string;             // 'YYYY-MM'
+  plannedSpendUsd: number;
+  targetProfitUsd: number;
+  notes: string | null;
+}
+
 export interface AdvertisingDashboard {
   from: string;
   to: string;
@@ -97,4 +156,41 @@ export interface AdvertisingDashboard {
   channels: ChannelView[];
   googleBuckets: GoogleBucketRow[];
   channelMix: ChannelMixRow[];
+  overlap: OverlapSplit;
+  liveOrders: LiveOrder[];
+  unitEconomics: UnitEconomics | null;
+  plan: MonthlyPlan | null;
+}
+
+// ── advertising_incrementality() — separate RPC, lazy-loaded by Leadership ──
+
+export interface IncrementalityMonth {
+  month: string;             // 'YYYY-MM'
+  bagAud: number;            // the WHOLE Google bag (paid + organic + pre-gate mixto)
+  restAud: number;           // store total minus the bag
+  ratioPct: number;          // 100 * bag / rest — never "% of total" (self-inflating)
+  googleOrders: number;
+  googleSpendAud: number;
+}
+
+export interface AdvertisingIncrementality {
+  monthly: IncrementalityMonth[];
+  /** Counterfactual band: 326 rolling 10-day windows over the zero-spend period
+   * (frozen constants — the period is closed, they can never change). */
+  band: {
+    windows: number;
+    windowDays: number;
+    period: string;
+    minPct: number; p25Pct: number; medianPct: number; p75Pct: number; maxPct: number;
+    samePeriodAug2025Pct: number;
+  };
+  last10Days: { to: string; bagAud: number; ratioPct: number };
+  /** Brand-cut natural experiment (2026-08-06, $375/day -> $50/day). If the bag
+   * holds while brand spend stays cut, brand was harvesting. Verdict 2026-08-31. */
+  brandCut: {
+    cutDate: string;
+    verdictDate: string;
+    pre: { from: string; to: string; days: number; bagAud: number; ratioPct: number; brandSpendPerDayAud: number };
+    post: { from: string; to: string; days: number; bagAud: number; ratioPct: number; brandSpendPerDayAud: number };
+  };
 }
