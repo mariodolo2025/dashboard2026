@@ -20,7 +20,7 @@ El MER (ventas ÷ gasto total) no depende de ninguna atribución: es el árbitro
 | 1 · Captura de atribución | **En producción.** 59k órdenes con su recorrido completo, 13 meses, se actualiza sola 3×/día |
 | 2 · Gasto y reclamos | **En producción.** Meta por API (cuenta + campaña, 13 meses); Google cargado del export de la cuenta (25-jun → 10-ago) |
 | 3 · Motor | **En producción.** Buckets, last-click no-directo, first click, MER, overlap, claimed-vs-actual |
-| 4 · Tab | **Conectado a datos reales.** Falta la validación visual de Mario |
+| 4 · Tab | **Conectado a datos reales.** Plan 6 en ejecución (11-ago): veredicto piso/techo, incrementalidad, simulador, overlap, live orders, help |
 | 5 · IA, pixel propio | v2, no empezado |
 
 **Rama de trabajo:** `feat/advertising-tab` (sin mergear a `main`).

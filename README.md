@@ -6,7 +6,8 @@ React + TypeScript dashboard: análisis por canal (Unleashed, Shopify, Meta), **
 
 | Documento | Qué cubre |
 |---|---|
-| [`docs/HANDOVER-2026-08-04.md`](docs/HANDOVER-2026-08-04.md) | **El más reciente.** Tres incidentes de datos, rendimiento del Web Upgrade, calendario, refunds, revaluación del stock histórico. |
+| [`docs/HANDOVER-2026-08-05-TIMEOUT.md`](docs/HANDOVER-2026-08-05-TIMEOUT.md) | **El más reciente y el pendiente más urgente.** Por qué el dashboard tira `statement timeout`, qué lo causó y qué opciones hay. Diagnosticado, nada aplicado. |
+| [`docs/HANDOVER-2026-08-04.md`](docs/HANDOVER-2026-08-04.md) | Tres incidentes de datos, rendimiento del Web Upgrade, calendario, refunds, revaluación del stock histórico. |
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | 28-jul: incidente de demanda destruida, auditoría de AIM 2026. |
 | [`docs/HANDOVER-WEB-UPGRADE.md`](docs/HANDOVER-WEB-UPGRADE.md) | El panel de Web Upgrade en detalle. |
 | [`docs/HANDOVER-META-COMPATIBILITY-CAMPAIGN.md`](docs/HANDOVER-META-COMPATIBILITY-CAMPAIGN.md) | Evidencia y restricciones para una campaña de Meta hacia el Compatibility Guide. |
@@ -30,6 +31,15 @@ Cada una salió de un incidente real; el detalle está en los handovers.
    navegador.
 7. **Un espejo o caché que deriva en silencio es peor que no tenerlo** — siempre
    con función de reconciliación.
+8. **Un evento de telemetría que se emite por página se multiplica por el tráfico
+   del sitio.** La barra de compatibilidad sumó 74.360 eventos en 6 días — el 43%
+   de todo lo ingerido — y duplicó el tiempo de apertura del panel. Emitir **una
+   vez por sesión** da la métrica que se quiere (CTR por sesión expuesta) y no
+   escala con el tráfico.
+9. **La instancia es chica: 224 MB de caché para una base de 632 MB.** Antes de
+   agregar un bloque a una RPC, mirar si escanea una tabla entera sin filtro de
+   fecha. Y no tocar `work_mem` ni agregar índices "obvios" sin medir: ambas
+   cosas se probaron el 4-ago y empeoraron.
 
 ## Features
 
@@ -198,7 +208,8 @@ Panel modal (`src/components/WebUpgradeTab.tsx`, abierto desde `App.tsx`) que mi
 | Delta de familias | Regla deliberada: el filtro define la población y el delta de familia es el **promedio** de los % de sus variantes visibles (no el ratio de sumas). Documentada en el código y en el tooltip de la columna. |
 | Tooltips | ~36 definiciones `data-def` con una sola tarjeta flotante delegada en la raíz del panel (funciona sobre SVG). |
 | Frescura | Cron `shopify-sales-fast` cada ~5 min (configurable en Config → Connections) + reconciliación completa 3×/día. |
-| Lectura | La RPC lee **`upgrade_events_slim`**, espejo estrecho de `upgrade_events` mantenido por trigger (7 claves del payload + el día ya calculado). 151 MB → 41 MB; abrir el panel pasó de ~16 s en frío a 0,55 s (1 día) / 4,3 s (30 días). `upgrade_events_slim_reconcile()` lo reconstruye si deriva. |
+| Lectura | La RPC lee **`upgrade_events_slim`**, espejo estrecho de `upgrade_events` mantenido por trigger (7 claves del payload + el día ya calculado). En operación normal nadie lee la tabla cruda. `upgrade_events_slim_reconcile()` lo reconstruye si deriva. |
+| ⚠️ Rendimiento | El espejo bajó la apertura de ~16 s a 0,55 s (4-ago) pero **el volumen de eventos se duplicó el 30-jul** con la barra de compatibilidad: 1 semana pasó de 1,1 s a 3,9 s y 30 días de 4,3 s a 9,4 s en 24 horas. La RPC tiene techo de 25 s y los máximos ya llegan a 22 s. Ver [`docs/HANDOVER-2026-08-05-TIMEOUT.md`](docs/HANDOVER-2026-08-05-TIMEOUT.md). |
 | Entry point | `compatibilityBar` mide la barra móvil y el botón de escritorio **por separado**, y está **excluido del CTE de módulos**: adentro contaría cada página del sitio como sesión expuesta de la guía. Se mide **fuera** de la guía — es adquisición. |
 | Refunds | Panel en el daily brief: corta ambas cohortes a la misma **edad de pedido** y separa cancelaciones (0-2 d) de devoluciones (3+ d). Con menos de 30 eventos por lado dice que no alcanza en vez de mostrar un porcentaje. |
 | Calendario | Los eventos se agrupan por **día UTC**; las ventas por **día de Brisbane**. Decisión tomada — los totales por rango son comparables entre tabs, las comparaciones día a día no. |
