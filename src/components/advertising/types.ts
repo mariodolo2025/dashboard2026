@@ -53,6 +53,8 @@ export interface ChannelView {
   storeFirstUsd: number;
   orders: number;            // last-click orders credited to this channel
   newCustomerOrders: number; // of those, first purchases — CPA/NC-CPA divide these
+  newCustomerRevenueAud: number; // revenue of those first purchases — NC-ROAS
+  newCustomerRevenueUsd: number;
   campaigns: ChannelCampaign[];
   note?: string;             // channel-level caveat (e.g. Google pre-gate under-count)
 }
@@ -149,6 +151,9 @@ export interface AdvertisingDashboard {
     cacBlended: number;          // spend ÷ first-time-customer orders
     cacBlendedUsd: number;
     newCustomerOrders: number;
+    orders: number;              // every order in the window — AOV and new-customer share
+    newCustomerRevenueAud: number; // revenue of first purchases — blended NC-ROAS
+    newCustomerRevenueUsd: number;
     unclassifiedOrders: number;  // UTM drift alarm (spec §7)
     noJourneyOrders: number;     // ready=false aged out (spec Bloque 1)
   };

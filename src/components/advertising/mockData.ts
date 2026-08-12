@@ -38,6 +38,11 @@ export const ADVERTISING_MOCK: AdvertisingDashboard = {
     cacBlended: 38.9,
     cacBlendedUsd: usd(38.9),
     newCustomerOrders: 895,
+    // orders == sum(channelMix[].orders) below, so AOV and the new-customer
+    // share are consistent with the mix table in the fixture too.
+    orders: 4_947,
+    newCustomerRevenueAud: 198_600,
+    newCustomerRevenueUsd: usd(198_600),
     unclassifiedOrders: 12,
     noJourneyOrders: 4,
   },
@@ -75,6 +80,8 @@ export const ADVERTISING_MOCK: AdvertisingDashboard = {
       storeFirstUsd: usd(68_900),
       orders: 1_180,
       newCustomerOrders: 640,
+      newCustomerRevenueAud: 41_800,
+      newCustomerRevenueUsd: usd(41_800),
       campaigns: [
         { campaign: 'HD Shower Screen — Campaign NEW Videos', spendAud: 11_200, spendUsd: usd(11_200), claimedValueAud: 36_800, claimedValueUsd: usd(36_800), storeLastClickAud: 24_100, storeLastClickUsd: usd(24_100), storeFirstClickAud: 31_500, storeFirstClickUsd: usd(31_500), orders: 545, newCustomerOrders: 290 },
         { campaign: 'AUS De’Longhi Sales Campaign — Video', spendAud: 8_400, spendUsd: usd(8_400), claimedValueAud: 24_300, claimedValueUsd: usd(24_300), storeLastClickAud: 16_800, storeLastClickUsd: usd(16_800), storeFirstClickAud: 21_200, storeFirstClickUsd: usd(21_200), orders: 380, newCustomerOrders: 205 },
@@ -94,6 +101,8 @@ export const ADVERTISING_MOCK: AdvertisingDashboard = {
       storeFirstUsd: usd(6_100),
       orders: 141,
       newCustomerOrders: 77,
+      newCustomerRevenueAud: 9_400,
+      newCustomerRevenueUsd: usd(9_400),
       campaigns: [
         { campaign: 'brand-search', spendAud: 700, spendUsd: usd(700), claimedValueAud: 6_200, claimedValueUsd: usd(6_200), storeLastClickAud: 5_900, storeLastClickUsd: usd(5_900), storeFirstClickAud: 1_200, storeFirstClickUsd: usd(1_200), orders: 58, newCustomerOrders: 12 },
         { campaign: 'non-brand', spendAud: 4_830, spendUsd: usd(4_830), claimedValueAud: 7_400, claimedValueUsd: usd(7_400), storeLastClickAud: 5_100, storeLastClickUsd: usd(5_100), storeFirstClickAud: 3_600, storeFirstClickUsd: usd(3_600), orders: 49, newCustomerOrders: 38 },

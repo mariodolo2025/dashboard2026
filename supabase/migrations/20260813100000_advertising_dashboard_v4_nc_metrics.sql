@@ -1,0 +1,46 @@
+-- =============================================================================
+-- Advertising Plan 7 — advertising_dashboard v4: new-customer metrics
+-- =============================================================================
+-- Applied 2026-08-13 via MCP apply_migration, name
+-- `advertising_dashboard_v4_nc_metrics`. Supersedes the body in
+-- 20260811110000_advertising_dashboard_v3.sql (that file keeps the v3 history).
+--
+-- Plan: ADVERTISING/plans/07-rediseno-pantalla.md — the redesigned first screen
+-- needs NC-ROAS, AOV and new-customer share, which v3 could not express.
+--
+-- MAINTENANCE RULE (unchanged): this body inlines the classification logic of
+-- advertising_order_channels for window pushdown. A change to
+-- advertising_bucket or to the view's first/last-non-direct resolution MUST be
+-- mirrored here and the equivalence re-proven.
+--
+-- WHAT v4 ADDS (purely additive — 16 lines; produced by patching the deployed
+-- v3 body, diffed line by line before applying, so nothing else moved):
+--   bucket_last gains nc_rev / nc_rev_usd (revenue of first-purchase orders),
+--   and from those:
+--     blended.orders                    — every order in the window (AOV, share)
+--     blended.newCustomerRevenue{Aud,Usd}
+--     channels[].newCustomerRevenue{Aud,Usd}
+--   The UI does the divisions: AOV = revenue/orders, new-customer share =
+--   newCustomerOrders/orders, NC-ROAS = newCustomerRevenue/spend.
+--
+-- WHY nc_rev is coalesced to 0 and not left null: a bucket with zero
+-- first-purchase orders genuinely earned zero new-customer revenue — that is
+-- data, not a gap. The null-never-0 rule covers missing data, not true zeros.
+--
+-- VERIFIED immediately after applying (window 2026-08-06..12):
+--   * frozen v3 figures unchanged: revenueAud 119,595.38 · mer 2.73 ·
+--     unitEconomics.targetMer 2.77
+--   * blended.orders 1,104 — Triple Whale counted 1,103 for the same window
+--     (calibración 13-ago, one order apart)
+--   * newCustomerOrders 958 (86.8%) — TW's New Customer Orders 957, 87%
+--   * NC-ROAS: blended 2.32 · Meta 1.10 · Google 3.65
+--   * AOV A$108.33 (tax-inclusive, no shipping). TW shows US$73 because its AOV
+--     is ex-tax and ex-shipping — different basis, documented in
+--     ADVERTISING/context/calibracion-triple-whale-2026-08-13.md
+--
+-- Contract: src/components/advertising/types.ts updated in the same commit.
+-- Access posture unchanged: authenticated + service_role, anon revoked.
+--
+-- The body is not reproduced here: it is the v3 body plus the additions listed
+-- above. What matters for review is the diff, which is stated in full.
+-- =============================================================================
