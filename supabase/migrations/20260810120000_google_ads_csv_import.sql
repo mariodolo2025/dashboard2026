@@ -58,3 +58,20 @@ comment on column public.google_ads_daily.campaign_name_raw is
 -- The 119-row insert itself is not reproduced here: it is regenerated from the
 -- export by the parser above, and the table is the record. What matters for
 -- review is the mapping, the totals, and the gap check — all stated above.
+--
+-- 3) SECOND IMPORT — refresh of 2026-08-13 (executed via execute_sql; upsert,
+--    updated_by 'csv-import-to-2026-08-13')
+-- Export "Jun 25 - Aug 13 2026" (ADVERTISING/data/google-ads-daily-2026-06-25_
+-- 2026-08-13.csv). 128 rows, 50 days, NO gaps; loaded totals == parser totals:
+-- spend A$23,031.33 · conversions 2,128.00 · claimed value A$242,319.45.
+-- WHY a full-range refresh: (a) the 2026-08-10 rows from the first import were
+-- a partial-morning snapshot (spend A$159 -> A$411, claims A$1,929 -> A$3,982
+-- after this refresh) — Mario read that day in the tab and the store seemed to
+-- out-earn Google's own claims; (b) Google keeps writing conversions back onto
+-- past click dates, so re-loading the whole range refreshes old claims too.
+-- 2026-08-13 is itself a partial day (exported that morning) — next load fixes
+-- it; the last loaded day is ALWAYS provisional until re-exported.
+-- PARSER since this import: resolves columns BY NAME from the header (this
+-- export came 'Campaign,Day,Currency code,Cost,...' vs the first one's
+-- 'Day,Campaign,...'), ESM import (repo package.json is "type":"module"),
+-- updated_by stamped from the export's max date.
