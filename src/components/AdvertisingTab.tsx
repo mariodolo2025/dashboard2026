@@ -136,9 +136,9 @@ function StatCard({ label, value, usd, sub, accent, warn }: {
 
 /** A headline card: the same shell as StatCard plus the period-comparison delta
  *  and an optional colour verdict on the value itself. */
-function KpiCard({ label, value, usd, sub, accent, valueClass, delta, chip }: {
+function KpiCard({ label, value, usd, sub, accent, valueClass, delta, chip, tip }: {
   label: string; value: string; usd?: number | null; sub: ReactNode;
-  accent?: string; valueClass?: string; delta?: ReactNode; chip?: ReactNode;
+  accent?: string; valueClass?: string; delta?: ReactNode; chip?: ReactNode; tip?: ReactNode;
 }) {
   return (
     <Card className="relative overflow-hidden p-4 border border-border/60">
@@ -146,7 +146,10 @@ function KpiCard({ label, value, usd, sub, accent, valueClass, delta, chip }: {
         <div className="absolute inset-x-0 top-0 h-[2px] opacity-70"
              style={{ background: `linear-gradient(90deg, ${accent}, transparent)` }} />
       )}
-      <p className="text-sm font-medium tracking-wide uppercase text-muted-foreground mb-2 truncate">{label}</p>
+      <p className="text-sm font-medium tracking-wide uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
+        <span className="truncate">{label}</span>
+        {tip && <InfoTip label={`What ${label} means`} content={tip} />}
+      </p>
       <p className={cn('text-3xl font-semibold tracking-tight tabular-nums leading-none', valueClass)}>
         {value}
         {usd !== undefined && <Usd value={usd} />}
@@ -208,6 +211,33 @@ function Delta({ current, previous, better }: {
       </span>
       <span className="ml-1 text-muted-foreground/70">vs previous period</span>
     </p>
+  );
+}
+
+/** A legend is not decoration here: without it the two bars are unlabelled
+ *  colour. Rendered as real text above the chart so it reads at any width. */
+function ChartLegend({ targetMer, oneDay }: { targetMer: number | null; oneDay: boolean }) {
+  const Swatch = ({ color, shape, children }: { color: string; shape: 'bar' | 'line'; children: ReactNode }) => (
+    <span className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
+      <span
+        className={shape === 'bar' ? 'inline-block h-3 w-3 rounded-[3px]' : 'inline-block h-[3px] w-4 rounded-full'}
+        style={{ background: color }}
+      />
+      {children}
+    </span>
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
+      <Swatch color="#3b82f6" shape="bar">Net sales (left axis)</Swatch>
+      <Swatch color="#94a3b8" shape="bar">Ad spend (left axis)</Swatch>
+      <Swatch color="#f59e0b" shape="line">MER (right axis)</Swatch>
+      {targetMer !== null && <Swatch color="#10b981" shape="line">Target {targetMer.toFixed(2)}×</Swatch>}
+      {oneDay && (
+        <span className="text-[13px] text-amber-700 dark:text-amber-400">
+          One day selected — pick a longer range to see the trend.
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -420,7 +450,9 @@ function ChannelMix({ rows, totalAud }: { rows: ChannelMixRow[]; totalAud: numbe
 // (last non-direct click), ceiling = panel ROAS (platform claims). The truth
 // sits between; the two dashed lines say whether "between" is good enough.
 
-const VERDICT_LABEL_W = 'w-[240px]';
+// Wide enough for a real Meta campaign name on two lines ("HD Shower Screen —
+// Campaign NEW Videos"). Names wrap; they are never cut.
+const VERDICT_LABEL_W = 'w-[300px]';
 const VERDICT_NUMS_W = 'w-[130px]';
 const VERDICT_CHIP_W = 'w-[180px]';
 
@@ -430,7 +462,7 @@ function VerdictRowShell({ label, bar, nums, chip }: {
   // One shared row shell so bars, header labels and the axis all use the exact
   // same column offsets — the dashed line segments align across rows for free.
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-3 min-h-[36px]">
       <div className={cn(VERDICT_LABEL_W, 'shrink-0 min-w-0')}>{label}</div>
       <div className="relative h-7 flex-1">{bar}</div>
       <div className={cn(VERDICT_NUMS_W, 'shrink-0 text-right tabular-nums text-[13px]')}>{nums}</div>
@@ -511,7 +543,34 @@ function VerdictChart({ channels, ue }: { channels: ChannelView[]; ue: UnitEcono
           <div className="min-w-[780px] space-y-2">
             {/* header: line labels + column captions */}
             <VerdictRowShell
-              label={<span className="text-[13px] uppercase tracking-wider text-muted-foreground">Campaign</span>}
+              label={
+                <span className="text-[13px] uppercase tracking-wider text-muted-foreground inline-flex items-center gap-1">
+                  Campaign
+                  <InfoTip
+                    label="Where the two dashed lines come from"
+                    content={
+                      <>
+                        {ue ? (
+                          <>
+                            <p><b>Red line, breakeven {fmtX(breakeven)}</b> — below it a campaign loses
+                            money. It is 1 ÷ your contribution margin
+                            ({Math.round(ue.cm1Pct * 1000) / 10}%): what is left of each $1 of sales after
+                            product cost, shipping, packaging and payment fees, before any advertising.</p>
+                            <p className="mt-1.5"><b>Green line, target {target === null ? '—' : fmtX(target)}</b>
+                            {' '}— what a campaign has to return for the business to make its
+                            {' '}{Math.round(ue.targetMarginPct * 100)}% operating profit, once the
+                            US${fmtNum(ue.fixedCostsUsd)}/month of fixed costs are paid too.</p>
+                            <p className="mt-1.5 text-muted-foreground">Source: Juan's unit-economics
+                            workbook, month {ue.month}. Change the workbook and both lines move.</p>
+                          </>
+                        ) : (
+                          <p>No unit-economics row covers this window, so the reference lines are hidden.</p>
+                        )}
+                      </>
+                    }
+                  />
+                </span>
+              }
               bar={
                 <>
                   {breakeven !== null && (
@@ -542,11 +601,14 @@ function VerdictChart({ channels, ue }: { channels: ChannelView[]; ue: UnitEcono
                   key={`${r.ch}-${r.campaign}`}
                   label={
                     <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="inline-block h-2 w-2 rounded-full shrink-0" style={{ background: color }} />
-                        <span className="truncate text-[15px]" title={r.campaign}>{r.campaign}</span>
+                      {/* Campaign names WRAP, never truncate: a cut name is
+                          unusable — you cannot tell two "HD Shower Screen …"
+                          campaigns apart from their first 20 characters. */}
+                      <div className="flex items-start gap-1.5 min-w-0">
+                        <span className="inline-block h-2 w-2 rounded-full shrink-0 mt-[6px]" style={{ background: color }} />
+                        <span className="text-[15px] leading-snug break-words">{r.campaign}</span>
                       </div>
-                      {r.note && <p className="text-xs text-amber-700 dark:text-amber-400 leading-tight truncate" title={r.note}>{r.note}</p>}
+                      {r.note && <p className="text-xs text-amber-700 dark:text-amber-400 leading-tight mt-0.5">{r.note}</p>}
                     </div>
                   }
                   bar={
@@ -610,10 +672,12 @@ function VerdictChart({ channels, ue }: { channels: ChannelView[]; ue: UnitEcono
 
       <div className="mt-3 space-y-1">
         <p className="text-[13px] text-muted-foreground/70">
-          Clean UTM data starts 6 Aug 2026 — windows reaching earlier under-count the floor.
+          The ads only started carrying tags we can trace on 6 Aug 2026. Pick a range that reaches
+          further back and the left end of every bar reads lower than it really was.
         </p>
         <p className="text-[13px] text-muted-foreground/70">
-          Google Shopping's floor is inflated by the feed-tag proxy (free listings mixed in) until clean tagging lands.
+          Google Shopping's left end reads high: we detect it from the product-feed tag, which also
+          catches Google's free listings. It gets exact once the campaign is tagged properly.
         </p>
         <p className="text-[13px] text-muted-foreground/70">
           Platform claims for the most recent days are still maturing (Meta re-reads ~30 days).
@@ -664,6 +728,20 @@ function ChannelEfficiency({ ch }: { ch: ChannelView }) {
   );
 }
 
+/** A right-aligned numeric column header that carries its own explanation.
+ *  Every metric column in the tab has one — a column nobody can define is a
+ *  column nobody can act on. */
+function ColHead({ tip, children }: { tip: ReactNode; children: ReactNode }) {
+  return (
+    <th className="text-right font-medium pb-1.5">
+      <span className="inline-flex items-center gap-1">
+        {children}
+        <InfoTip label={typeof children === 'string' ? children : 'Definition'} content={<p>{tip}</p>} />
+      </span>
+    </th>
+  );
+}
+
 type ChannelFilter = 'all' | 'meta' | 'google';
 
 /** The residual aggregate the RPC appends so the rendered rows still sum to the
@@ -704,14 +782,19 @@ function CampaignTable({ channels }: { channels: ChannelView[] }) {
             <tr className="text-[13px] uppercase tracking-wider text-muted-foreground">
               <th className="text-left font-medium pb-1.5">Campaign</th>
               <th className="text-left font-medium pb-1.5">Channel</th>
-              <th className="text-right font-medium pb-1.5">Spend</th>
-              <th className="text-right font-medium pb-1.5">Claims</th>
-              <th className="text-right font-medium pb-1.5">Store (closed)</th>
-              <th className="text-right font-medium pb-1.5">Store ROAS</th>
-              <th className="text-right font-medium pb-1.5">Panel ROAS</th>
-              <th className="text-right font-medium pb-1.5">Orders</th>
-              <th className="text-right font-medium pb-1.5">NC orders</th>
-              <th className="text-right font-medium pb-1.5">NC-CPA</th>
+              <ColHead tip="What the platform charged you for this campaign in the selected days.">Spend</ColHead>
+              <ColHead tip={<>What the platform's own panel says this campaign sold. It counts people who
+                only <b>saw</b> the ad, and it keeps rewriting the last few days upward, so treat fresh days
+                as provisional.</>}>Claims</ColHead>
+              <ColHead tip={<>What the store can actually trace to this campaign: the order's last click
+                before buying was this ad. Ignores anyone who saw the ad and never clicked, or who clicked
+                on the phone and bought on the laptop — so it is a <b>floor</b>.</>}>Store (closed)</ColHead>
+              <ColHead tip="Store (closed) ÷ Spend. The pessimistic return: what you can prove.">Store ROAS</ColHead>
+              <ColHead tip="Claims ÷ Spend. The optimistic return: what the platform says. The truth is between this and Store ROAS.">Panel ROAS</ColHead>
+              <ColHead tip="Orders whose last click was this campaign.">Orders</ColHead>
+              <ColHead tip="Of those orders, how many came from someone buying for the first time.">NC orders</ColHead>
+              <ColHead tip={<>Spend ÷ new customers: what this campaign paid to win one first-time buyer.
+                Compare it against the workbook lines on the New-customer CAC card.</>}>NC-CPA</ColHead>
             </tr>
           </thead>
           <tbody>
@@ -761,8 +844,21 @@ function CampaignTable({ channels }: { channels: ChannelView[] }) {
 function GoogleBuckets({ rows }: { rows: GoogleBucketRow[] }) {
   return (
     <Card className="p-4">
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1 flex items-center gap-1.5">
         Google by bucket · since 6-Aug
+        <InfoTip
+          label="Why Google is split this way"
+          content={
+            <>
+              <p>Google sends traffic four different ways and they are worth very different things:
+              people searching your <b>brand name</b> (they already knew you), people searching a
+              <b> category</b>, <b>Shopping</b> listings, and <b>free</b> search results you pay nothing for.</p>
+              <p className="mt-1.5">Only from <b>6 Aug 2026</b> do the ads carry tags that let us tell paid
+              from free. Anything before that date sits in one mixed bucket and is never presented as
+              organic — it would flatter the free side and hide what the ads did.</p>
+            </>
+          }
+        />
       </h3>
       <p className="text-[13px] text-muted-foreground/70 mb-3">
         Before 6-Aug Google paid and organic were a single bucket (no UTMs): that history is shown
@@ -807,8 +903,22 @@ function OverlapCard({ o }: { o: OverlapSplit }) {
 
   return (
     <Card className="p-4">
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1 flex items-center gap-1.5">
         Channel overlap
+        <InfoTip
+          label="What overlap means"
+          content={
+            <>
+              <p>Of the orders where somebody clicked a <b>paid</b> ad on the way to buying: how many
+              touched only Meta, how many only Google, and how many touched both.</p>
+              <p className="mt-1.5"><b>The "both" group is the heart of the argument with the agencies.</b>
+              {' '}Meta counts those orders as its own, and Google counts the same orders as its own. Neither
+              is lying; they simply both saw the customer.</p>
+              <p className="mt-1.5">This counts touches on the journey, not credit. It does not say which
+              side caused the sale.</p>
+            </>
+          }
+        />
       </h3>
       <p className="text-[13px] text-muted-foreground/70 mb-3">
         Paid click of each side anywhere in the journey — the 'both' segment is what both
@@ -859,8 +969,21 @@ function LiveOrdersCard({ orders }: { orders: LiveOrder[] }) {
 
   return (
     <Card className="p-4">
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1 flex items-center gap-1.5">
         Live orders
+        <InfoTip
+          label="What this list shows"
+          content={
+            <>
+              <p>The last 12 orders the store took, with the channel that closed each one. It ignores
+              the date range on purpose — it is a pulse, not a report.</p>
+              <p className="mt-1.5">The small <b>M</b> and <b>G</b> marks mean a paid Meta or Google click
+              appeared somewhere in that customer's journey.</p>
+              <p className="mt-1.5">An amount showing "syncing" is an order that arrived seconds ago and
+              whose lines have not loaded yet — not a zero-value order.</p>
+            </>
+          }
+        />
       </h3>
       <p className="text-[13px] text-muted-foreground/70 mb-2">
         The latest 12 orders, whatever range is selected above. Times are Brisbane.
@@ -948,13 +1071,31 @@ function IncrementalityBlock({ inc, loading, error }: {
 
   return (
     <Card className="p-4">
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1 flex items-center gap-1.5">
         Is Google adding sales?
+        <InfoTip
+          label="How to read this"
+          content={
+            <>
+              <p><b>Everything Google brings</b> — paid clicks plus free search results — <b>divided by
+              everything the rest of the store brings.</b> One number per month.</p>
+              <p className="mt-1.5">Why divided instead of the plain amount: the store grows and shrinks
+              on its own, so the plain amount would move even if Google did nothing.</p>
+              <p className="mt-1.5"><b>The grey band</b> is what that ratio did over {band.windows} different
+              stretches of {band.windowDays} days back when <b>you spent nothing on Google</b>. If today's
+              months sit inside that band, paid Google is not adding anything you weren't already getting.
+              Above it, and sustained, it is.</p>
+              <p className="mt-1.5">Careful: those stretches ranged from {band.minPct}% to {band.maxPct}%
+              with zero spend. One month above the band proves nothing.</p>
+            </>
+          }
+        />
       </h3>
       <p className="text-[13px] text-muted-foreground/70 mb-3">
-        The whole Google bag (paid + organic + pre-gate mixed) ÷ the rest of the store,
-        monthly — against what that ratio did in {band.windows} rolling {band.windowDays}-day
-        windows when Google spend was zero.
+        Everything Google brings (paid clicks + free search results, counted together because
+        before 6 Aug 2026 they could not be told apart) ÷ everything the rest of the store brings,
+        month by month — against what that ratio did over {band.windows} stretches of {band.windowDays} days
+        back when Google spend was zero.
       </p>
 
       <div className="h-[220px]">
@@ -1224,16 +1365,19 @@ const HELP_SECTIONS: { title: string; body: ReactNode }[] = [
     title: 'Reading the floor/ceiling chart',
     body: (
       <>
-        <p>Floor = what the store recognises by last non-direct click. It under-counts:
-        view-through and cross-device journeys are invisible to it.</p>
-        <p>Ceiling = what the platform's panel claims. It over-counts: the platforms overlap
-        each other on the same orders.</p>
-        <p>The truth sits between. Floor above the green target line: the campaign works even
-        under-counted — scale it. Ceiling below the red breakeven: it loses money even at the
-        platform's own numbers — cut it. Anything in between: keep collecting before moving
-        budget.</p>
-        <p>The same rule frames every number in the tab: our measurement under-counts, the
-        platforms over-count, and the truth is bounded between the two.</p>
+        <p><b>The left end of the bar (floor)</b> is what the store can prove: the order's last
+        click before buying was that ad. It counts less than reality — it cannot see someone who
+        watched the ad without clicking, or who clicked on the phone and bought on the laptop.</p>
+        <p><b>The right end (ceiling)</b> is what the platform's own panel claims. It counts more
+        than reality — Meta and Google both take credit for the same order when both were involved.</p>
+        <p><b>The truth is somewhere inside the bar.</b> That is why it is drawn as a range and not
+        as one number.</p>
+        <p>Three verdicts: the <b>whole bar to the right of the green line</b> — it works even by the
+        strict measure, put more money in. The <b>whole bar to the left of the red line</b> — it loses
+        money even by the platform's own flattering numbers, cut it. The <b>lines crossing the bar</b>
+        {' '}— not enough evidence yet, leave the budget alone and collect more weeks.</p>
+        <p>Never decide from one end of the bar alone. Reading only the platform's end is what the
+        agencies do; reading only ours would be equally wrong in the other direction.</p>
       </>
     ),
   },
@@ -1537,17 +1681,36 @@ function SecondaryStrip({ b }: { b: AdvertisingDashboard['blended'] }) {
   const aov = ratio(b.revenueAud, b.orders);
   const ncShare = ratio(b.newCustomerOrders, b.orders);
   const ncRoas = ratio(b.newCustomerRevenueAud, b.spendAud);
-  const items: { label: string; value: string }[] = [
-    { label: 'Orders', value: fmtNum(b.orders) },
-    { label: 'AOV', value: fmtAud(aov) },
-    { label: 'New-customer share', value: ncShare === null ? '—' : fmtPct(ncShare * 100) },
-    { label: 'NC-ROAS', value: fmtX(ncRoas) },
+  const items: { label: string; value: string; tip: ReactNode }[] = [
+    {
+      label: 'Orders', value: fmtNum(b.orders),
+      tip: <p>Every order the store took in the selected days, from any source.</p>,
+    },
+    {
+      label: 'AOV', value: fmtAud(aov),
+      tip: <p>Average order value: net sales ÷ orders. GST included, shipping not — so it reads
+        higher than the AOV in Triple Whale, which strips tax and adds shipping.</p>,
+    },
+    {
+      label: 'New-customer share', value: ncShare === null ? '—' : fmtPct(ncShare * 100),
+      tip: <p>How many of those orders came from someone buying for the first time. Falling share
+        with flat spend means you are paying to sell to people you already had.</p>,
+    },
+    {
+      label: 'NC-ROAS', value: fmtX(ncRoas),
+      tip: <p>Sales to <b>first-time buyers</b> ÷ all ad spend. Stricter than MER: it ignores repeat
+        customers, who would have come back anyway. This is the number that says whether advertising
+        is growing the customer base or just serving it.</p>,
+    },
   ];
   return (
     <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5 px-1">
       {items.map((i) => (
         <span key={i.label} className="inline-flex items-baseline gap-1.5">
-          <span className="text-[13px] uppercase tracking-wider text-muted-foreground">{i.label}</span>
+          <span className="text-[13px] uppercase tracking-wider text-muted-foreground inline-flex items-center gap-1">
+            {i.label}
+            <InfoTip label={i.label} content={i.tip} />
+          </span>
           <span className="text-[15px] font-medium tabular-nums">{i.value}</span>
         </span>
       ))}
@@ -1788,8 +1951,27 @@ export default function AdvertisingTab() {
                       accent="#f59e0b"
                       valueClass={merClass}
                       delta={<Delta current={b.mer} previous={pb?.mer} better="higher" />}
+                      tip={
+                        <>
+                          <p><b>Every dollar of sales the store made, divided by every dollar you spent
+                          on ads.</b> Nobody's attribution touches it — that's why it's the arbiter.</p>
+                          {ue && (
+                            <>
+                              <p className="mt-1.5"><b>Breakeven {fmtX(ue.breakevenMer)}</b>: below this,
+                              ads lose money. It is 1 ÷ your contribution margin
+                              ({Math.round(ue.cm1Pct * 1000) / 10}%): of every $1 that comes in, that much
+                              is left before paying for ads.</p>
+                              <p className="mt-1.5"><b>Target {ue.targetMer === null ? '—' : fmtX(ue.targetMer)}</b>:
+                              what you need for a {Math.round(ue.targetMarginPct * 100)}% operating profit,
+                              once fixed costs (US${fmtNum(ue.fixedCostsUsd)}/month) are covered too.</p>
+                              <p className="mt-1.5 text-muted-foreground">Both come from Juan's unit-economics
+                              workbook, month {ue.month}. They refresh when the workbook does.</p>
+                            </>
+                          )}
+                        </>
+                      }
                       sub={ue
-                        ? <>Net sales ÷ ad spend. Breakeven {fmtX(ue.breakevenMer)} · target {ue.targetMer === null ? 'unreachable at current economics' : fmtX(ue.targetMer)}</>
+                        ? <>Net sales ÷ ad spend. Breakeven {fmtX(ue.breakevenMer)} · target {ue.targetMer === null ? 'unreachable at current economics' : fmtX(ue.targetMer)} <span className="text-muted-foreground/60">(Juan's workbook, {ue.month})</span></>
                         : 'Net sales ÷ ad spend. No unit-economics row for this window.'}
                     />
                     <KpiCard
@@ -1798,6 +1980,18 @@ export default function AdvertisingTab() {
                       usd={b.revenueUsd}
                       accent="#3b82f6"
                       delta={<Delta current={b.revenueAud} previous={pb?.revenueAud} better="higher" />}
+                      tip={
+                        <>
+                          <p><b>Everything the store sold in the selected days</b>, whatever brought the
+                          customer in — ads, search, email or nothing at all.</p>
+                          <p className="mt-1.5">Australian orders carry GST inside the price, and it is left
+                          in on purpose so these figures line up with Triple Whale. The B2C Sales Explorer
+                          strips it, which is why that tab shows less.</p>
+                          <p className="mt-1.5">Shipping charged to the customer is <b>not</b> included here.
+                          Triple Whale does include it — that is the whole difference between its sales
+                          number and ours.</p>
+                        </>
+                      }
                       sub="Same figure as the E-commerce tab: AUD, Brisbane day, GST included on AU orders."
                     />
                     <KpiCard
@@ -1806,6 +2000,17 @@ export default function AdvertisingTab() {
                       usd={b.spendUsd}
                       accent="#94a3b8"
                       delta={<Delta current={b.spendAud} previous={pb?.spendAud} better="neutral" />}
+                      tip={
+                        <>
+                          <p><b>What the two platforms charged you</b>, added together and converted to
+                          Australian dollars at the rate of the month each charge happened.</p>
+                          <p className="mt-1.5">Meta arrives on its own three times a day. Google is loaded
+                          by hand from the account's export, so the freshest days can be missing until
+                          someone loads them — the Data health drawer tells you which.</p>
+                          <p className="mt-1.5 text-muted-foreground">Spending more is not automatically bad,
+                          so this number is never coloured green or red.</p>
+                        </>
+                      }
                       sub="Meta (API) + Google (loaded by hand). AUD."
                     />
                     <KpiCard
@@ -1823,7 +2028,22 @@ export default function AdvertisingTab() {
                               : `above the US$${cacCeilingUsd.toFixed(2)} ceiling`}
                         </Chip>
                       }
-                      sub={<>Spend ÷ {fmtNum(b.newCustomerOrders)} first purchases. Guardrails: healthy US${HEALTHY_CAC_USD} · ceiling US${cacCeilingUsd.toFixed(2)} (workbook, USD).</>}
+                      tip={
+                        <>
+                          <p><b>What it cost you to win one new customer</b>: all the ad spend divided by
+                          the orders from people buying for the first time ({fmtNum(b.newCustomerOrders)} of
+                          {' '}{fmtNum(b.orders)} orders in this window).</p>
+                          <p className="mt-1.5">Two lines to judge it against, both from Juan's workbook:
+                          {' '}<b>US${HEALTHY_CAC_USD}</b> is the healthy line — pay less than that and a
+                          customer returns three times what they cost over a year.
+                          {' '}<b>US${cacCeilingUsd.toFixed(2)}</b> is the hard ceiling: it is what one order
+                          leaves after product, shipping and fees, so above it the first sale loses money
+                          outright.</p>
+                          <p className="mt-1.5 text-muted-foreground">Compared in US dollars because the
+                          workbook is in US dollars.</p>
+                        </>
+                      }
+                      sub={<>Spend ÷ {fmtNum(b.newCustomerOrders)} first purchases. Guardrails: healthy US${HEALTHY_CAC_USD} · ceiling US${cacCeilingUsd.toFixed(2)} (Juan's workbook, USD).</>}
                     />
                   </div>
 
@@ -1863,9 +2083,24 @@ export default function AdvertisingTab() {
                   )}
 
                   <Card className="p-4">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
                       Daily MER · revenue vs spend
+                      <InfoTip
+                        label="What this chart shows"
+                        content={
+                          <>
+                            <p><b>Blue bars</b> are the sales the store made that day. <b>Grey bars</b> are
+                            what you spent on ads that day. Both read against the money scale on the left.</p>
+                            <p className="mt-1.5"><b>The orange line</b> is the MER: sales divided by spend.
+                            It reads against the × scale on the right. The <b>green dashed line</b> is the
+                            target you need to hit your 20% margin.</p>
+                            <p className="mt-1.5">When a day has no Google spend loaded yet, the orange line
+                            breaks instead of dropping to zero — a hole means "not known", never "it was zero".</p>
+                          </>
+                        }
+                      />
                     </h3>
+                    <ChartLegend targetMer={ue?.targetMer ?? null} oneDay={data.merSeries.length <= 1} />
                     <MerChart series={data.merSeries} targetMer={ue?.targetMer ?? null} />
                     <p className="text-[13px] text-muted-foreground/70 mt-2">
                       Days without loaded Google spend don't compute a MER (gap in the line) — never a false zero.
