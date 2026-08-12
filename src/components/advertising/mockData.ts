@@ -10,7 +10,10 @@
 // USD, otherwise aud ÷ that row's monthly rate) and only then sums; the fixture
 // window is a single month, so one flat rate reproduces that faithfully.
 
-import type { AdvertisingDashboard, AdvertisingIncrementality } from './types';
+import type {
+  AdvertisingDashboard, AdvertisingIncrementality, ChannelCampaign, ChannelMixRow,
+  ChannelView,
+} from './types';
 
 const day = (n: number) => {
   const d = new Date(Date.UTC(2026, 7, 6 + n)); // 2026-08-06 + n
@@ -110,11 +113,15 @@ export const ADVERTISING_MOCK: AdvertisingDashboard = {
       ],
     },
   ],
+  // RAW bucket keys, exactly as advertising_bucket emits them (the RPC never
+  // returns prose here). The UI owns the English labels — a window reaching
+  // before 6-Aug also returns 'google-mixto-pre', which the tab's label map
+  // renders as "Google mixed (before 6 Aug …)".
   googleBuckets: [
-    { bucket: 'Google brand (paid)', orders: 58, revenueAud: 5_900, revenueUsd: usd(5_900) },
-    { bucket: 'Google non-brand (paid)', orders: 49, revenueAud: 5_100, revenueUsd: usd(5_100) },
-    { bucket: 'Google Shopping (proxy)', orders: 34, revenueAud: 3_600, revenueUsd: usd(3_600), note: 'includes free listings' },
-    { bucket: 'Google organic (SEO)', orders: 412, revenueAud: 41_800, revenueUsd: usd(41_800), note: 'baseline total google bucket Jul-2026: ~AUD 3.0k/day (untagged paid + organic, converted from USD)' },
+    { bucket: 'google-brand', orders: 58, revenueAud: 5_900, revenueUsd: usd(5_900) },
+    { bucket: 'google-nonbrand', orders: 49, revenueAud: 5_100, revenueUsd: usd(5_100) },
+    { bucket: 'google-shopping-proxy', orders: 34, revenueAud: 3_600, revenueUsd: usd(3_600), note: 'includes free listings' },
+    { bucket: 'google-organic', orders: 412, revenueAud: 41_800, revenueUsd: usd(41_800), note: 'baseline total google bucket Jul-2026: ~AUD 3.0k/day (untagged paid + organic, converted from USD)' },
   ],
   // Ordered by revenueAud desc, raw bucket keys, and — the point of the block —
   // summing to blended.revenueAud (236,400) exactly. Keep it that way when editing.
@@ -186,6 +193,136 @@ export const ADVERTISING_MOCK: AdvertisingDashboard = {
     targetProfitUsd: 58_000,
     notes: "Juan's scale plan — workbook Simulators §4",
   },
+};
+
+// ── Previous-period fixture (period comparison) ──────────────────────────────
+// The 14 days immediately BEFORE ADVERTISING_MOCK — 23 Jul → 5 Aug 2026 — so the
+// comparison path can be exercised without the network. Same RPC shape, same
+// metrics: the tab reads blended.X here and compares it with blended.X there,
+// never against a filtered subset of days.
+//
+// Derived by scaling the main fixture down 8% and then RE-DERIVING every total
+// from its parts, so rounding can never break the invariants:
+//   sum(channelMix[].revenueAud) === blended.revenueAud
+//   blended.orders               === sum(channelMix[].orders)
+//   channel totals               === sum of that channel's campaigns
+//   overlap.bothOrders           === blended.overlapOrders
+
+const PREV_FACTOR = 0.92;
+const scaled = (v: number) => Math.round(v * PREV_FACTOR);
+const round2 = (v: number) => Math.round(v * 100) / 100;
+
+const prevCampaign = (c: ChannelCampaign): ChannelCampaign => {
+  const spendAud = scaled(c.spendAud);
+  const claimedValueAud = scaled(c.claimedValueAud);
+  const storeLastClickAud = scaled(c.storeLastClickAud);
+  const storeFirstClickAud = scaled(c.storeFirstClickAud);
+  return {
+    ...c,
+    spendAud, spendUsd: usd(spendAud),
+    claimedValueAud, claimedValueUsd: usd(claimedValueAud),
+    storeLastClickAud, storeLastClickUsd: usd(storeLastClickAud),
+    storeFirstClickAud, storeFirstClickUsd: usd(storeFirstClickAud),
+    orders: scaled(c.orders),
+    newCustomerOrders: scaled(c.newCustomerOrders),
+  };
+};
+
+const prevChannel = (ch: ChannelView): ChannelView => {
+  const campaigns = ch.campaigns.map(prevCampaign);
+  const sum = (pick: (c: ChannelCampaign) => number) => campaigns.reduce((s, c) => s + pick(c), 0);
+  const spendAud = sum((c) => c.spendAud);
+  const claimedAud = sum((c) => c.claimedValueAud);
+  const storeLastAud = sum((c) => c.storeLastClickAud);
+  const storeFirstAud = sum((c) => c.storeFirstClickAud);
+  const newCustomerRevenueAud = scaled(ch.newCustomerRevenueAud);
+  return {
+    ...ch,
+    spendAud, spendUsd: usd(spendAud),
+    claimedAud, claimedUsd: usd(claimedAud),
+    storeLastAud, storeLastUsd: usd(storeLastAud),
+    storeFirstAud, storeFirstUsd: usd(storeFirstAud),
+    orders: sum((c) => c.orders),
+    newCustomerOrders: sum((c) => c.newCustomerOrders),
+    newCustomerRevenueAud, newCustomerRevenueUsd: usd(newCustomerRevenueAud),
+    campaigns,
+  };
+};
+
+const prevMix: ChannelMixRow[] = ADVERTISING_MOCK.channelMix.map((r) => {
+  const revenueAud = scaled(r.revenueAud);
+  return { ...r, orders: scaled(r.orders), revenueAud, revenueUsd: usd(revenueAud) };
+});
+
+const prevChannels = ADVERTISING_MOCK.channels.map(prevChannel);
+const prevRevenueAud = prevMix.reduce((s, r) => s + r.revenueAud, 0);
+const prevOrders = prevMix.reduce((s, r) => s + r.orders, 0);
+const prevSpendAud = prevChannels.reduce((s, c) => s + c.spendAud, 0);
+const prevClaimedAud = prevChannels.reduce((s, c) => s + c.claimedAud, 0);
+const prevPaidAud = prevMix.filter((r) => r.isPaid).reduce((s, r) => s + r.revenueAud, 0);
+const prevNewCustomerOrders = scaled(ADVERTISING_MOCK.blended.newCustomerOrders);
+const prevNewCustomerRevenueAud = scaled(ADVERTISING_MOCK.blended.newCustomerRevenueAud);
+const prevOverlapBoth = scaled(ADVERTISING_MOCK.overlap.bothOrders);
+
+export const ADVERTISING_MOCK_PREVIOUS: AdvertisingDashboard = {
+  from: day(-14),
+  to: day(-1),
+  blended: {
+    spendAud: prevSpendAud,
+    spendUsd: usd(prevSpendAud),
+    revenueAud: prevRevenueAud,
+    revenueUsd: usd(prevRevenueAud),
+    mer: round2(prevRevenueAud / prevSpendAud),
+    claimedTotalAud: prevClaimedAud,
+    claimedTotalUsd: usd(prevClaimedAud),
+    doubleCountRatio: round2(prevClaimedAud / prevPaidAud),
+    overlapOrders: prevOverlapBoth,
+    cacBlended: round2(prevSpendAud / prevNewCustomerOrders),
+    cacBlendedUsd: round2(usd(prevSpendAud) / prevNewCustomerOrders),
+    newCustomerOrders: prevNewCustomerOrders,
+    orders: prevOrders,
+    newCustomerRevenueAud: prevNewCustomerRevenueAud,
+    newCustomerRevenueUsd: usd(prevNewCustomerRevenueAud),
+    unclassifiedOrders: 9,
+    noJourneyOrders: 2,
+  },
+  // Every day complete: this window sits entirely after google_active_from
+  // (2026-06-25) and its Google rows were loaded long ago.
+  merSeries: Array.from({ length: 14 }, (_, i) => {
+    const revenue = 14_900 + Math.round(2_700 * Math.sin(i / 2.3)) + i * 110;
+    const spend = 2_240 + Math.round(240 * Math.sin(i / 1.9));
+    return {
+      d: day(i - 14),
+      revenueAud: revenue,
+      revenueUsd: usd(revenue),
+      spendAud: spend,
+      spendUsd: usd(spend),
+      mer: round2(revenue / spend),
+      spendComplete: true,
+    };
+  }),
+  channels: prevChannels,
+  googleBuckets: ADVERTISING_MOCK.googleBuckets.map((r) => {
+    const revenueAud = scaled(r.revenueAud);
+    return { ...r, orders: scaled(r.orders), revenueAud, revenueUsd: usd(revenueAud) };
+  }),
+  channelMix: prevMix,
+  overlap: {
+    bothOrders: prevOverlapBoth,
+    onlyMetaOrders: scaled(ADVERTISING_MOCK.overlap.onlyMetaOrders),
+    onlyGoogleOrders: scaled(ADVERTISING_MOCK.overlap.onlyGoogleOrders),
+    bothRevenueAud: scaled(ADVERTISING_MOCK.overlap.bothRevenueAud),
+    bothRevenueUsd: usd(scaled(ADVERTISING_MOCK.overlap.bothRevenueAud)),
+    onlyMetaRevenueAud: scaled(ADVERTISING_MOCK.overlap.onlyMetaRevenueAud),
+    onlyMetaRevenueUsd: usd(scaled(ADVERTISING_MOCK.overlap.onlyMetaRevenueAud)),
+    onlyGoogleRevenueAud: scaled(ADVERTISING_MOCK.overlap.onlyGoogleRevenueAud),
+    onlyGoogleRevenueUsd: usd(scaled(ADVERTISING_MOCK.overlap.onlyGoogleRevenueAud)),
+  },
+  // Window-independent by contract: the ticker always carries the latest orders,
+  // whatever window is on screen.
+  liveOrders: ADVERTISING_MOCK.liveOrders,
+  unitEconomics: ADVERTISING_MOCK.unitEconomics,
+  plan: ADVERTISING_MOCK.plan,
 };
 
 // ── advertising_incrementality() fixture ─────────────────────────────────────
