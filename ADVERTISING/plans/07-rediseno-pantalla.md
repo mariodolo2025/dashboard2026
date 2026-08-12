@@ -1,6 +1,21 @@
 # Plan 7 — Rediseño de la pantalla principal (auditoría A vs B)
 
-**Estado: PROPUESTO, NO IMPLEMENTAR.** Esperar el OK de Mario.
+**Estado: EJECUTADO el 13-ago-2026** (go de Mario). Pasos 1 a 7 hechos:
+- RPC v4 aditiva (`ead7555`): blended.orders + newCustomerRevenue por canal →
+  habilita NC-ROAS, AOV y % de clientes nuevos.
+- Reestructura del tab (`286b084`): 5 workspaces con rail izquierdo, 4 tarjetas
+  en vez de 6, comparación contra el período anterior, cajón Data health con el
+  formulario de Google adentro, prosa metodológica movida al Help, clave cruda
+  `google-mixto-pre` arreglada, tabla única Meta+Google con filtro.
+
+Verificado sin browser (el preview exige login de Mario): typecheck y build en
+verde; contrato completo presente en las dos llamadas que hace la pantalla
+(actual + previa de igual largo, 30/30 días); las 4 tarjetas leen `blended.*`
+directo, sin filtrar días — el defecto fatal de (B) no se replicó; ningún bucket
+del channelMix cae fuera del mapa de etiquetas.
+
+**Pendiente: validación visual de Mario** y borrar la pastilla "Advertising 2"
+de `src/App.tsx` antes del merge.
 
 Origen: Mario pidió a ChatGPT una segunda versión del tab (11-ago) porque la
 nuestra "no tiene la mejor distribucion, es confuso... basado en TW pero
