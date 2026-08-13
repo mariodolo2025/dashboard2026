@@ -66,6 +66,8 @@ const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'S
 const fmtDay = (iso: string) => `${+iso.slice(8, 10)} ${MONTHS_SHORT[+iso.slice(5, 7) - 1]}`;
 /** '2026-08' → 'Aug 26' */
 const fmtMonth = (ym: string) => `${MONTHS_SHORT[+ym.slice(5, 7) - 1]} ${ym.slice(2, 4)}`;
+/** Whole US dollars — the workbook's currency, used only in the Planning surface. */
+const fmtUsd0 = (v: number) => `$${Math.round(v).toLocaleString('en-AU')}`;
 
 /** Calendar-day arithmetic on the store's calendar (UTC-midnight Dates, so no
  *  offset or DST can push a result onto the neighbouring day). */
@@ -1173,23 +1175,97 @@ function SimStat({ label, value, approx, sub }: {
   );
 }
 
-function ScalePlan({ ue, plan, blended, from, to, totalOrders }: {
+export type PlanDraft = { profit: number; spend: number };
+
+/** Commits the month's plan for everyone. The write goes through the definer
+ *  RPC advertising_plan_save, which stamps the actor from the session's JWT —
+ *  the client cannot claim to be someone else. Saving a month that already has
+ *  a plan overwrites it, so the button says so. */
+function SavePlan({ month, spend, profit, plan, dirty, onSaved }: {
+  month: string; spend: number; profit: number;
+  plan: MonthlyPlan | null; dirty: boolean; onSaved: () => void;
+}) {
+  const [state, setState] = useState<'idle' | 'saving' | 'error'>('idle');
+  const [message, setMessage] = useState<string | null>(null);
+
+  const save = async () => {
+    setState('saving');
+    setMessage(null);
+    const { error } = await supabase.rpc('advertising_plan_save', {
+      p_month: `${month}-01`,
+      p_spend_usd: spend,
+      p_profit_usd: profit,
+    });
+    if (error) {
+      setState('error');
+      setMessage(error.message.includes('AUTH_REQUIRED')
+        ? 'Your session expired — sign in again to save.'
+        : error.message);
+      return;
+    }
+    setState('idle');
+    setMessage(null);
+    onSaved();
+  };
+
+  return (
+    <div className="text-right">
+      <Button size="sm" onClick={save} disabled={state === 'saving' || !dirty}>
+        {state === 'saving'
+          ? 'Saving…'
+          : !dirty
+            ? `Plan saved for ${fmtMonth(month)}`
+            : plan
+              ? `Update the ${fmtMonth(month)} plan`
+              : `Save as the ${fmtMonth(month)} plan`}
+      </Button>
+      <p className="text-[13px] text-muted-foreground/70 mt-1.5 max-w-[280px]">
+        {plan
+          ? <>Committed plan: {fmtUsd0(plan.plannedSpendUsd)} spend for {fmtUsd0(plan.targetProfitUsd)} profit.{' '}
+              {dirty ? 'Saving replaces it for everyone.' : 'The tracking below measures the month against it.'}</>
+          : <>No plan committed for {fmtMonth(month)} yet. Saving one turns on the daily tracking below and
+              is visible to everyone who opens the tab.</>}
+      </p>
+      {state === 'error' && message && (
+        <p className="text-[13px] text-red-600 dark:text-red-400 mt-1 max-w-[280px]">{message}</p>
+      )}
+    </div>
+  );
+}
+
+function ScalePlan({ ue, plan, blended, from, to, totalOrders, draft, onDraft, onSaved }: {
   ue: UnitEconomics | null;
   plan: MonthlyPlan | null;
   blended: AdvertisingDashboard['blended'];
   from: string;
   to: string;
   totalOrders: number;
+  draft: PlanDraft | null;
+  onDraft: (d: PlanDraft) => void;
+  onSaved: () => void;
 }) {
+  // The draft lives in the PARENT (see AdvertisingTab): this component unmounts
+  // every time you switch workspace, and local state died with it — you moved a
+  // slider, went to Overview, came back and it had snapped to the default.
   const defaultSpend = clamp(Math.round(plan?.plannedSpendUsd ?? DEFAULT_PLANNED_SPEND_USD), 0, 300_000);
   const defaultProfit = clamp(
     ue
-      ? Math.round(ue.cm1Pct * ue.baselineRevenueUsd - ue.fixedCostsUsd - defaultSpend)
+      ? Math.round(plan?.targetProfitUsd
+          ?? (ue.cm1Pct * ue.baselineRevenueUsd - ue.fixedCostsUsd - defaultSpend))
       : 58_000,
     0, 150_000,
   );
-  const [profit, setProfit] = useState(defaultProfit);
-  const [spend, setSpend] = useState(defaultSpend);
+  const profit = draft?.profit ?? defaultProfit;
+  const spend = draft?.spend ?? defaultSpend;
+  const setProfit = (v: number) => onDraft({ profit: v, spend });
+  const setSpend = (v: number) => onDraft({ profit, spend: v });
+
+  // What the month's committed plan says, versus what is on screen right now.
+  const planMonth = to.slice(0, 7);
+  const savedForThisMonth = plan !== null && plan.month === planMonth;
+  const dirty = !savedForThisMonth
+    || Math.round(plan.plannedSpendUsd) !== spend
+    || Math.round(plan.targetProfitUsd) !== profit;
 
   if (!ue) {
     return (
@@ -1251,13 +1327,25 @@ function ScalePlan({ ue, plan, blended, from, to, totalOrders }: {
 
   return (
     <Card className="p-4">
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-        Scale plan — Juan's formulas
-      </h3>
-      <p className="text-[13px] text-muted-foreground/70 mb-4">
-        USD — the workbook's currency. AUD companions are approximate, via the window's
-        implied rate.
-      </p>
+      <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+            Scale plan — Juan's formulas
+          </h3>
+          <p className="text-[13px] text-muted-foreground/70">
+            USD — the workbook's currency. AUD companions are approximate, via the window's
+            implied rate.
+          </p>
+        </div>
+        <SavePlan
+          month={planMonth}
+          spend={spend}
+          profit={profit}
+          plan={savedForThisMonth ? plan : null}
+          dirty={dirty}
+          onSaved={onSaved}
+        />
+      </div>
 
       <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
         <div className="space-y-5">
@@ -1824,6 +1912,13 @@ export default function AdvertisingTab() {
 
   useEffect(() => { load(); }, [load]);
 
+  // The Planning sliders live HERE, not inside ScalePlan: that component
+  // unmounts on every workspace switch, so local state was silently thrown away
+  // between visits. null = "untouched", so the sliders show the committed plan
+  // (or the defaults) until the user actually moves something; a save clears it
+  // back to null so the freshly-saved figures take over.
+  const [planDraft, setPlanDraft] = useState<PlanDraft | null>(null);
+
   // B3 incrementality: fetched the first time the Incrementality workspace is
   // opened, ONCE per tab lifetime — the RPC takes ~15s and its window is fixed
   // (14 months), no range dependency. It no longer runs on tab open.
@@ -2153,6 +2248,9 @@ export default function AdvertisingTab() {
                   from={data.from}
                   to={data.to}
                   totalOrders={totalOrders}
+                  draft={planDraft}
+                  onDraft={setPlanDraft}
+                  onSaved={() => { setPlanDraft(null); load(); }}
                 />
               )}
             </div>

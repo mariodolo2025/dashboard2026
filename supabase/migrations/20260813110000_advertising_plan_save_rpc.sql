@@ -1,0 +1,37 @@
+-- =============================================================================
+-- Advertising Plan 7 — advertising_plan_save(): committing a month's plan
+-- =============================================================================
+-- Applied 2026-08-13 via MCP apply_migration, name `advertising_plan_save_rpc`.
+-- Plan: ADVERTISING/plans/07-rediseno-pantalla.md
+--
+-- WHY AN RPC AND NOT AN RLS INSERT POLICY
+-- advertising_monthly_plan (migration 20260811100000) deliberately ships with
+-- SELECT-only policies. Writing through a SECURITY DEFINER function means the
+-- actor is read from the request's JWT and stamped server-side, so the client
+-- cannot claim to be someone else — the same posture as the google-ads-load
+-- edge function. The function is the ONLY way into the table from the app.
+--
+-- AUTH GATE
+-- A definer function bypasses RLS, so it would happily write for anon without
+-- an explicit check. `if auth.uid() is null then raise AUTH_REQUIRED` is that
+-- check. VERIFIED: calling it from a service context with no JWT raises
+-- `28000 AUTH_REQUIRED` instead of writing.
+--
+-- SEMANTICS
+--   * p_month is normalised with date_trunc('month'): the table is one row per
+--     month and the UI passes the first of the month anyway.
+--   * upsert on the month PK — saving again REPLACES the committed plan, which
+--     the button copy states before you press it.
+--   * notes are trimmed and empty strings become null.
+--   * returns the saved row as jsonb so the caller can render it without a
+--     second read.
+--
+-- END-TO-END VERIFICATION (2026-08-13, real browser session, Mario's login):
+--   saved 2026-08 with spend 131,000 / profit 58,474 → row written with
+--   updated_by 'mario@dolo.com.au' (from the JWT, never from the payload) and
+--   the tab flipped to "Committed plan: … the tracking below measures the month
+--   against it". The test row was then DELETED — the real plan is Mario's
+--   decision to commit, not the implementation's.
+--
+-- The body is the one applied; see the migration named above.
+-- =============================================================================
