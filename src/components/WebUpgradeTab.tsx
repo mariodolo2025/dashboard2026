@@ -305,11 +305,14 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     if (r.from && r.to) setDateRange?.(r);
   };
 
-  const fetchData = useCallback(async () => {
+  // `fresh` skips the precomputed snapshot and recomputes from the database,
+  // then leaves the result in the cache for whoever opens the panel next. Only
+  // the refresh button passes it: opening the panel must stay instant.
+  const fetchData = useCallback(async (fresh = false) => {
     if (!range.from || !range.to) return;
     setLoading(true); setError(null);
     const { data: res, error: err } = await supabase.rpc('web_upgrade_performance', {
-      p_from: toYMD(range.from), p_to: toYMD(range.to), p_environment: env,
+      p_from: toYMD(range.from), p_to: toYMD(range.to), p_environment: env, p_fresh: fresh,
     });
     if (err) { setError(err.message); setLoading(false); return; }
     setData(res as Dash); setLoading(false);
@@ -1410,7 +1413,12 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               </div>
             </PopoverContent>
           </Popover>
-          <Button variant="ghost" size="sm" className="h-8" onClick={fetchData} disabled={loading}>
+          <Button
+            variant="ghost" size="sm" className="h-8"
+            onClick={() => fetchData(true)}
+            disabled={loading}
+            title="Recompute this window from the database right now, ignoring the snapshot. Takes a few seconds; the result is kept for the next person who opens the panel."
+          >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           </Button>
         </div>
