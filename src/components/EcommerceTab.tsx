@@ -23,24 +23,44 @@ interface EcommerceTabProps { dateRange?: DateRange; setDateRange?: (r: DateRang
 
 type Market = 'all' | 'usa' | 'australia';
 
+// Contract of public.ecommerce_dashboard.
+// Every MONEY figure travels twice: the AUD key and its USD twin, same name
+// with Usd appended (revenue → revenueUsd). The RPC builds USD per contributing
+// row and only then sums, so a window spanning two months comes back at a
+// revenue-weighted blend — which is why the UI must READ the twin and never
+// divide an AUD total by a rate. Counts, ratios and percentages have no twin:
+// orders, units, impressions, clicks, upo, mer, poas, purchaseRoas, roas, ctr,
+// returnRate, discountRate, share.
+// (migration 20260817120000_ecommerce_dashboard_usd_companions.sql)
 interface Dash {
   params: { from: string; to: string; market: string; margin: number };
+  // kpis twins: gross, discounts, returns, revenue, shipping, taxes, aov,
+  // spend, conv, cpo, cpc, cpm, contributionMargin.
   kpis: Record<string, number | null>;
+  // prior twins: revenue, spend, conv, aov.
   prior: Record<string, number | boolean | null>;
+  // bridge twins: all six (grossUsd, discountsUsd, returnsUsd, netUsd,
+  // shippingUsd, taxesUsd).
   bridge: Record<string, number>;
   funnel: Record<string, number>;
+  // market twins: revenueUsd, spendUsd on each side.
   market: { usa: Record<string, number | null>; australia: Record<string, number | null> };
-  trend: Array<{ bucket: string; ym: string; revenue: number; spend: number; conv: number; orders: number; mer: number | null }>;
-  geo: Array<{ country: string; revenue: number; units: number }>;
-  family: Array<{ family: string; revenue: number; units: number; pct: number; aovUnit: number }>;
-  products: Array<{ title: string; revenue: number; units: number }>;
+  trend: Array<{
+    bucket: string; ym: string; revenue: number; spend: number; conv: number; orders: number; mer: number | null;
+    revenueUsd: number; spendUsd: number; convUsd: number;
+  }>;
+  geo: Array<{ country: string; revenue: number; units: number; revenueUsd: number }>;
+  family: Array<{ family: string; revenue: number; units: number; pct: number; aovUnit: number; revenueUsd: number; aovUnitUsd: number }>;
+  products: Array<{ title: string; revenue: number; units: number; revenueUsd: number }>;
   // Per-creative Meta performance. Money already converted to AUD server-side:
   // the US account bills USD and the AU account AUD, so the raw rows are not
-  // comparable until converted.
+  // comparable until converted. The USD twins go the other way — the US
+  // account's native amount is used as-is, never converted back.
   ads?: Array<{
     ad: string; campaign: string | null; firstSeen: string;
     spend: number; impressions: number; clicks: number; purchases: number;
     value: number; roas: number | null; ctr: number | null; cpp: number | null;
+    spendUsd: number; valueUsd: number; cppUsd: number | null;
   }>;
   // What the per-ad table actually holds, so an empty list can be told apart
   // from a period in which nothing was advertised.
@@ -72,12 +92,21 @@ const HELP: Record<string, string> = {
 };
 
 // ── formatters ──
-const money = (v: number | null | undefined) => {
+// Abbreviated amount without the sign, so the USD companion can be built in the
+// same shape: "$55K (US$38K)" reads as one figure, "$55K (US$38,152)" reads as two.
+const moneyN = (v: number | null | undefined) => {
   const n = Number(v) || 0;
-  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  if (Math.abs(n) >= 1000) return `$${Math.round(n / 1000)}K`;
-  return `$${Math.round(n)}`;
+  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (Math.abs(n) >= 1000) return `${Math.round(n / 1000)}K`;
+  return `${Math.round(n)}`;
 };
+const money = (v: number | null | undefined) => `$${moneyN(v)}`;
+// `decimals` is for the few figures the tab prints exactly (AOV, CPO, CPC, CPM):
+// there the companion follows the same precision instead of abbreviating.
+const usdText = (v: number | null | undefined, decimals?: number) =>
+  v === null || v === undefined
+    ? ''
+    : `(US$${decimals === undefined ? moneyN(v) : Number(v).toFixed(decimals)})`;
 const int = (v: number | null | undefined) => (Number(v) || 0).toLocaleString('en-US');
 const toYMD = (d: Date) => format(d, 'yyyy-MM-dd');
 // Dolo fiscal year runs Jul 1 – Jun 30. The whole app currently reports on FY25-26
@@ -121,6 +150,27 @@ function Info({ k }: { k: string }) {
     </Tooltip>
   );
 }
+/** The USD companion of an AUD figure: the same money, in the other currency,
+ *  set smaller so it never competes with the amount it annotates. Copied from
+ *  AdvertisingTab's <Usd> (itself copied from B2CSalesPanel) — house convention
+ *  for every AUD figure in the dashboard.
+ *
+ *  The value ALWAYS comes from the RPC's twin key. Dividing an AUD total by a
+ *  rate here would be wrong for any window that spans two months.
+ *
+ *  Size is per context, not one number: 'card' scales with the parent (0.58em),
+ *  which is right next to a 32px stat and unreadable inside a 13px table row —
+ *  so rows use 'table' (a fixed 12px) and the small caption lines use 'sub'. */
+function Usd({ value, size = 'card', decimals }: {
+  value: number | null | undefined;
+  size?: 'card' | 'table' | 'sub';
+  decimals?: number;
+}) {
+  const text = usdText(value, decimals);
+  if (!text) return null;
+  return <span className={cn('ecom-usd', size === 'table' && 'tbl', size === 'sub' && 'sub')}>{text}</span>;
+}
+
 function Delta({ cur, prev, goodUp = true }: { cur: number; prev: number | null | undefined; goodUp?: boolean }) {
   if (prev == null || prev === 0) return <span className="text-[11px] ecom-faint">— no prior</span>;
   const p = ((cur - prev) / prev) * 100;
@@ -143,11 +193,11 @@ function TrendTip({ active, payload, label }: { active?: boolean; payload?: Arra
       <div className="tt">{label}</div>
       <div className="tr">
         <span><i className="ecom-tipsw" style={{ background: CHART_GOLD }} />Net revenue</span>
-        <b style={{ color: CHART_GOLD }}>{money(d.revenue)}</b>
+        <b style={{ color: CHART_GOLD }}>{money(d.revenue)}<Usd value={d.revenueUsd} size="table" /></b>
       </div>
       <div className="tr">
         <span><i className="ecom-tipsw" style={{ background: CHART_AXIS, opacity: 0.45, width: 8, height: 11 }} />Ad spend</span>
-        <b style={{ color: CHART_AXIS }}>{money(d.spend)}</b>
+        <b style={{ color: CHART_AXIS }}>{money(d.spend)}<Usd value={d.spendUsd} size="table" /></b>
       </div>
       <div className="tr">
         <span><i className="ecom-tipsw" style={{ background: CHART_MER }} />MER</span>
@@ -302,14 +352,14 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
               <div className="ecom-strip">
                 <div className="ecom-card accent">
                   <div className="ecom-klabel">Net Revenue <Info k="revenue" /></div>
-                  <div className="ecom-val">{money(k.revenue)}</div>
+                  <div className="ecom-val">{money(k.revenue)}<Usd value={k.revenueUsd} /></div>
                   <div className="ecom-sub">net of discounts &amp; returns</div>
                   <div className="ecom-dwrap"><Delta cur={Number(k.revenue) || 0} prev={prior?.revenue as number} /></div>
                 </div>
                 <div className="ecom-card">
                   <div className="ecom-klabel">Ad Spend <Info k="spend" /></div>
-                  <div className="ecom-val">{money(k.spend)}</div>
-                  <div className="ecom-sub">Meta · native AUD</div>
+                  <div className="ecom-val">{money(k.spend)}<Usd value={k.spendUsd} /></div>
+                  <div className="ecom-sub">Meta · both accounts, in AUD</div>
                   <div className="ecom-dwrap"><Delta cur={Number(k.spend) || 0} prev={prior?.spend as number} goodUp={false} /></div>
                 </div>
                 <div className="ecom-card profit">
@@ -320,7 +370,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                 <div className="ecom-card">
                   <div className="ecom-klabel">Orders <Info k="orders" /></div>
                   <div className="ecom-val">{int(k.orders)}</div>
-                  <div className="ecom-sub">AOV ${Number(k.aov).toFixed(0)} · {Number(k.upo).toFixed(1)} units/order</div>
+                  <div className="ecom-sub">AOV ${Number(k.aov).toFixed(0)}<Usd value={k.aovUsd} size="sub" decimals={0} /> · {Number(k.upo).toFixed(1)} units/order</div>
                   <div className="ecom-dwrap"><Delta cur={Number(k.orders) || 0} prev={prior?.orders as number} /></div>
                 </div>
               </div>
@@ -329,11 +379,13 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
             {/* Mini KPIs */}
             <div className="ecom-mini">
               <MiniKpi label="Purchase ROAS" help="purchaseRoas" val={k.purchaseRoas != null ? `${Number(k.purchaseRoas).toFixed(2)}×` : '–'} sub="Meta-attributed" />
-              <MiniKpi label="Conversion Value" help="conv" val={money(k.conv)} sub="Meta omni_purchase" />
-              <MiniKpi label="Cost / Order" help="cpo" val={k.cpo != null ? `$${Number(k.cpo).toFixed(2)}` : '–'} sub="CAC proxy" />
-              <MiniKpi label="AOV" help="aov" val={`$${Number(k.aov).toFixed(0)}`} sub={<Delta cur={Number(k.aov) || 0} prev={prior?.aov as number} />} />
-              <MiniKpi label="CTR" help="ctr" val={`${Number(k.ctr).toFixed(2)}%`} sub={`CPC $${Number(k.cpc).toFixed(2)} · CPM $${Number(k.cpm).toFixed(1)}`} />
-              <MiniKpi label="Return rate" help="returnRate" val={`${Number(k.returnRate).toFixed(1)}%`} sub={`${money(k.returns)} returned`} />
+              <MiniKpi label="Conversion Value" help="conv" val={money(k.conv)} usd={k.convUsd} sub="Meta omni_purchase" />
+              <MiniKpi label="Cost / Order" help="cpo" val={k.cpo != null ? `$${Number(k.cpo).toFixed(2)}` : '–'} usd={k.cpo != null ? k.cpoUsd : null} usdDecimals={2} sub="CAC proxy" />
+              <MiniKpi label="AOV" help="aov" val={`$${Number(k.aov).toFixed(0)}`} usd={k.aovUsd} usdDecimals={0} sub={<Delta cur={Number(k.aov) || 0} prev={prior?.aov as number} />} />
+              <MiniKpi label="CTR" help="ctr" val={`${Number(k.ctr).toFixed(2)}%`}
+                sub={<>CPC ${Number(k.cpc).toFixed(2)}<Usd value={k.cpcUsd} size="sub" decimals={2} /> · CPM ${Number(k.cpm).toFixed(1)}<Usd value={k.cpmUsd} size="sub" decimals={1} /></>} />
+              <MiniKpi label="Return rate" help="returnRate" val={`${Number(k.returnRate).toFixed(1)}%`}
+                sub={<>{money(k.returns)}<Usd value={k.returnsUsd} size="sub" /> returned</>} />
             </div>
 
             {/* Trend */}
@@ -404,8 +456,8 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                     return (
                       <div key={mk}>
                         <div className="ecom-flag">{mk === 'usa' ? '🇺🇸 USA' : '🇦🇺 Australia'} <span className="ecom-faint">· {mk === 'usa' ? 'USD' : 'AUD'} account</span></div>
-                        <div className="ecom-mrow"><span className="ecom-dim">Revenue</span><b>{money(m.revenue)}</b></div>
-                        <div className="ecom-mrow"><span className="ecom-dim">Ad spend</span><b>{money(m.spend)}</b></div>
+                        <div className="ecom-mrow"><span className="ecom-dim">Revenue</span><b>{money(m.revenue)}<Usd value={m.revenueUsd} size="table" /></b></div>
+                        <div className="ecom-mrow"><span className="ecom-dim">Ad spend</span><b>{money(m.spend)}<Usd value={m.spendUsd} size="table" /></b></div>
                         <div className="ecom-mrow"><span className="ecom-dim">Purchase ROAS</span><b>{m.roas != null ? `${Number(m.roas).toFixed(2)}×` : '–'}</b></div>
                         <div className="ecom-mrow"><span className="ecom-dim">Rev share</span><b>{m.share}%</b></div>
                       </div>
@@ -425,7 +477,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                     <div key={g.country} className="ecom-bar-row">
                       <span>{COUNTRY[g.country] ?? g.country}</span>
                       <div className="ecom-bar-track"><div className="ecom-bar-fill" style={{ width: `${(g.revenue / mx) * 100}%` }} /></div>
-                      <span className="ecom-bar-val">{money(g.revenue)}</span>
+                      <span className="ecom-bar-val">{money(g.revenue)}<Usd value={g.revenueUsd} size="table" /></span>
                     </div>
                   ));
                 })()}
@@ -470,7 +522,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                       <td><div className="pname"><span className="dotrank">{i + 1}</span>{p.title}</div></td>
                       <td className="r ecom-dim tnum">{int(p.units)}</td>
                       <td><div className="inbar" style={{ width: `${(p.revenue / mx) * 100}%` }} /></td>
-                      <td className="r tnum" style={{ fontFamily: 'Fraunces, Georgia, serif' }}>{money(p.revenue)}</td>
+                      <td className="r tnum" style={{ fontFamily: 'Fraunces, Georgia, serif' }}>{money(p.revenue)}<Usd value={p.revenueUsd} size="table" /></td>
                     </tr>
                   )); })()}
                 </tbody>
@@ -521,7 +573,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                               {a2.firstSeen >= toYMD(range.from!) && <> · <b>new in range</b></>}
                             </div>
                           </td>
-                          <td className="r tnum">{money(a2.spend)}</td>
+                          <td className="r tnum">{money(a2.spend)}<Usd value={a2.spendUsd} size="table" /></td>
                           <td>
                             <div className="inbar" style={{ width: `${(a2.spend / mx) * 100}%` }} />
                             {totalSpend > 0 && (
@@ -535,7 +587,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                           </td>
                           <td className="r ecom-dim tnum">{a2.ctr == null ? '—' : `${a2.ctr.toFixed(2)}%`}</td>
                           <td className="r ecom-dim tnum">{int(a2.purchases)}</td>
-                          <td className="r tnum">{a2.cpp == null ? '—' : money(a2.cpp)}</td>
+                          <td className="r tnum">{a2.cpp == null ? '—' : <>{money(a2.cpp)}<Usd value={a2.cppUsd} size="table" /></>}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -559,11 +611,14 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
   );
 }
 
-function MiniKpi({ label, help, val, sub }: { label: string; help: string; val: string; sub: ReactNode }) {
+function MiniKpi({ label, help, val, sub, usd, usdDecimals }: {
+  label: string; help: string; val: string; sub: ReactNode;
+  usd?: number | null; usdDecimals?: number;
+}) {
   return (
     <div className="ecom-card ecom-minicard">
       <div className="ecom-klabel">{label} <Info k={help} /></div>
-      <div className="ecom-val">{val}</div>
+      <div className="ecom-val">{val}{usd !== undefined && <Usd value={usd} decimals={usdDecimals} />}</div>
       <div className="ecom-sub">{sub}</div>
     </div>
   );
@@ -579,18 +634,28 @@ function SectionH({ eyebrow, title, help, note }: { eyebrow: string; title: stri
 }
 function Bridge({ b }: { b: Record<string, number> }) {
   const W = 460, H = 250, T = 34, B = 34, L = 10, R = 10, ih = H - T - B;
-  const steps: Array<[string, number, 'base' | 'neg']> = [['Gross', b.gross, 'base'], ['Discounts', -b.discounts, 'neg'], ['Returns', -b.returns, 'neg'], ['Net', b.net, 'base']];
+  // Fourth slot is the USD twin from the RPC. The sign stays on the AUD figure
+  // only — the companion annotates it, it does not restate it.
+  const steps: Array<[string, number, 'base' | 'neg', number | undefined]> = [
+    ['Gross', b.gross, 'base', b.grossUsd],
+    ['Discounts', -b.discounts, 'neg', b.discountsUsd],
+    ['Returns', -b.returns, 'neg', b.returnsUsd],
+    ['Net', b.net, 'base', b.netUsd],
+  ];
   const max = b.gross || 1, y = (v: number) => T + ih - (v / max) * ih, n = steps.length, gap = (W - L - R) / n, bw = gap * 0.56;
   let run = 0;
   const els: ReactNode[] = [];
-  steps.forEach(([name, val, kind], i) => {
+  steps.forEach(([name, val, kind, usd], i) => {
     const cx = L + gap * i + gap / 2; let top: number, bot: number;
     if (kind === 'base') { top = y(val); bot = y(0); run = val; } else { const st = run; run += val; top = y(Math.max(st, run)); bot = y(Math.min(st, run)); }
     const hh = Math.max(2, bot - top), col = kind === 'neg' ? 'var(--ecom-neg)' : 'var(--ecom-crema)';
     if (i > 0) els.push(<line key={`c${i}`} x1={L + gap * (i - 1) + gap / 2 + bw / 2} y1={top} x2={cx - bw / 2} y2={top} stroke="var(--ecom-faint)" strokeDasharray="2 2" opacity={0.5} />);
     els.push(<rect key={`r${i}`} x={cx - bw / 2} y={top} width={bw} height={hh} rx={3} fill={col} opacity={kind === 'neg' ? 0.85 : 1} />);
     els.push(<text key={`t${i}`} x={cx} y={H - 14} textAnchor="middle" fontSize={11} fill="var(--ecom-dim)" fontFamily="Inter">{name}</text>);
-    els.push(<text key={`v${i}`} x={cx} y={top - 9} textAnchor="middle" fontSize={11.5} fontWeight={600} fill={col} fontFamily="Fraunces, Georgia, serif">{val < 0 ? '−' : ''}{money(Math.abs(val))}</text>);
+    els.push(<text key={`v${i}`} x={cx} y={top - 20} textAnchor="middle" fontSize={11.5} fontWeight={600} fill={col} fontFamily="Fraunces, Georgia, serif">{val < 0 ? '−' : ''}{money(Math.abs(val))}</text>);
+    if (usd !== undefined && usd !== null) {
+      els.push(<text key={`u${i}`} x={cx} y={top - 8} textAnchor="middle" fontSize={9.5} fill="var(--ecom-faint)" fontFamily="Inter">{usdText(Math.abs(usd))}</text>);
+    }
   });
   return <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>{els}</svg>;
 }
@@ -603,11 +668,20 @@ function buildSignals(d: Dash): string[] {
   const screens = fam['Shower Screens'], baskets = fam['Filter Baskets'], pf = fam['Portafilters'], bundles = fam['Bundles'];
   const setupPct = ((screens?.pct ?? 0) + (baskets?.pct ?? 0) + (pf?.pct ?? 0)).toFixed(0);
   const storeUnit = d.kpis.orders ? (total / (d.kpis.units as number)) : 0;
+  // Revenue-per-unit in USD is the USD total over the SAME unit count — the AUD
+  // arithmetic repeated on the twin, not an AUD figure divided by a rate.
+  const storeUnitUsd = d.kpis.orders ? ((d.kpis.revenueUsd as number) / (d.kpis.units as number)) : 0;
+  // These strings go through dangerouslySetInnerHTML, so the companion is the
+  // same markup <Usd> renders, written by hand.
+  const usd = (v: number | null | undefined, decimals?: number) => {
+    const t = usdText(v, decimals);
+    return t ? `<span class="ecom-usd sub">${t}</span>` : '';
+  };
   const out: string[] = [];
-  if (screens) out.push(`<b>Shower screens are the business.</b> The PSD-HD family is <b>${screens.pct.toFixed(0)}%</b> of revenue — <span>more than every other category combined.</span> ${money(screens.revenue)} across ${int(screens.units)} units.`);
+  if (screens) out.push(`<b>Shower screens are the business.</b> The PSD-HD family is <b>${screens.pct.toFixed(0)}%</b> of revenue — <span>more than every other category combined.</span> ${money(screens.revenue)}${usd(screens.revenueUsd)} across ${int(screens.units)} units.`);
   out.push(`<b>The full setup — screens + baskets + portafilters — is ${setupPct}% of revenue.</b> <span>Distribution, prep tools and accessories are the long tail.</span>`);
-  if (bundles && pf) out.push(`<b>Bundles &amp; portafilters carry the biggest ticket:</b> <b>$${Math.round(bundles.aovUnit)}</b> and <b>$${Math.round(pf.aovUnit)}</b> per unit versus <span>$${storeUnit.toFixed(0)} store-wide.</span> Combos are the upsell lever.`);
-  if (baskets) out.push(`<b>Baskets are high-volume, low-ticket</b> — ${int(baskets.units)} units at $${Math.round(baskets.aovUnit)}. <span>The natural attach product alongside every screen.</span>`);
+  if (bundles && pf) out.push(`<b>Bundles &amp; portafilters carry the biggest ticket:</b> <b>$${Math.round(bundles.aovUnit)}${usd(bundles.aovUnitUsd, 0)}</b> and <b>$${Math.round(pf.aovUnit)}${usd(pf.aovUnitUsd, 0)}</b> per unit versus <span>$${storeUnit.toFixed(0)}${usd(storeUnitUsd, 0)} store-wide.</span> Combos are the upsell lever.`);
+  if (baskets) out.push(`<b>Baskets are high-volume, low-ticket</b> — ${int(baskets.units)} units at $${Math.round(baskets.aovUnit)}${usd(baskets.aovUnitUsd, 0)}. <span>The natural attach product alongside every screen.</span>`);
   const topGeo = d.market.usa.revenue && d.market.australia.revenue ? (Number(d.market.usa.revenue) >= Number(d.market.australia.revenue) ? 'USA' : 'Australia') : null;
   if (topGeo) out.push(`<b>${topGeo} leads the two core markets</b> at <b>${topGeo === 'USA' ? d.market.usa.share : d.market.australia.share}%</b> of USA+AU revenue, <span>with a long international tail behind them.</span>`);
   return out.slice(0, 5);
@@ -641,6 +715,13 @@ const ECOM_CSS = `
 .ecom-klabel{font-size:12px;font-weight:500;color:var(--ecom-dim);display:flex;align-items:center;gap:6px}
 .ecom-val{font-size:clamp(24px,2.6vw,32px);font-weight:600;letter-spacing:-.02em;margin-top:10px;line-height:1;font-family:'Fraunces',Georgia,serif;font-variant-numeric:tabular-nums}
 .ecom-sub{font-size:11.5px;color:var(--ecom-faint);margin-top:7px}
+/* USD companion. Always Inter (never the serif of the amount it annotates) and
+   always the faint tone, so it stays an annotation. 'card' rides the parent's
+   size in em; rows and captions need a floor, or 0.58em of a 13px cell lands
+   near 7px. */
+.ecom-usd{font-family:'Inter',system-ui,sans-serif;font-weight:400;font-size:.58em;color:var(--ecom-faint);margin-left:.34em;white-space:nowrap;letter-spacing:0;font-variant-numeric:tabular-nums}
+.ecom-usd.tbl{font-size:12px}
+.ecom-usd.sub{font-size:.9em}
 .ecom-dwrap{margin-top:8px}
 .ecom-delta{font-size:12px;font-weight:600;display:inline-flex;gap:3px;align-items:center}
 .ecom-delta.up{color:var(--ecom-pos)}.ecom-delta.down{color:var(--ecom-neg)}
@@ -670,7 +751,8 @@ const ECOM_CSS = `
 .ecom-flag{font-size:12px;font-weight:600;color:var(--ecom-dim);margin-bottom:4px}
 .ecom-mrow{display:flex;justify-content:space-between;font-size:13px;padding:7px 0;border-bottom:1px solid var(--ecom-line)}
 .ecom-mrow:last-child{border-bottom:none}.ecom-mrow b{font-family:'Fraunces',Georgia,serif;font-variant-numeric:tabular-nums}
-.ecom-bar-row{display:grid;grid-template-columns:118px 1fr 74px;gap:12px;align-items:center;font-size:12.5px;padding:5px 0}
+/* Value column widened from 74px: it now carries "$243K (US$168K)". */
+.ecom-bar-row{display:grid;grid-template-columns:110px 1fr 132px;gap:12px;align-items:center;font-size:12.5px;padding:5px 0}
 .ecom-bar-track{height:9px;background:var(--ecom-card2);border-radius:6px;overflow:hidden}
 .ecom-bar-fill{height:100%;background:linear-gradient(90deg,var(--ecom-crema),var(--ecom-crema2));border-radius:6px}
 .ecom-bar-val{text-align:right;color:var(--ecom-dim);font-variant-numeric:tabular-nums}
