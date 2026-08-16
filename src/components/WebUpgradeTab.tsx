@@ -21,6 +21,10 @@ type View = 'daily' | 'modules' | 'products' | 'blocks';
 
 interface Dash {
   params: { from: string; to: string; environment: string };
+  // Present ONLY when the answer came from web_upgrade_perf_cache (the five
+  // presets, recomputed 4×/day). Absent means it was computed live just now.
+  // Surfaced in the header so "these figures are a snapshot" is never silent.
+  cachedAt?: string;
   totals: { exposedSessions: number; totalEvents: number; directOrders: number; directLines: number; directRevenue: number; assistedOrders: number };
   modules: Array<{ module: string; sessions: number; views: number; selects: number; clicks: number; adds: number; ctr: number | null; addsPerSession: number | null; orders: number; revenue: number; aov: number | null }>;
   compatFunnel: { pageViews: number; modelSelect: number; addClicks: number; addSuccess: number; sessions: number; completeKit: number; orders: number } | null;
@@ -1325,7 +1329,20 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 <Glossary />
               </DialogContent>
             </Dialog>
-            <span className="wu-pill"><span className="wu-live" />Live from DB</span>
+            {/* A cached answer is a snapshot, and saying so is the whole point:
+                the panel used to be live-but-slow, and the trade was made
+                deliberately. `cachedAt` only exists on cached payloads. */}
+            {data?.cachedAt ? (
+              <span
+                className="wu-pill"
+                title={`This range is precomputed after each sync and served instantly. Figures are as of ${data.cachedAt} Brisbane. Pick a custom range to force a live calculation.`}
+              >
+                <span className="wu-live" style={{ background: '#f59e0b' }} />
+                Snapshot · {data.cachedAt}
+              </span>
+            ) : (
+              <span className="wu-pill"><span className="wu-live" />Live from DB</span>
+            )}
           </div>
         </div>
 
