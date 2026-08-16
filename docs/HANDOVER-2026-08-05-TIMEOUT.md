@@ -6,6 +6,39 @@
 
 ---
 
+## ⚡ Addendum 2026-08-17 — reapareció, segunda auditoría, fix aplicado
+
+El 7-ago otra sesión reescribió `web_upgrade_performance` sobre rollups diarios
+(30 días: 10-47 s → ~1 s). El 17-ago a las ~06:15 de Brisbane el error volvió.
+La segunda auditoría cerró la causa con evidencia distinta a la del 5-ago:
+
+- **La RPC está sana**: 0,57 s caliente / 4,8 s fría con la base ociosa.
+- **El choque es de calendario**: el cron de kickoff (`0 3,10,20` UTC) largaba
+  una corrida a las **06:00 de Brisbane** que terminó 20:00:01→20:22:07 UTC —
+  exactamente cuando Mario abre el dashboard. Pasos pesados de esa corrida:
+  Unleashed sales 99,5 s, assemblies 71 s, Meta creatives 61 s.
+- **La base se duplicó en 12 días**: 632 MB → **1.151 MB** contra 224 MB de
+  caché. Eventos ~15-18k/día (la barra sigue emitiendo por página: 4-5,6k/día);
+  tablas de atribución del agente de Advertising +70 MB;
+  `web_upgrade_sessions_daily` 141 MB.
+
+**Aplicado** (migración `20260816202800_dashboard_rpc_timeout_50s`):
+
+1. Kickoff movido de 20:00 UTC → **18:00 UTC (04:00 Brisbane)**: la corrida
+   termina ~04:25, antes de que se abra el dashboard. Las de 03:00 y 10:00 UTC
+   (13:00 y 20:00 Brisbane) quedan igual.
+2. `statement_timeout` de ambas RPC: 25 s → **50 s**. Un choque residual pasa a
+   ser una carga lenta, no un error.
+
+**Sigue abierto y sigue siendo la decisión de fondo** (§7 abajo, con los datos
+del 5-ago que ya apuntaban acá): purgar/archivar `upgrade_events` cruda
+(429 MB que nadie lee), el tamaño de la instancia, y el theme emitiendo la
+vista de la barra por página en vez de por sesión.
+
+Lo que sigue es el diagnóstico original del 5-ago, sin editar.
+
+---
+
 ## 1. El síntoma
 
 `canceling statement due to statement timeout` (Postgres 57014), intermitente,
