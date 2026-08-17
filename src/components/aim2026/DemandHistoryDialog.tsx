@@ -53,7 +53,13 @@ interface DemandMonth {
   quantityParked: number;
   quantityBackordered: number;
   componentUsage: number;
-  totalDemand: number; // Sales + Comp Usage + Placed + Backordered (+ Parked if enabled)
+  /** Consumption: what left the warehouse. Sales (Completed) + assembly usage.
+   *  Placed / Backordered / Parked are commitments, not consumption — they stay
+   *  in their own fields and in the monthly breakdown table, and never enter the
+   *  chart, the average, the peak or the deviation. Including them is what showed
+   *  4,606 units of July demand for a product launched on 23-Jul against 787
+   *  actually shipped. See docs/AUDIT-DEMANDA-2026-08-18.md. */
+  totalDemand: number;
   revenue: number;
   movingAvg: number;
   quantityB2b: number; // Completed B2B sales
@@ -103,7 +109,7 @@ async function fetchDemandHistory(sku: string, warehouse = 'all'): Promise<Deman
     const data: DemandMonth[] = entries.map(([key, val]) => {
       const [y, m] = key.split('-').map(Number);
       const d = new Date(y, m - 1, 1);
-      const totalDemand = val.sold + val.compUsage + val.placed + val.backordered + val.parked;
+      const totalDemand = val.sold + val.compUsage;
       return {
         month: d.toLocaleString('en', { month: 'short' }),
         fullMonth: d.toLocaleString('en', { month: 'long', year: 'numeric' }),

@@ -436,8 +436,7 @@ async function loadDemandDetailSummary(
 async function loadDailyDemandSummary(
   supabase: any,
   rangeFrom: string,
-  rangeTo: string,
-  demandMode: DemandMode
+  rangeTo: string
 ): Promise<Map<string, number>> {
   const allData: any[] = [];
   const pageSize = 1000;
@@ -466,16 +465,14 @@ async function loadDailyDemandSummary(
     const type = String(row.type ?? "").toLowerCase();
     const qty = Number(row.quantity ?? 0);
 
-    // Include: completed sales + component_usage + placed + backordered
-    // (mirrors base = quantity + componentUsage + placed + backordered in calcDemandStats)
+    // Shipped sales + assembly consumption only — mirrors calcDemandStats, which
+    // no longer averages unshipped orders. Keeping Placed/Backordered here would
+    // reintroduce the same distortion on short ranges, where a single large order
+    // is divided by a handful of days instead of a month and lands even harder.
     const isCompletedSale = type === "sale" && status === "completed";
     const isComponentUsage = type === "component_usage";
-    const isPlacedOrBackordered = type === "sale" && (status === "placed" || status === "backordered");
-    const isParked = type === "sale" && status === "parked";
 
-    const include =
-      isCompletedSale || isComponentUsage || isPlacedOrBackordered ||
-      (demandMode === "estimatedDemandParked" && isParked);
+    const include = isCompletedSale || isComponentUsage;
 
     if (include) {
       map.set(sku, (map.get(sku) ?? 0) + qty);
@@ -560,9 +557,27 @@ function normalizeDemandMode(mode?: string | null): DemandMode {
   return "realDemand";
 }
 
+/** Units ordered but not yet shipped, over the whole window.
+ *
+ * Placed and Backordered are firm commitments. Parked is a quote and only counts
+ * when the caller asks for it (demandMode = estimatedDemandParked) — that toggle
+ * used to add Parked to the demand average, which is what it never should have
+ * done; here it decides how optimistic the open-orders figure is, which is the
+ * question it was actually asking.
+ *
+ * Deliberately NOT reconciled against soh.allocated: Unleashed only reserves
+ * stock that physically exists, so the two disagree by design — PSD-HD-BR54 on
+ * 18-Aug had 3,932 units open in China-W against 387 allocated. Any formula
+ * combining them would be guessing. */
+function calcOpenOrders(months: DemandMonth[], demandMode: DemandMode): number {
+  return months.reduce((sum, m) => {
+    const firm = m.placed + m.backordered;
+    return sum + (demandMode === "estimatedDemandParked" ? firm + m.parked : firm);
+  }, 0);
+}
+
 function calcDemandStats(
   months: DemandMonth[],
-  demandMode: DemandMode,
   rangeFrom?: string,
   rangeTo?: string
 ): {
@@ -583,10 +598,21 @@ function calcDemandStats(
     : months.map(() => 1);
   const totalWeight = weights.reduce((a, b) => a + b, 0);
 
-  const totalQuantities = months.map((m) => {
-    const base = m.quantity + m.componentUsage + m.placed + m.backordered;
-    return demandMode === "estimatedDemandParked" ? base + m.parked : base;
-  });
+  // Demand is what LEFT the warehouse: shipped sales, plus what was consumed
+  // building assemblies. Placed / Backordered / Parked have NOT shipped, so they
+  // are not consumption — they are a commitment. They are reported separately as
+  // `openOrders` and never averaged, never multiplied by lead time.
+  //
+  // Including them here is what made PSD-HD-BR54 — launched 23-Jul-2026 — report
+  // 4,606 units of July demand against 787 actually shipped: a single 3,500-unit
+  // internal order dated 29-Jul, never shipped, entered the monthly average and
+  // from there the reorder point, which multiplies it by lead time TWICE (once
+  // via ROP, once via target level). Audit: docs/AUDIT-DEMANDA-2026-08-18.md.
+  //
+  // Two further reasons this belongs out of the average: a closed month must stop
+  // changing (an old order flipping status rewrote it), and one large B2B order is
+  // an event, not a monthly rate.
+  const totalQuantities = months.map((m) => m.quantity + m.componentUsage);
   const salesOnlyQuantities = months.map((m) => m.quantity);
   const totalRevenue = months.reduce((s, m) => s + m.revenue, 0);
 
@@ -800,7 +826,7 @@ Deno.serve(async (req: Request) => {
 
     // Load daily demand if needed (for short date ranges < 30 days)
     const dailyDemandMap = useDailyMode && rangeFrom && rangeTo
-      ? await loadDailyDemandSummary(supabase, rangeFrom, rangeTo, demandMode)
+      ? await loadDailyDemandSummary(supabase, rangeFrom, rangeTo)
       : new Map<string, number>();
 
     // ── Build assembly B2C fraction map ─────────────────────────
@@ -916,8 +942,14 @@ Deno.serve(async (req: Request) => {
         ? (soh[warehouseFilter] ?? findWarehouseValue(soh, [warehouseFilter.toLowerCase()]))
         : mainWH;
 
-      const demandStats = calcDemandStats(demandMonths, demandMode, rangeFrom, rangeTo);
+      const demandStats = calcDemandStats(demandMonths, rangeFrom, rangeTo);
       const avgDailyDemand = demandStats.avgMonthly / 30;
+
+      // Committed but not shipped. A TOTAL over the window, never an average:
+      // averaging a one-off 3,500-unit order into a monthly rate is the bug this
+      // whole change exists to fix. Shown as its own column so the number is
+      // visible when planning a purchase without contaminating any KPI.
+      const openOrders = calcOpenOrders(demandMonths, demandMode);
 
       const leadTimeDays = params.leadTimeDays || config.defaultLeadTimeDays;
       const z = params.serviceLevelZ || config.defaultServiceLevelZ;
@@ -1019,6 +1051,7 @@ Deno.serve(async (req: Request) => {
           allocatedChina: chinaWH.allocated,
           availableChina: chinaWH.available,
           allocatedTotal,
+          openOrders,
           projectedDemand: useDailyMode
             ? Math.round((dailyDemandMap.get(sku) ?? 0) / totalRangeDays)
             : Math.round(demandStats.avgMonthly),
