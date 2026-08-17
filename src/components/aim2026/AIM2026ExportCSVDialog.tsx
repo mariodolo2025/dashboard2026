@@ -98,6 +98,10 @@ export function AIM2026ExportCSVDialog({
       push('availableMainWH', 'Available', (v) => formatNum(Number(v ?? 0)));
     }
 
+    // Follows the Columns picker like every other toggleable column: push() is a
+    // no-op for anything in hiddenColumns, and Open is hidden by default.
+    push('openOrders', 'Open (unshipped)', (v) => formatNum(Number(v ?? 0)));
+
     if (splitDemand) {
       push('demandB2b', 'B2B', (v) => formatNum(Number(v ?? 0)));
       push('demandB2c', 'B2C', (v) => formatNum(Number(v ?? 0)));

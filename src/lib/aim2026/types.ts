@@ -52,7 +52,13 @@ export interface SKURow {
   availableChina: number;
   allocatedTotal: number;
   // Demand
+  /** Consumption per period: units that LEFT the warehouse (shipped sales plus
+   *  assembly usage). Never includes unshipped orders — those are `openOrders`. */
   projectedDemand: number;
+  /** Units ordered but not shipped (Placed + Backordered, plus Parked when the
+   *  estimated mode is on), as a TOTAL over the window. Deliberately kept out of
+   *  every derived KPI: it is a commitment to cover once, not a monthly rate. */
+  openOrders: number;
   demandTrend: TrendDirection;
   demandTrendPercent: number;
   // Channel split (loaded lazily when B2B/B2C split is toggled)
@@ -134,7 +140,11 @@ export const DEFAULT_FILTERS: AIM2026Filters = {
   showInTransit: false,
   showAllocation: false,
   showReorderDetail: false,
-  hiddenColumns: [],
+  // Open is off by default and lives in the Columns picker: it answers "what is
+  // already committed", which matters when building a PO and is noise the rest of
+  // the time. It is a column rather than a toggle so it sits beside Demand and is
+  // read against it.
+  hiddenColumns: ['openOrders'],
   demandMode: 'realDemand',
 };
 
@@ -144,6 +154,7 @@ export const TOGGLEABLE_COLUMNS: { key: string; label: string }[] = [
   { key: 'sohMainWH', label: 'SOH Main' },
   { key: 'sohChina', label: 'SOH China' },
   { key: 'projectedDemand', label: 'Demand' },
+  { key: 'openOrders', label: 'Open' },
   { key: 'reorderPoint', label: 'ROP' },
   { key: 'suggestedQty', label: 'Sug. Qty' },
   { key: 'daysOfCover', label: 'Cover' },

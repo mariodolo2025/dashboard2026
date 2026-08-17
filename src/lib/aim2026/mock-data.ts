@@ -76,6 +76,7 @@ export function generateMockSKURows(): SKURow[] {
       availableChina: availableChinaVal,
       allocatedTotal: allocatedMainWHVal + allocatedChinaVal,
       projectedDemand,
+      openOrders: Math.round(projectedDemand * randomBetween(0, 40) / 100),
       demandTrend: pickRandom(['up', 'down', 'stable'] as const),
       demandTrendPercent: randomBetween(-25, 40),
       reorderPoint,

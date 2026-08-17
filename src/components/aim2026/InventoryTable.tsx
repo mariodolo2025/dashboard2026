@@ -345,6 +345,39 @@ export function InventoryTable({
               size: 110,
             },
           ]) as ColumnDef<SKURow>[]),
+      // ── Open — committed but not shipped ──────────────────────────────────
+      // Hidden by default (see DEFAULT_FILTERS.hiddenColumns); turn it on from
+      // Columns. It sits next to Demand on purpose: the two answer different
+      // questions and used to be added into one number that answered neither.
+      // A TOTAL over the window, never a rate — so it is not comparable to
+      // Demand/d and says so in its tooltip.
+      {
+        accessorKey: 'openOrders',
+        header: ({ column }) => (
+          <SortHeader column={column} className="justify-center">
+            <span
+              title="Units ordered but not yet shipped (Placed + Backordered). Total for the period, not a monthly rate. Not included in Demand, ROP, Cover or Sug. Qty."
+              className="border-b border-dotted border-muted-foreground/50"
+            >
+              Open
+            </span>
+          </SortHeader>
+        ),
+        cell: ({ row }) => {
+          const open = row.original.openOrders ?? 0;
+          return (
+            <span
+              className={cn(
+                'text-[13px] tabular-nums text-center block w-full',
+                open > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground/40'
+              )}
+            >
+              {open > 0 ? formatNum(open) : '—'}
+            </span>
+          );
+        },
+        size: 85,
+      },
       // ABC
       {
         accessorKey: 'abcClass',
