@@ -1,6 +1,31 @@
 # Auditoría — la demanda de AIM 2026 no es demanda
 
-**Fecha:** 18-ago-2026 · **Estado: auditado, NADA modificado.**
+> ## ✅ RESUELTO — 18-ago-2026
+>
+> Aplicado y verificado en producción (`d850c69` en `ui-redesign`, edge function
+> `aim2026-calc-kpis-v2` desplegada, caché de KPIs recalculado).
+>
+> | PSD-HD-BR54 | Antes | Ahora |
+> |---|---|---|
+> | Demand | 5.828 | **1.200** |
+> | Open (columna nueva) | — | **345** |
+> | ROP | 15.107 | **2.633** |
+> | Sug. Qty | **12.276** | **0** |
+> | Cover | 29 d | **139 d** |
+> | Estado | LOW STOCK | **OK** |
+>
+> Julio ahora reporta **788** y agosto **1.612** — 2.400 contra las 2.427 de
+> Unleashed y las 2.357 de Shopify. El tab decía "comprá 12.276 unidades" de un
+> producto con 139 días de cobertura.
+>
+> También aplicado: la orden fantasma SO-00020333 borrada (respaldo en
+> `aim2026_demand_detail_bkp_so20333`), y la vista de control
+> `aim2026_demand_sanity` (§10.4).
+>
+> **Sigue abierto**: el sync no propaga bajas (§8.1) y las filas se imputan por
+> fecha de pedido, no de despacho (§9).
+
+**Fecha:** 18-ago-2026 · **Estado inicial: auditado, nada modificado.**
 **Disparador:** PSD-HD-BR54 vendió 2.357 unidades según Shopify y 2.427 según
 Unleashed. AIM 2026 muestra **5.828** de demanda y un pico de **4.606 en julio**,
 un mes en el que el producto se lanzó recién el día 23.
