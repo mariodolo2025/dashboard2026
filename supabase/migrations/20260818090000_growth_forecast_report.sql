@@ -33,9 +33,13 @@
 --    from advertising_unit_economics (Juan's workbook) — the same row the
 --    Advertising tab reads, so the two screens can never disagree.
 --
--- 5. SHIPPING COST COMES FROM XERO, split by market with Starshipit ratios.
---    Starshipit's own freight_charge is NOT used for money: it under-captured
---    DHL eCommerce by $105k. Same method as the starshipit-market edge function.
+-- 5. SHIPPING COST IS READ, NOT COMPUTED. Per-parcel cost comes from
+--    aim2026_validated_figures ($19.42 to the US, INCLUDING ZONOS import duties;
+--    $5.52 to AU). This report used to derive it from Xero and got it wrong: it
+--    averaged DHL eCommerce — the abandoned carrier — with Australia Post and
+--    left ZONOS out, landing on $18.68. Both errors cancelled, so the figure
+--    LOOKED right. The derived value still ships as `costComputed` so drift
+--    between the two is visible.
 -- =============================================================================
 
 create or replace function public.growth_forecast_report(
@@ -171,6 +175,12 @@ shiporders as (
          sum(orders) filter (where market not in ('AU','US')) ot
   from starshipit_market_monthly where (year * 100 + month) between 202507 and 202606
 ),
+-- Cifras que Mario ya validó. El costo por paquete se LEE de acá; el cálculo
+-- propio queda al lado como costComputed sólo para detectar deriva. Ver
+-- 20260819080000_validated_figures.sql para el porqué.
+validated as (
+  select key, value from aim2026_validated_figures
+),
 shiprev as (
   select sum(revenue_ex_gst) filter (where market = 'AU') au,
          sum(revenue_ex_gst) filter (where market = 'US') us,
@@ -221,10 +231,14 @@ select jsonb_build_object(
   'fxRate', (select round(rate::numeric, 4) from fxlast),
   'shipping', jsonb_build_array(
       jsonb_build_object('market', 'US', 'orders', (select us from shiporders),
-        'costPerParcel', (select round((us / nullif((select us from shiporders), 0))::numeric, 2) from shipcost),
+        'costPerParcel', (select value from validated where key = 'us_shipping_cost_per_parcel'),
+        'costSource', 'validated',
+        'costComputed', (select round((us / nullif((select us from shiporders), 0))::numeric, 2) from shipcost),
         'chargedPerParcel', (select round((us / nullif(ous, 0))::numeric, 2) from shiprev)),
       jsonb_build_object('market', 'AU', 'orders', (select au from shiporders),
-        'costPerParcel', (select round((au / nullif((select au from shiporders), 0))::numeric, 2) from shipcost),
+        'costPerParcel', (select value from validated where key = 'au_shipping_cost_per_parcel'),
+        'costSource', 'validated',
+        'costComputed', (select round((au / nullif((select au from shiporders), 0))::numeric, 2) from shipcost),
         'chargedPerParcel', (select round((au / nullif(oau, 0))::numeric, 2) from shiprev)),
       jsonb_build_object('market', 'Other', 'orders', (select ot from shiporders),
         'costPerParcel', (select round((ot / nullif((select ot from shiporders), 0))::numeric, 2) from shipcost),
