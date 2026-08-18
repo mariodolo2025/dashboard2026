@@ -53,9 +53,14 @@ interface Payload {
   us: {
     orders: number; aov: number; windowDays: number;
     thresholds: { threshold: number; orders: number; giveUp: number }[];
-    nudge: { orders: number; avgGap: number };
+    currentThreshold: number;
+    /** Shipping actually billed to US customers over the window. */
+    chargedTotal: number;
   };
   shipping: { market: string; orders: number; costPerParcel: number; chargedPerParcel: number }[];
+  /** AUD per USD, latest known monthly rate. The US block is USD, per-parcel
+   *  cost is AUD; without this the two cannot go on the same line. */
+  fxRate: number;
 }
 
 type Tab = 'now' | 'proj' | 'prod' | 'cal' | 'ship' | 'memo' | 'help';
@@ -95,7 +100,7 @@ function monthLabel(i: number) {
 function Prov({ kind }: { kind: 'measured' | 'projected' }) {
   return (
     <span className={cn(
-      'inline-flex items-center rounded px-1.5 py-0.5 text-[9.5px] font-mono uppercase tracking-wider',
+      'inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[11.5px] font-semibold uppercase tracking-wide',
       kind === 'measured'
         ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
         : 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400'
@@ -112,14 +117,31 @@ function Stat({ label, value, sub, tone, tip }: {
     : tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
     : tone === 'accent' ? 'text-amber-700 dark:text-amber-400' : '';
   return (
-    <Card className="p-3">
+    // The whole tile carries the tooltip, not just an icon: aria-label alone
+    // shows nothing on hover, which is the one thing it was there to do.
+    <Card className="p-3" title={tip}>
       <div className="flex items-center gap-1.5">
-        <span className="text-[10.5px] font-mono uppercase tracking-wider text-muted-foreground">{label}</span>
-        {tip && <HelpCircle size={11} className="text-muted-foreground/50 shrink-0" aria-label={tip}><title>{tip}</title></HelpCircle>}
+        <span className={cn('font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90',
+          tip && 'cursor-help border-b border-dotted border-foreground/50')}>{label}</span>
+        {tip && <HelpCircle size={12} className="shrink-0 text-foreground/45" />}
       </div>
-      <div className={cn('mt-1 font-mono text-xl font-semibold tabular-nums tracking-tight', toneCls)}>{value}</div>
-      {sub && <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p>}
+      <div className={cn('mt-1 font-mono text-[26px] font-semibold tabular-nums tracking-tight', toneCls)}>{value}</div>
+      {sub && <p className="mt-1 text-[13.5px] text-foreground/70">{sub}</p>}
     </Card>
+  );
+}
+
+/** Table header that carries its definition. Every column gets one — a header
+ *  the reader has to guess at is the fastest way to lose their trust in the
+ *  number underneath it. */
+function Th({ tip, align = 'right', children }: {
+  tip: string; align?: 'left' | 'right'; children: React.ReactNode;
+}) {
+  return (
+    <th className={cn('px-3 py-2 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90',
+      align === 'left' ? 'text-left' : 'text-right')}>
+      <span title={tip} className="cursor-help border-b border-dotted border-foreground/50">{children}</span>
+    </th>
   );
 }
 
@@ -151,7 +173,6 @@ export function GrowthForecastContent() {
   const [topN, setTopN] = useState(10);
   const [openSku, setOpenSku] = useState<string | null>(null);
   const [thr, setThr] = useState(100);
-  const [nudgePct, setNudgePct] = useState(0);
 
   const load = async () => {
     setLoading(true); setError(null);
@@ -283,8 +304,23 @@ export function GrowthForecastContent() {
     freeOrders = lo.orders + (hi.orders - lo.orders) * f;
   }
   const yearFactor = 365 / data.us.windowDays;
-  const nudgeLifted = data.us.nudge.orders * (nudgePct / 100);
-  const nudgeGain = nudgeLifted * data.us.nudge.avgGap * S.cm1 * yearFactor;
+  // What the store already gives up at today's line. Every figure below is
+  // measured against THIS, because the absolute is unreadable: US$305k at a
+  // US$50 threshold includes the US$19k already forgone at US$100, so quoting
+  // it whole answers a question nobody asked.
+  const todayRow = data.us.thresholds.find((t) => t.threshold === data.us.currentThreshold);
+  const givenUpToday = (todayRow?.giveUp ?? 0) * yearFactor;
+  const givenUpAtThr = giveUp * yearFactor;
+  const extraCost = givenUpAtThr - givenUpToday;
+  // The carrier bill does not move with the threshold — we pay it either way.
+  // Stating it is what makes "extra cost" mean what it says.
+  const usShip = data.shipping.find((x) => x.market === 'US');
+  const parcelCostUsd = (usShip?.costPerParcel ?? 0) / (data.fxRate || 1);
+  const usParcelsYear = data.us.orders * yearFactor;
+  const carrierBillYear = parcelCostUsd * usParcelsYear;
+  const chargedYear = data.us.chargedTotal * yearFactor;
+  const absorbedToday = carrierBillYear - chargedYear;
+  const absorbedAfter = absorbedToday + extraCost;
 
   const curveData = (() => {
     const maxX = Math.max(spend! * 1.3, data.baseline.spend * 1.8);
@@ -321,8 +357,8 @@ export function GrowthForecastContent() {
       {/* ── Header: title, the one line that matters, and the tabs ──────── */}
       <div className="reports-no-print shrink-0 border-b bg-background">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5">
-          <h3 className="text-sm font-semibold">Spend to Stock</h3>
-          <span className="text-xs text-muted-foreground">
+          <h3 className="text-[16px] font-semibold">Spend to Stock</h3>
+          <span className="text-[14px] text-foreground/70">
             Ad budget → demand → what to put into production, and when
           </span>
           <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">
@@ -336,7 +372,7 @@ export function GrowthForecastContent() {
         <nav className="flex flex-wrap px-3" role="tablist">
           {TABS.map((t) => (
             <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)}
-              className={cn('-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-wider',
+              className={cn('-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-1.5 font-mono text-[13px] font-semibold uppercase tracking-wide',
                 tab === t.id ? 'border-amber-600 text-amber-700 dark:text-amber-400'
                              : 'border-transparent text-muted-foreground hover:text-foreground')}>
               <t.icon size={12} /> {t.label}
@@ -352,52 +388,52 @@ export function GrowthForecastContent() {
       <Card className="overflow-hidden reports-no-print">
         <div className="grid grid-cols-2 divide-x divide-y sm:grid-cols-3 lg:grid-cols-5 lg:divide-y-0">
           <div className="p-3">
-            <label htmlFor="gf-spend" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+            <label htmlFor="gf-spend" className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
               New ad spend / month
             </label>
             <input id="gf-spend" type="number" step={5000} min={20000} value={spend!}
               onChange={(e) => setSpend(Math.max(1, +e.target.value || 0))}
               className="w-full rounded border bg-muted/40 px-2.5 py-1.5 font-mono text-base font-semibold tabular-nums" />
-            <p className="mt-1.5 text-[11.5px] text-muted-foreground">
+            <p className="mt-1.5 text-[13.5px] text-foreground/70">
               {S.extraSpend === 0 ? 'Same as today'
                 : `${S.extraSpend > 0 ? '+' : '−'}${audk(Math.abs(S.extraSpend))} (${S.extraSpend > 0 ? '+' : ''}${((S.ratio - 1) * 100).toFixed(0)}%)`}
             </p>
           </div>
           <div className="p-3">
-            <label htmlFor="gf-method" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+            <label htmlFor="gf-method" className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
               Sales response
             </label>
             <select id="gf-method" value={linear ? 'linear' : 'fit'}
               onChange={(e) => setLinear(e.target.value === 'linear')}
-              className="w-full rounded border bg-muted/40 px-2.5 py-1.5 text-[13px]">
+              className="w-full rounded border bg-muted/40 px-2.5 py-1.5 text-[14px]">
               <option value="fit">Fitted curve</option>
               <option value="linear">Straight line</option>
             </select>
-            <p className="mt-1.5 text-[11.5px] text-muted-foreground">
+            <p className="mt-1.5 text-[13.5px] text-foreground/70">
               {linear ? 'Assumes MER never drops. Our data disagrees.' : 'Diminishing returns, fitted to our months.'}
             </p>
           </div>
           <div className={cn('p-3', linear && 'opacity-40')}>
-            <label htmlFor="gf-b" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+            <label htmlFor="gf-b" className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
               <T tip="How much sales respond to budget. 0.74 means every 10% more spend returns 7.4% more revenue. Fitted from 12 months of our own data.">Elasticity (b)</T>
             </label>
             <div className="font-mono text-base font-semibold tabular-nums">{S.bb.toFixed(2)}</div>
             <input id="gf-b" type="range" min={0.3} max={1} step={0.01} value={b!} disabled={linear}
               onChange={(e) => setB(+e.target.value)} className="mt-1 w-full accent-amber-600" />
-            <p className="mt-1 text-[11.5px] text-muted-foreground">
+            <p className="mt-1 text-[13.5px] text-foreground/70">
               Fitted {data.fit.b.toFixed(2)} · R² {data.fit.r2.toFixed(2)} · {data.fit.n} months
             </p>
           </div>
           <div className="p-3">
-            <label htmlFor="gf-h" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Horizon</label>
+            <label htmlFor="gf-h" className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">Horizon</label>
             <select id="gf-h" value={horizon} onChange={(e) => setHorizon(+e.target.value)}
-              className="w-full rounded border bg-muted/40 px-2.5 py-1.5 text-[13px]">
+              className="w-full rounded border bg-muted/40 px-2.5 py-1.5 text-[14px]">
               <option value={3}>3 months</option><option value={6}>6 months</option><option value={12}>12 months</option>
             </select>
-            <p className="mt-1.5 text-[11.5px] text-muted-foreground">Budget ramps evenly.</p>
+            <p className="mt-1.5 text-[13.5px] text-foreground/70">Budget ramps evenly.</p>
           </div>
           <div className="p-3">
-            <span className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Products covered</span>
+            <span className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">Products covered</span>
             <div className="flex overflow-hidden rounded border">
               {[10, 25, 50].map((n) => (
                 <button key={n} onClick={() => { setTopN(n); setOpenSku(null); }}
@@ -408,7 +444,7 @@ export function GrowthForecastContent() {
                 </button>
               ))}
             </div>
-            <p className="mt-1.5 text-[11.5px] text-muted-foreground">
+            <p className="mt-1.5 text-[13.5px] text-foreground/70">
               = {(S.list.reduce((a, s) => a + s.share, 0) * 100).toFixed(0)}% of revenue
             </p>
           </div>
@@ -419,9 +455,9 @@ export function GrowthForecastContent() {
       {tab === 'now' && (
         <section>
           <div className="mb-1.5 flex items-baseline gap-2">
-            <h2 className="text-[13px] font-semibold">Where we are</h2><Prov kind="measured" />
+            <h2 className="text-[17px] font-semibold tracking-tight">Where we are</h2><Prov kind="measured" />
           </div>
-          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[14px] text-foreground/70">
             Nothing on this screen is a forecast. These are the numbers the projection starts from.
           </p>
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
@@ -440,27 +476,29 @@ export function GrowthForecastContent() {
           <div className="grid gap-2.5 lg:grid-cols-2">
             <Card className="overflow-hidden">
               <div className="flex items-center justify-between border-b px-4 py-2.5">
-                <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Spend and revenue by month</span>
+                <span className="font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">Spend and revenue by month</span>
                 <Prov kind="measured" />
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-[13px]">
+                <table className="w-full text-[15px]">
                   <thead><tr className="border-b">
-                    {['Month','Ad spend','Revenue','MER',''].map((h, i) => (
-                      <th key={h + i} className={cn('px-3 py-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground',
-                        i === 0 ? 'text-left' : 'text-right')}>{h}</th>))}
+                    <Th align="left" tip="Complete calendar months only. The current month is left out because it is still filling in.">Month</Th>
+                    <Th tip="Meta ad spend that month, in AUD. USD accounts are converted at that month's rate. Source: meta_ads_daily.">Ad spend</Th>
+                    <Th tip="Shopify net revenue that month, in AUD, excluding sales tax. Source: shopify_sales_lines.">Revenue</Th>
+                    <Th tip="Revenue divided by ad spend for that month. Counts every sale, not only the ones Meta can claim.">MER</Th>
+                    <Th tip="Months left out of the elasticity fit, and why.">Fit</Th>
                   </tr></thead>
                   <tbody>
                     {data.history.map((h) => (
                       <tr key={h.month} className="border-b last:border-0">
-                        <td className="px-3 py-1.5">{h.month}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{audk(h.spend)}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{audk(h.revenue)}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{h.mer.toFixed(2)}×</td>
+                        <td className="px-3 py-2">{h.month}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{audk(h.spend)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{audk(h.revenue)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{h.mer.toFixed(2)}×</td>
                         <td className="px-3 py-1.5 text-right">
                           {h.excluded && (
                             <span title="Excluded from the elasticity fit: that month was the product changeover, not saturation."
-                              className="rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[9.5px] uppercase text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+                              className="rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold uppercase text-amber-700 dark:bg-amber-950 dark:text-amber-400">
                               excluded
                             </span>)}
                         </td>
@@ -471,24 +509,25 @@ export function GrowthForecastContent() {
             </Card>
             <Card className="overflow-hidden">
               <div className="flex items-center justify-between border-b px-4 py-2.5">
-                <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Shipping · cost vs recovery</span>
+                <span className="font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">Shipping · cost vs recovery</span>
                 <Prov kind="measured" />
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-[13px]">
+                <table className="w-full text-[15px]">
                   <thead><tr className="border-b">
-                    {['Market','Cost / parcel','Charged','Net'].map((h, i) => (
-                      <th key={h} className={cn('px-3 py-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground',
-                        i === 0 ? 'text-left' : 'text-right')}>{h}</th>))}
+                    <Th align="left" tip="Destination market. Parcel counts come from Starshipit, which knows where each parcel went.">Market</Th>
+                    <Th tip="What we actually paid the carrier per parcel, AUD, over the fiscal year Jul-2025 to Jun-2026. Real Xero invoices split across markets by Starshipit ratios. Starshipit's own freight figure is deliberately not used: it under-captured DHL eCommerce by $105k.">Cost / parcel</Th>
+                    <Th tip="What the customer paid us for shipping per parcel, AUD ex GST, same fiscal year. Source: shopify_shipping_revenue_monthly.">Charged</Th>
+                    <Th tip="Charged minus cost. Negative means we absorb the difference on every parcel.">Net</Th>
                   </tr></thead>
                   <tbody>
                     {data.shipping.map((s) => {
                       const net = s.chargedPerParcel - s.costPerParcel;
                       return (
                         <tr key={s.market} className="border-b last:border-0">
-                          <td className="px-3 py-1.5">{s.market}<span className="block text-[11px] text-muted-foreground">{num(s.orders)} parcels</span></td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums">{aud(s.costPerParcel)}</td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums">{aud(s.chargedPerParcel)}</td>
+                          <td className="px-3 py-2">{s.market}<span className="block text-[13.5px] text-foreground/70">{num(s.orders)} parcels</span></td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums">{aud(s.costPerParcel)}</td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums">{aud(s.chargedPerParcel)}</td>
                           <td className={cn('px-3 py-1.5 text-right font-mono tabular-nums',
                             net < 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400')}>
                             {net < 0 ? '−' : '+'}{aud(Math.abs(net))}
@@ -498,7 +537,7 @@ export function GrowthForecastContent() {
                   </tbody>
                 </table>
               </div>
-              <p className="border-t px-4 py-2.5 text-[11.5px] text-muted-foreground">
+              <p className="border-t px-4 py-2.5 text-[13.5px] text-foreground/70">
                 Cost is real Xero spend split by destination with Starshipit ratios — Starshipit's own
                 freight figure under-captured DHL eCommerce by $105k and is not used for money.
               </p>
@@ -511,9 +550,9 @@ export function GrowthForecastContent() {
       {tab === 'proj' && (
         <section>
           <div className="mb-1.5 flex items-baseline gap-2">
-            <h2 className="text-[13px] font-semibold">The projection</h2><Prov kind="projected" />
+            <h2 className="text-[17px] font-semibold tracking-tight">The projection</h2><Prov kind="projected" />
           </div>
-          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[14px] text-foreground/70">
             What the new budget returns, and whether the last dollar of it still pays.
           </p>
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
@@ -535,7 +574,7 @@ export function GrowthForecastContent() {
           </div>
 
           <Card className="mb-4 p-4">
-            <div className="mb-3 font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+            <div className="mb-3 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
               Efficiency against the two thresholds
             </div>
             <div className="relative h-7 overflow-hidden rounded border bg-muted/40">
@@ -547,7 +586,7 @@ export function GrowthForecastContent() {
             <div className="mt-1 flex justify-between font-mono text-[10px] text-muted-foreground">
               <span>0</span><span>break-even {BE.toFixed(2)}</span><span>target {TG.toFixed(2)}</span><span>4.0</span>
             </div>
-            <p className="mt-3 max-w-3xl text-[12.5px] text-muted-foreground">
+            <p className="mt-3 max-w-3xl text-[14px] text-foreground/70">
               {S.mer < BE ? <><b className="text-red-600 dark:text-red-400">Below break-even.</b> At this budget the store loses money on the marginal sale.</>
               : S.mer < TG ? <><b className="text-amber-600 dark:text-amber-400">Between the two lines.</b> Each sale contributes, but at this efficiency the business is not covering fixed costs plus the target margin.</>
               : <><b className="text-emerald-600 dark:text-emerald-400">Above target.</b> This budget clears both thresholds.</>}
@@ -556,7 +595,7 @@ export function GrowthForecastContent() {
 
           <Card className="p-4">
             <div className="mb-3 flex items-center justify-between">
-              <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Revenue response to spend</span>
+              <span className="font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">Revenue response to spend</span>
               <span className="font-mono text-[10.5px] text-muted-foreground">b = {S.bb.toFixed(2)}</span>
             </div>
             <ResponsiveContainer width="100%" height={260}>
@@ -574,7 +613,7 @@ export function GrowthForecastContent() {
                 <ReferenceDot x={spend!} y={S.revenue} r={5} fill="#b45309" stroke="#fff" strokeWidth={2} />
               </ComposedChart>
             </ResponsiveContainer>
-            <p className="mt-2 text-[11.5px] text-muted-foreground">
+            <p className="mt-2 text-[13.5px] text-foreground/70">
               Dots are actual months. The dashed line is what a constant MER would give; the gap
               between the two at your chosen budget is what the elasticity is costing you.
             </p>
@@ -586,12 +625,12 @@ export function GrowthForecastContent() {
       {tab === 'prod' && (
         <section>
           <div className="mb-1.5 flex items-baseline gap-2">
-            <h2 className="text-[13px] font-semibold">Production plan</h2><Prov kind="projected" />
+            <h2 className="text-[17px] font-semibold tracking-tight">Production plan</h2><Prov kind="projected" />
             <Button size="sm" variant="outline" onClick={exportPlan} className="ml-auto reports-no-print">
               <Download size={13} className="mr-1.5" /> CSV
             </Button>
           </div>
-          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[14px] text-foreground/70">
             Units to put into production each month. Click any product to open its running balance.
           </p>
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
@@ -608,17 +647,17 @@ export function GrowthForecastContent() {
               sub="Covered by current stock" tip="Products whose current stock covers the whole horizon." />
           </div>
           <Card className="overflow-hidden">
-            <div className="border-b px-4 py-2.5 font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+            <div className="border-b px-4 py-2.5 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
               Units to start producing, by month
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-[13px]">
+              <table className="w-full text-[15px]">
                 <thead><tr className="border-b">
-                  <th className="px-3 py-2 text-left font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Product</th>
+                  <Th align="left" tip="Top products by Shopify revenue over the last 90 days. Click any row to open its month-by-month stock balance.">Product</Th>
                   {months.map((m) => (
-                    <th key={m.i} className="px-3 py-2 text-right font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{m.label}</th>))}
-                  <th className="px-3 py-2 text-right font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Total</th>
-                  <th className="px-3 py-2 text-right font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Cost</th>
+                    <Th key={m.i} tip={'Units to START producing in ' + m.label + '. They land after the lead time, not in this month. A dot means nothing to start.'}>{m.label}</Th>))}
+                  <Th tip="All units to start over the horizon, for this product.">Total</Th>
+                  <Th tip="Units times China factory cost, AUD. Excludes freight, duty and insurance, which add about 12.4% on landing.">Cost</Th>
                 </tr></thead>
                 <tbody>
                   {plans.map((p) => (
@@ -626,11 +665,11 @@ export function GrowthForecastContent() {
                       <tr key={p.sku} onClick={() => setOpenSku(openSku === p.sku ? null : p.sku)}
                         className={cn('cursor-pointer border-b hover:bg-muted/40', openSku === p.sku && 'bg-muted/40')}>
                         <td className="px-3 py-2">
-                          <span className="text-[13px] font-semibold">{p.sku}</span>
+                          <span className="text-[14px] font-semibold">{p.sku}</span>
                           {p.assembled && (
                             <span title="Built from components — the plan shows a quantity but the lead time belongs to its parts."
-                              className="ml-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[9px] uppercase text-muted-foreground">assembled</span>)}
-                          <span className="block text-[11px] text-muted-foreground">{p.name}</span>
+                              className="ml-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[10.5px] font-semibold uppercase text-muted-foreground">assembled</span>)}
+                          <span className="block text-[13.5px] text-foreground/70">{p.name}</span>
                         </td>
                         {months.map((m) => {
                           const st = p.starts.find((o) => o.month === m.i);
@@ -646,14 +685,17 @@ export function GrowthForecastContent() {
                       {openSku === p.sku && (
                         <tr key={`${p.sku}-d`} className="border-b bg-muted/30">
                           <td colSpan={months.length + 3} className="p-3">
-                            <div className="mb-2 font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+                            <div className="mb-2 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
                               {p.sku} · running balance · lead {p.lead} days
                             </div>
-                            <table className="w-full text-[12.5px]">
+                            <table className="w-full text-[14.5px]">
                               <thead><tr className="border-b">
-                                {['Month','Opening','Sells','Arrives','Closing','Start now'].map((h, i) => (
-                                  <th key={h} className={cn('px-2 py-1.5 font-mono text-[9.5px] font-medium uppercase tracking-wider text-muted-foreground',
-                                    i === 0 ? 'text-left' : 'text-right')}>{h}</th>))}
+                                <Th align="left" tip="Each month of the horizon.">Month</Th>
+                                <Th tip="Stock on hand at the start of the month: Main warehouse plus China plus what is on the water.">Opening</Th>
+                                <Th tip="Projected units sold that month: projected store revenue times this product's share of revenue, divided by its average price.">Sells</Th>
+                                <Th tip="Units landing that month from a run started earlier.">Arrives</Th>
+                                <Th tip="Opening minus sells plus arrives. Turns red when it falls inside the lead time, meaning a stockout before anything can land.">Closing</Th>
+                                <Th tip="Units to put into production THIS month so they arrive before stock runs out.">Start now</Th>
                               </tr></thead>
                               <tbody>
                                 {p.rows.map((r) => (
@@ -694,9 +736,9 @@ export function GrowthForecastContent() {
       {tab === 'cal' && (
         <section>
           <div className="mb-1.5 flex items-baseline gap-2">
-            <h2 className="text-[13px] font-semibold">Calendar</h2><Prov kind="projected" />
+            <h2 className="text-[17px] font-semibold tracking-tight">Calendar</h2><Prov kind="projected" />
           </div>
-          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[14px] text-foreground/70">
             The same plan read as deadlines. A run started in one month only lands after its lead
             time, so this is the month the order has to leave — not the month it is needed.
           </p>
@@ -712,7 +754,7 @@ export function GrowthForecastContent() {
                   <Card className={cn('p-3.5', due.length && 'border-amber-600/60')}>
                     <div className="mb-2 flex flex-wrap items-baseline gap-2.5">
                       <span className="font-mono text-xs font-semibold uppercase tracking-wider">{m.label}</span>
-                      <span className={cn('rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase',
+                      <span className={cn('rounded px-1.5 py-0.5 font-mono text-[10.5px] font-semibold uppercase',
                         due.length ? 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400'
                                    : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400')}>
                         {due.length ? `${due.length} to start` : 'clear'}
@@ -727,7 +769,7 @@ export function GrowthForecastContent() {
                           className="rounded bg-amber-50 px-2 py-1 font-mono text-[11px] tabular-nums text-amber-700 dark:bg-amber-950/60 dark:text-amber-400">
                           <b>{num(o.qty)}</b> × {o.sku} <span className="opacity-70">· {audk(o.cost)} · lands {o.land}</span>
                         </span>)) : (
-                        <span className="rounded bg-muted px-2 py-1 font-mono text-[11px] text-muted-foreground">Nothing to start</span>)}
+                        <span className="rounded bg-muted px-2 py-1 font-mono text-[13.5px] text-foreground/70">Nothing to start</span>)}
                     </div>
                   </Card>
                 </div>);
@@ -740,79 +782,86 @@ export function GrowthForecastContent() {
       {tab === 'ship' && (
         <section>
           <div className="mb-1.5 flex items-baseline gap-2">
-            <h2 className="text-[13px] font-semibold">Shipping · the free-shipping threshold</h2>
+            <h2 className="text-[17px] font-semibold tracking-tight">Shipping · the free-shipping threshold</h2>
             <Prov kind="measured" />
           </div>
-          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[14px] text-foreground/70">
             US orders over US${data.us.thresholds[0]?.threshold ?? 100} already ship free. This is
             what moving that line costs, and what the orders sitting just below it are worth.
           </p>
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             <Card className="p-4 reports-no-print">
-              <label htmlFor="gf-thr" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Threshold (USD)</label>
+              <label htmlFor="gf-thr" className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">Threshold (USD)</label>
               <input id="gf-thr" type="number" min={0} max={200} step={5} value={thr}
                 onChange={(e) => setThr(Math.max(0, +e.target.value || 0))}
                 className="w-full rounded border bg-muted/40 px-2.5 py-1.5 font-mono text-base font-semibold tabular-nums" />
-              <p className="mt-1.5 text-[11.5px] text-muted-foreground">Today: US$100</p>
+              <p className="mt-1.5 text-[13.5px] text-foreground/70">Today: US$100</p>
             </Card>
-            <Card className="p-4 reports-no-print">
-              <label htmlFor="gf-nudge" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Nudge conversion</label>
-              <div className="font-mono text-base font-semibold tabular-nums">{nudgePct}%</div>
-              <input id="gf-nudge" type="range" min={0} max={60} step={5} value={nudgePct}
-                onChange={(e) => setNudgePct(+e.target.value)} className="mt-1 w-full accent-amber-600" />
-              <p className="mt-1 text-[11.5px] text-muted-foreground">
-                <T tip="Share of the orders sitting just below the line that add an item to qualify, if you show them a prompt in the cart.">Of orders just below</T>
-              </p>
-            </Card>
-            <Stat label="Shipping given up" value={usdk(giveUp * yearFactor)}
-              tone={giveUp * yearFactor > 60000 ? 'risk' : 'accent'}
-              sub={`${num(freeOrders)} orders · ${((100 * freeOrders) / data.us.orders).toFixed(1)}% of US`}
-              tip="Shipping revenue given up per year at this threshold, from the measured distribution of US orders." />
-            <Stat label="Margin from the nudge" value={nudgePct ? usdk(nudgeGain) : '—'}
-              tone={nudgePct ? 'ok' : undefined}
-              sub={nudgePct ? `${num(nudgeLifted * yearFactor)} orders lifted / year` : 'Move the dial'}
-              tip="Extra margin from orders that lift their basket to reach the threshold, at the contribution margin." />
+            <Stat label="Extra cost vs today" value={extraCost === 0 ? '—' : usdk(extraCost)}
+              tone={extraCost > 100000 ? 'risk' : extraCost > 0 ? 'warn' : undefined}
+              sub={extraCost === 0 ? 'This is the current threshold'
+                : `${num(freeOrders - (todayRow?.orders ?? 0))} more orders ship free`}
+              tip="What moving the line to this threshold costs PER YEAR on top of what is already given up at the current one. It is shipping revenue that stops arriving — the carrier bill does not change, we pay it either way." />
+            <Stat label="Shipping we bill today" value={usdk(chargedYear)}
+              sub={`${num(freeOrders)} of ${num(data.us.orders)} orders would ship free`}
+              tip="Shipping actually charged to US customers over the last 180 days, annualised. Source: shopify_sales_lines.shipping_usd." />
+            <Stat label="What we absorb" value={usdk(absorbedAfter)} tone="risk"
+              sub={extraCost === 0 ? 'At the current threshold'
+                : `${usdk(absorbedToday)} today → ${usdk(absorbedAfter)}`}
+              tip="Carrier bill minus what customers pay, per year. The carrier bill is the fiscal-year Xero cost per parcel converted to USD at the latest rate and applied to the current US parcel volume; it does not move with the threshold." />
           </div>
           <div className="grid gap-2.5 lg:grid-cols-2">
             <Card className="overflow-hidden">
               <div className="flex items-center justify-between border-b px-4 py-2.5">
-                <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">What each threshold costs</span>
+                <span className="font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">What each threshold costs</span>
                 <Prov kind="measured" />
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-[13px]">
+                <table className="w-full text-[15px]">
                   <thead><tr className="border-b">
-                    {['Threshold','Orders free','Share','Given up / year'].map((h, i) => (
-                      <th key={h} className={cn('px-3 py-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground',
-                        i === 0 ? 'text-left' : 'text-right')}>{h}</th>))}
+                    <Th align="left" tip="Order value at or above which shipping is free. Measured on the order's net value, excluding tax and shipping.">Threshold</Th>
+                    <Th tip="US orders in the last 180 days whose net value reached this threshold — the ones that would ship free. Counted from shopify_sales_lines grouped by order, country = US.">Orders free</Th>
+                    <Th tip="Those orders as a share of all US orders in the same 180-day window.">Share</Th>
+                    <Th tip="Shipping revenue those orders paid us in the last 180 days, annualised. At the current threshold this is what we already forgo.">Revenue forgone</Th>
+                    <Th tip="The number that matters: what this threshold costs PER YEAR on top of today's. Zero on the current line by definition.">Extra vs today</Th>
                   </tr></thead>
                   <tbody>
                     {data.us.thresholds.map((t) => (
                       <tr key={t.threshold} className={cn('border-b last:border-0', t.threshold === 100 && 'bg-amber-50/60 dark:bg-amber-950/30')}>
-                        <td className="px-3 py-1.5">{t.threshold ? `US$${t.threshold}` : 'All free'}
-                          {t.threshold === 100 && <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[9px] uppercase text-amber-800 dark:bg-amber-900 dark:text-amber-300">today</span>}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{num(t.orders)}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{((100 * t.orders) / data.us.orders).toFixed(1)}%</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{usdk(t.giveUp * yearFactor)}</td>
+                        <td className="px-3 py-2">{t.threshold ? `US$${t.threshold}` : 'All free'}
+                          {t.threshold === 100 && <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold uppercase text-amber-800 dark:bg-amber-900 dark:text-amber-300">today</span>}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{num(t.orders)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{((100 * t.orders) / data.us.orders).toFixed(1)}%</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{usdk(t.giveUp * yearFactor)}</td>
+                        <td className={cn('px-3 py-2 text-right font-mono font-semibold tabular-nums',
+                          t.giveUp * yearFactor - givenUpToday > 100000 ? 'text-red-600 dark:text-red-400'
+                          : t.giveUp * yearFactor - givenUpToday > 0 ? 'text-amber-700 dark:text-amber-400'
+                          : 'text-muted-foreground')}>
+                          {t.threshold === data.us.currentThreshold ? '—'
+                            : `+${usdk(t.giveUp * yearFactor - givenUpToday)}`}
+                        </td>
                       </tr>))}
                   </tbody>
                 </table>
               </div>
             </Card>
             <Card className="p-4">
-              <div className="mb-3 font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">The orders one step away</div>
-              <p className="mb-3 text-sm">
-                <b>{num(data.us.nudge.orders)} orders</b> landed between US$75 and US$100 in the last
-                {' '}{data.us.windowDays} days — <b>{((100 * data.us.nudge.orders) / data.us.orders).toFixed(1)}%</b> of
-                all US orders. They were an average of <b>{usd(data.us.nudge.avgGap)}</b> short of free shipping.
+              <div className="mb-3 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">How to read this</div>
+              <p className="mb-3 text-[14px]">
+                The carrier bill <b>does not move</b> when the threshold moves. We pay
+                about <b>{usd(parcelCostUsd)}</b> per US parcel either way. What changes is only how
+                much of it the customer covers.
               </p>
-              <p className="mb-3 text-[13px] text-muted-foreground">
-                An EP basket sells for about US$20. They are one product away from qualifying.
+              <p className="mb-3 text-[14.5px] text-foreground/70">
+                So the cost of lowering the line is exactly the shipping revenue that stops
+                arriving: <b className="text-foreground">{extraCost === 0 ? 'nothing at the current threshold'
+                  : `${usdk(extraCost)} a year`}</b>. Everything else about the shipment is unchanged.
               </p>
-              <p className="text-[13px] text-muted-foreground">
-                The threshold sits at US$100 against an AOV of <b>{usd(data.us.aov)}</b>. That gap is
-                what makes it work as an incentive — lower it and you stop selling the extra item,
-                you just stop charging for shipping.
+              <p className="text-[14.5px] text-foreground/70">
+                The threshold sits at US${data.us.currentThreshold} against a US AOV
+                of <b className="text-foreground">{usd(data.us.aov)}</b>. That gap is what makes it work as an
+                incentive rather than a discount — close it and the basket stops growing, the
+                shipping just stops being billed.
               </p>
             </Card>
           </div>
@@ -822,8 +871,8 @@ export function GrowthForecastContent() {
       {/* ══ MEMO ══════════════════════════════════════════════════════ */}
       {tab === 'memo' && (
         <section>
-          <h2 className="text-[13px] font-semibold">Memo</h2>
-          <p className="mb-3 text-[12px] text-muted-foreground">One page, ready to send.</p>
+          <h2 className="text-[17px] font-semibold tracking-tight">Memo</h2>
+          <p className="mb-3 text-[14px] text-foreground/70">One page, ready to send.</p>
           <Card className="p-6">
             <p className="max-w-3xl text-[16px] leading-relaxed">
               Raising ad spend from <b>{audk(data.baseline.spend)}</b> to <b>{audk(spend!)}</b> a month
@@ -838,18 +887,21 @@ export function GrowthForecastContent() {
 
             <h3 className="mb-3 mt-7 border-b pb-1.5 font-mono text-[11px] uppercase tracking-widest text-amber-700 dark:text-amber-400">What it takes</h3>
             <div className="overflow-x-auto">
-              <table className="w-full text-[13px]">
+              <table className="w-full text-[15px]">
                 <thead><tr className="border-b">
-                  {['Product','Cover now','Cover after','Produce','Cost','Start by'].map((h, i) => (
-                    <th key={h} className={cn('px-3 py-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground',
-                      i === 0 ? 'text-left' : 'text-right')}>{h}</th>))}
+                  <Th align="left" tip="Products that need production over the horizon.">Product</Th>
+                  <Th tip="Months of stock at today's sales rate.">Cover now</Th>
+                  <Th tip="Months of stock at the projected sales rate, before any production. Red means it falls inside the lead time.">Cover after</Th>
+                  <Th tip="Total units to start over the horizon.">Produce</Th>
+                  <Th tip="At China factory cost, AUD, before freight and duty.">Cost</Th>
+                  <Th tip="The month the first run has to start, counting back from when the stock is needed.">Start by</Th>
                 </tr></thead>
                 <tbody>
                   {plans.filter((p) => p.totalQty > 0).slice(0, 8).map((p) => (
                     <tr key={p.sku} className="border-b last:border-0">
                       <td className="px-3 py-1.5 font-semibold">{p.sku}</td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums">{p.coverNow.toFixed(1)} mo</td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">{p.coverNow.toFixed(1)} mo</td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">
                         <span className={cn('rounded px-1.5 py-0.5',
                           p.minCover < p.leadM ? 'bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400'
                           : p.minCover < 2 ? 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400'
@@ -857,9 +909,9 @@ export function GrowthForecastContent() {
                           {p.coverAfter.toFixed(1)} mo
                         </span>
                       </td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums">{num(p.totalQty)}</td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums">{audk(p.totalCost)}</td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums">{p.starts[0]?.label ?? '—'}</td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">{num(p.totalQty)}</td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">{audk(p.totalCost)}</td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">{p.starts[0]?.label ?? '—'}</td>
                     </tr>))}
                 </tbody>
               </table>
@@ -902,8 +954,8 @@ export function GrowthForecastContent() {
       {/* ══ HELP ══════════════════════════════════════════════════════ */}
       {tab === 'help' && (
         <section>
-          <h2 className="text-[13px] font-semibold">Help</h2>
-          <p className="mb-3 text-[12px] text-muted-foreground">
+          <h2 className="text-[17px] font-semibold tracking-tight">Help</h2>
+          <p className="mb-3 text-[14px] text-foreground/70">
             What each concept means, how to read it, and where every number comes from.
           </p>
 
@@ -961,7 +1013,7 @@ export function GrowthForecastContent() {
               whether to hire the eleventh, the average is useless — you need to know what
               <b className="text-foreground"> that one</b> will sell.
             </p>
-            <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[13px]">
+            <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[14px]">
               Return on the extra spend = extra revenue ÷ extra spend
             </p>
             <p className="max-w-3xl text-muted-foreground">
@@ -972,7 +1024,7 @@ export function GrowthForecastContent() {
 
           <Card className="p-5">
             <h3 className="mb-2 text-[15px] font-semibold">The two thresholds: {BE.toFixed(2)} and {TG.toFixed(2)}</h3>
-            <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[13px]">
+            <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[14px]">
               Break-even MER = 1 ÷ contribution margin = 1 ÷ {(ue?.cm1 ?? 0.706).toFixed(3)} = {BE.toFixed(2)}
             </p>
             <p className="mb-2.5 max-w-3xl text-muted-foreground">
@@ -995,7 +1047,7 @@ export function GrowthForecastContent() {
           <Card className="p-5">
             <h3 className="mb-2 text-[15px] font-semibold">The production plan</h3>
             <p className="mb-2.5 max-w-3xl text-muted-foreground">Each product carries a running balance, month by month:</p>
-            <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[13px]">
+            <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[14px]">
               opening stock − what sells + what arrives = closing stock
             </p>
             <p className="mb-2.5 max-w-3xl text-muted-foreground">
@@ -1005,7 +1057,7 @@ export function GrowthForecastContent() {
               needed</b> — a 45-day product wanted in November has to be launched in September.
             </p>
             <p className="max-w-3xl text-muted-foreground">
-              Products marked <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[9px] uppercase">assembled</span> are
+              Products marked <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10.5px] font-semibold uppercase">assembled</span> are
               built from components rather than produced: the plan shows the quantity, but the lead
               time belongs to their parts.
             </p>
@@ -1035,10 +1087,11 @@ export function GrowthForecastContent() {
           <Card className="p-5">
             <h3 className="mb-3 text-[15px] font-semibold">Where every number comes from</h3>
             <div className="overflow-x-auto">
-              <table className="w-full text-[13px]">
+              <table className="w-full text-[15px]">
                 <thead><tr className="border-b">
-                  {['Figure','Source','Currency'].map((h) => (
-                    <th key={h} className="px-3 py-2 text-left font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{h}</th>))}
+                  <Th align="left" tip="What the report shows.">Figure</Th>
+                  <Th align="left" tip="The table or system it is read from.">Source</Th>
+                  <Th align="left" tip="The currency it is stored and shown in.">Currency</Th>
                 </tr></thead>
                 <tbody className="text-muted-foreground">
                   {[
@@ -1052,9 +1105,9 @@ export function GrowthForecastContent() {
                     ['US order distribution', 'shopify_sales_lines · country = US', 'USD'],
                   ].map((r) => (
                     <tr key={r[0]} className="border-b last:border-0">
-                      <td className="px-3 py-1.5">{r[0]}</td>
+                      <td className="px-3 py-2">{r[0]}</td>
                       <td className="px-3 py-1.5 font-mono text-[12px]">{r[1]}</td>
-                      <td className="px-3 py-1.5">{r[2]}</td>
+                      <td className="px-3 py-2">{r[2]}</td>
                     </tr>))}
                 </tbody>
               </table>
@@ -1067,7 +1120,7 @@ export function GrowthForecastContent() {
             </p>
             <div className="mt-4 flex items-start gap-2 rounded border border-amber-600/40 bg-amber-50/60 p-3 dark:bg-amber-950/30">
               <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-700 dark:text-amber-400" />
-              <p className="text-[13px] text-muted-foreground">
+              <p className="text-[14.5px] text-foreground/70">
                 <b className="text-foreground">Demand here is not the AIM 2026 demand column.</b> This report
                 projects the Shopify B2C mix, because that is what advertising drives. The AIM tab
                 measures total Unleashed demand, which also includes wholesale and assembly
@@ -1078,7 +1131,7 @@ export function GrowthForecastContent() {
         </section>
       )}
 
-      <footer className="border-t pt-3 text-[11px] text-muted-foreground">
+      <footer className="border-t pt-3 text-[13.5px] text-foreground/70">
         Elasticity fitted over {data.fit.n} months (R² {data.fit.r2.toFixed(2)}).
         Unit economics {ue ? `from ${ue.month}` : 'unavailable'}. Product mix over the last
         {' '}{data.lookbackDays} days. <button onClick={load} disabled={loading}

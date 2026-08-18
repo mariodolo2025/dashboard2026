@@ -140,11 +140,6 @@ usthr as (
          coalesce(sum(o.charged) filter (where o.usd >= thr.t), 0) give_up
   from thr cross join usord o group by thr.t
 ),
--- Orders sitting just under today's line: the ones a cart prompt can lift.
-nudge as (
-  select count(*) orders, avg(100 - usd) avg_gap
-  from usord where usd >= 75 and usd < 100
-),
 -- ── Shipping: Xero money, Starshipit destination split (note 5) ─────────────
 ratios as (
   select carrier_key,
@@ -218,8 +213,12 @@ select jsonb_build_object(
       'thresholds', coalesce((select jsonb_agg(jsonb_build_object(
           'threshold', t, 'orders', orders, 'giveUp', round(give_up::numeric, 0)
         ) order by t desc) from usthr), '[]'::jsonb),
-      'nudge', (select jsonb_build_object('orders', orders, 'avgGap', round(avg_gap::numeric, 2))
-                from nudge)),
+      'currentThreshold', 100,
+      -- What the store bills for shipping today, over the same window. With
+      -- giveUp this is what makes "extra cost versus today" computable in the
+      -- UI instead of an absolute that answers nothing.
+      'chargedTotal', (select round(sum(charged)::numeric, 0) from usord)),
+  'fxRate', (select round(rate::numeric, 4) from fxlast),
   'shipping', jsonb_build_array(
       jsonb_build_object('market', 'US', 'orders', (select us from shiporders),
         'costPerParcel', (select round((us / nullif((select us from shiporders), 0))::numeric, 2) from shipcost),
