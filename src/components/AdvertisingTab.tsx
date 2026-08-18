@@ -39,6 +39,7 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { STORE_DATE_PRESETS, storeToday, storeDay, shiftDays, ymd } from '@/lib/storeDate';
 import GoogleSpendForm from '@/components/advertising/GoogleSpendForm';
+import GoogleCsvUpload from '@/components/advertising/GoogleCsvUpload';
 import type {
   AdvertisingDashboard, AdvertisingIncrementality, ChannelView, MerPoint,
   GoogleBucketRow, ChannelMixRow, OverlapSplit, LiveOrder, UnitEconomics,
@@ -1692,8 +1693,20 @@ function DataHealthSheet({ open, onOpenChange, data, onSaved }: {
           </section>
 
           <section>
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+              Load the Google export · CSV
+            </h4>
+            <p className="text-[13px] text-muted-foreground/70 mb-2">
+              The monthly refresh: drop the saved report here. It is checked before anything is
+              written, and days already loaded are replaced — re-loading the same range is safe.
+              Help → "Updating the Google spend" has the export steps.
+            </p>
+            <GoogleCsvUpload onSaved={onSaved} />
+          </section>
+
+          <section>
             <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-              Manual spend entry · Google Ads
+              Or type a single day
             </h4>
             {/* onSaved refetches the dashboard, so the coverage above and the
                 daily line update without reloading the page. */}
