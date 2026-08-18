@@ -137,6 +137,18 @@ usord as materialized (
   group by 1
 ),
 ustot as (select count(*) n, avg(usd) aov from usord),
+-- Histograma de órdenes de USA en tramos de US$5. Reemplaza la interpolación
+-- que hacía la UI entre ocho umbrales sueltos — interpolar es adivinar con cara
+-- de precisión. Cualquier umbral se responde sumando tramos, y el arrastre (las
+-- órdenes que quedan justo debajo de la línea, a las que el cart drawer empuja)
+-- se lee del mismo dato en vez de estimarse aparte.
+ushist as (
+  select least(floor(usd / 5) * 5, 200)::int bucket,
+         count(*) orders,
+         coalesce(sum(charged), 0) charged,
+         coalesce(sum(usd), 0) net
+  from usord group by 1
+),
 thr(t) as (values (100),(90),(85),(80),(75),(60),(50),(0)),
 usthr as (
   select thr.t,
@@ -220,6 +232,10 @@ select jsonb_build_object(
       'orders', (select n from ustot),
       'aov', (select round(aov::numeric, 2) from ustot),
       'windowDays', 180,
+      'histogram', coalesce((select jsonb_agg(jsonb_build_object(
+          'bucket', bucket, 'orders', orders,
+          'charged', round(charged::numeric, 0), 'net', round(net::numeric, 0)
+        ) order by bucket) from ushist), '[]'::jsonb),
       'thresholds', coalesce((select jsonb_agg(jsonb_build_object(
           'threshold', t, 'orders', orders, 'giveUp', round(give_up::numeric, 0)
         ) order by t desc) from usthr), '[]'::jsonb),

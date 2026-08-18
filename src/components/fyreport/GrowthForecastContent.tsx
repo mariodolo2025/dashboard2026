@@ -53,11 +53,16 @@ interface Payload {
   us: {
     orders: number; aov: number; windowDays: number;
     thresholds: { threshold: number; orders: number; giveUp: number }[];
+    /** Orders bucketed by net value in US$5 steps. Any threshold is answered by
+     *  summing buckets, and the orders sitting just under a line — the ones the
+     *  cart drawer pushes over it — are read from the same data. */
+    histogram: { bucket: number; orders: number; charged: number; net: number }[];
     currentThreshold: number;
     /** Shipping actually billed to US customers over the window. */
     chargedTotal: number;
   };
-  shipping: { market: string; orders: number; costPerParcel: number; chargedPerParcel: number }[];
+  shipping: { market: string; orders: number; costPerParcel: number; chargedPerParcel: number;
+              costSource?: string; costComputed?: number }[];
   /** AUD per USD, latest known monthly rate. The US block is USD, per-parcel
    *  cost is AUD; without this the two cannot go on the same line. */
   fxRate: number;
@@ -292,26 +297,47 @@ export function GrowthForecastContent() {
     .sort((a, b2) => a.month - b2.month)[0];
 
   // ── Shipping threshold: interpolate the measured table ────────────────────
-  const thrSorted = [...data.us.thresholds].sort((a, b2) => a.threshold - b2.threshold);
-  const exact = thrSorted.find((x) => x.threshold === thr);
-  let giveUp: number, freeOrders: number;
-  if (exact) { giveUp = exact.giveUp; freeOrders = exact.orders; }
-  else {
-    const lo = [...thrSorted].reverse().find((x) => x.threshold <= thr) ?? thrSorted[0];
-    const hi = thrSorted.find((x) => x.threshold >= thr) ?? thrSorted[thrSorted.length - 1];
-    const f = hi.threshold === lo.threshold ? 0 : (thr - lo.threshold) / (hi.threshold - lo.threshold);
-    giveUp = lo.giveUp + (hi.giveUp - lo.giveUp) * f;
-    freeOrders = lo.orders + (hi.orders - lo.orders) * f;
-  }
+  // ONE unit on this screen: everything is per year. The measured window is 180
+  // days and is stated in the header, so nothing has to be converted by eye.
   const yearFactor = 365 / data.us.windowDays;
+  const hist = data.us.histogram ?? [];
+  /** Orders and shipping billed at or above a threshold, per year. */
+  const atOrAbove = (t: number) => hist.reduce(
+    (a, b) => (b.bucket >= t ? { orders: a.orders + b.orders, charged: a.charged + b.charged } : a),
+    { orders: 0, charged: 0 });
+  /** Orders in the band just under a threshold — the ones a tier prompt lifts. */
+  const justUnder = (t: number, band: number) => hist.reduce(
+    (a, b) => (b.bucket >= t - band && b.bucket < t
+      ? { orders: a.orders + b.orders, charged: a.charged + b.charged,
+          net: a.net + b.net }
+      : a), { orders: 0, charged: 0, net: 0 });
   // What the store already gives up at today's line. Every figure below is
   // measured against THIS, because the absolute is unreadable: US$305k at a
   // US$50 threshold includes the US$19k already forgone at US$100, so quoting
   // it whole answers a question nobody asked.
-  const todayRow = data.us.thresholds.find((t) => t.threshold === data.us.currentThreshold);
-  const givenUpToday = (todayRow?.giveUp ?? 0) * yearFactor;
-  const givenUpAtThr = giveUp * yearFactor;
+  const today = atOrAbove(data.us.currentThreshold);
+  const chosen = atOrAbove(thr);
+  const givenUpToday = today.charged * yearFactor;
+  const givenUpAtThr = chosen.charged * yearFactor;
+  // The cost of the move is the shipping that stops arriving, and nothing else:
+  // the carrier bill is paid either way, so counting it again would double it.
   const extraCost = givenUpAtThr - givenUpToday;
+  const extraOrders = chosen.orders - today.orders;
+
+  // ── Drag: the orders the tier prompt pushes over the new line ──────────────
+  // Static maths assumes nobody changes what they buy. Pesado's cart drawer
+  // already pushes baskets towards a tier, so lowering the line also converts
+  // orders from just underneath it. Each one adds basket (good) and stops
+  // paying shipping (bad) — and here the shipping is worth more than the lift.
+  const DRAG_BAND = 10;
+  const drag = justUnder(thr, DRAG_BAND);
+  const dragAvgGap = drag.orders > 0 ? thr - (drag.net / drag.orders) : 0;
+  const dragShare = 0.5;                       // half of them, as a middle case
+  const dragOrders = drag.orders * dragShare;
+  const dragShippingLost = (drag.charged / Math.max(drag.orders, 1)) * dragOrders * yearFactor;
+  const dragMarginGained = dragOrders * dragAvgGap * S.cm1 * yearFactor;
+  const dragNet = dragShippingLost - dragMarginGained;
+  const costWithDrag = extraCost + dragNet;
   // The carrier bill does not move with the threshold — we pay it either way.
   // Stating it is what makes "extra cost" mean what it says.
   const usShip = data.shipping.find((x) => x.market === 'US');
@@ -797,72 +823,119 @@ export function GrowthForecastContent() {
                 className="w-full rounded border bg-muted/40 px-2.5 py-1.5 font-mono text-base font-semibold tabular-nums" />
               <p className="mt-1.5 text-[13.5px] text-foreground/70">Today: US$100</p>
             </Card>
-            <Stat label="Extra cost vs today" value={extraCost === 0 ? '—' : usdk(extraCost)}
+            <Stat label="Extra cost vs today" value={extraCost === 0 ? '\u2014' : usdk(extraCost)}
               tone={extraCost > 100000 ? 'risk' : extraCost > 0 ? 'warn' : undefined}
               sub={extraCost === 0 ? 'This is the current threshold'
-                : `${num(freeOrders - (todayRow?.orders ?? 0))} more orders ship free`}
-              tip="What moving the line to this threshold costs PER YEAR on top of what is already given up at the current one. It is shipping revenue that stops arriving — the carrier bill does not change, we pay it either way." />
-            <Stat label="Shipping we bill today" value={usdk(chargedYear)}
-              sub={`${num(freeOrders)} of ${num(data.us.orders)} orders would ship free`}
-              tip="Shipping actually charged to US customers over the last 180 days, annualised. Source: shopify_sales_lines.shipping_usd." />
+                : `${num(extraOrders)} more orders ship free`}
+              tip="Shipping revenue that stops arriving, per year, on top of what is already forgone at today's line. The carrier bill is not in here because it does not change: the parcel ships either way, so counting it again would double it." />
+            <Stat label="With the tier drag" value={extraCost === 0 ? '\u2014' : usdk(costWithDrag)}
+              tone={costWithDrag > 100000 ? 'risk' : costWithDrag > 0 ? 'warn' : undefined}
+              sub={extraCost === 0 ? 'Nothing to drag at the current line'
+                : `${num(Math.round(dragOrders))} of ${num(drag.orders)} nearby orders lifted`}
+              tip="The figure on the left assumes nobody changes what they buy. The cart drawer already pushes baskets towards a tier, so lowering the line also converts orders sitting just under it: each stops paying shipping and adds a little basket. This is the middle case \u2014 half of the orders within US$10 below the line." />
             <Stat label="What we absorb" value={usdk(absorbedAfter)} tone="risk"
               sub={extraCost === 0 ? 'At the current threshold'
-                : `${usdk(absorbedToday)} today → ${usdk(absorbedAfter)}`}
-              tip="Carrier bill minus what customers pay, per year. The carrier bill is the fiscal-year Xero cost per parcel converted to USD at the latest rate and applied to the current US parcel volume; it does not move with the threshold." />
+                : `${usdk(absorbedToday)} today \u2192 ${usdk(absorbedAfter)}`}
+              tip="Carrier bill minus what customers pay, per year. The carrier bill uses the validated cost per parcel and does not move with the threshold." />
           </div>
+
           <div className="grid gap-2.5 lg:grid-cols-2">
             <Card className="overflow-hidden">
               <div className="flex items-center justify-between border-b px-4 py-2.5">
                 <span className="font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">What each threshold costs</span>
-                <Prov kind="measured" />
+                <span className="font-mono text-[12px] text-foreground/60">all figures per year</span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-[15px]">
                   <thead><tr className="border-b">
-                    <Th align="left" tip="Order value at or above which shipping is free. Measured on the order's net value, excluding tax and shipping.">Threshold</Th>
-                    <Th tip="US orders in the last 180 days whose net value reached this threshold — the ones that would ship free. Counted from shopify_sales_lines grouped by order, country = US.">Orders free</Th>
-                    <Th tip="Those orders as a share of all US orders in the same 180-day window.">Share</Th>
-                    <Th tip="Shipping revenue those orders paid us in the last 180 days, annualised. At the current threshold this is what we already forgo.">Revenue forgone</Th>
-                    <Th tip="The number that matters: what this threshold costs PER YEAR on top of today's. Zero on the current line by definition.">Extra vs today</Th>
+                    <Th align="left" tip="Order value at or above which shipping is free, measured on the order's net value: excluding tax and excluding the shipping line itself.">Threshold</Th>
+                    <Th tip="How many MORE orders start shipping free compared with the line above. This is the number that decides \u2014 the running total is beside it in brackets.">Orders added</Th>
+                    <Th tip="Every US order at or above this threshold. Counted from shopify_sales_lines grouped by order, country = US, over the measured 180-day window.">(total free)</Th>
+                    <Th tip="Shipping those orders pay us today and would stop paying, per year. At the current line this is what we already forgo.">Revenue forgone</Th>
+                    <Th tip="What this threshold costs per year ON TOP of today's. Dash on the current line, by definition. Assumes nobody changes what they buy \u2014 see the drag panel.">Extra vs today</Th>
                   </tr></thead>
                   <tbody>
-                    {data.us.thresholds.map((t) => (
-                      <tr key={t.threshold} className={cn('border-b last:border-0', t.threshold === 100 && 'bg-amber-50/60 dark:bg-amber-950/30')}>
-                        <td className="px-3 py-2">{t.threshold ? `US$${t.threshold}` : 'All free'}
-                          {t.threshold === 100 && <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold uppercase text-amber-800 dark:bg-amber-900 dark:text-amber-300">today</span>}</td>
-                        <td className="px-3 py-2 text-right font-mono tabular-nums">{num(t.orders)}</td>
-                        <td className="px-3 py-2 text-right font-mono tabular-nums">{((100 * t.orders) / data.us.orders).toFixed(1)}%</td>
-                        <td className="px-3 py-2 text-right font-mono tabular-nums">{usdk(t.giveUp * yearFactor)}</td>
-                        <td className={cn('px-3 py-2 text-right font-mono font-semibold tabular-nums',
-                          t.giveUp * yearFactor - givenUpToday > 100000 ? 'text-red-600 dark:text-red-400'
-                          : t.giveUp * yearFactor - givenUpToday > 0 ? 'text-amber-700 dark:text-amber-400'
-                          : 'text-muted-foreground')}>
-                          {t.threshold === data.us.currentThreshold ? '—'
-                            : `+${usdk(t.giveUp * yearFactor - givenUpToday)}`}
-                        </td>
-                      </tr>))}
+                    {[...data.us.thresholds]
+                      .sort((a, b2) => b2.threshold - a.threshold)
+                      .map((t, i, arr) => {
+                        const here = atOrAbove(t.threshold);
+                        const above = i > 0 ? atOrAbove(arr[i - 1].threshold) : null;
+                        const added = above ? here.orders - above.orders : here.orders;
+                        const extra = here.charged * yearFactor - givenUpToday;
+                        const isToday = t.threshold === data.us.currentThreshold;
+                        return (
+                          <tr key={t.threshold} className={cn('border-b last:border-0',
+                            isToday && 'bg-amber-50/60 dark:bg-amber-950/30')}>
+                            <td className="px-3 py-2">{t.threshold ? `US$${t.threshold}` : 'All free'}
+                              {isToday && <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold uppercase text-amber-800 dark:bg-amber-900 dark:text-amber-300">today</span>}</td>
+                            <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
+                              {i === 0 ? '\u2014' : `+${num(added)}`}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono tabular-nums text-foreground/55">
+                              ({num(here.orders)})
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono tabular-nums">{usdk(here.charged * yearFactor)}</td>
+                            <td className={cn('px-3 py-2 text-right font-mono font-semibold tabular-nums',
+                              extra > 100000 ? 'text-red-600 dark:text-red-400'
+                              : extra > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-foreground/55')}>
+                              {isToday ? '\u2014' : `+${usdk(extra)}`}
+                            </td>
+                          </tr>);
+                      })}
                   </tbody>
                 </table>
               </div>
             </Card>
+
             <Card className="p-4">
-              <div className="mb-3 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">How to read this</div>
-              <p className="mb-3 text-[14px]">
-                The carrier bill <b>does not move</b> when the threshold moves. We pay
-                about <b>{usd(parcelCostUsd)}</b> per US parcel either way. What changes is only how
-                much of it the customer covers.
-              </p>
-              <p className="mb-3 text-[14.5px] text-foreground/70">
-                So the cost of lowering the line is exactly the shipping revenue that stops
-                arriving: <b className="text-foreground">{extraCost === 0 ? 'nothing at the current threshold'
-                  : `${usdk(extraCost)} a year`}</b>. Everything else about the shipment is unchanged.
-              </p>
-              <p className="text-[14.5px] text-foreground/70">
-                The threshold sits at US${data.us.currentThreshold} against a US AOV
-                of <b className="text-foreground">{usd(data.us.aov)}</b>. That gap is what makes it work as an
-                incentive rather than a discount — close it and the basket stops growing, the
-                shipping just stops being billed.
-              </p>
+              <div className="mb-3 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
+                The drag from the tier below
+              </div>
+              {extraCost === 0 ? (
+                <p className="text-[14.5px] text-foreground/70">
+                  This is the current threshold, so there is nothing to move and nothing to drag.
+                  Lower the line above to see what it costs.
+                </p>
+              ) : (
+                <>
+                  <p className="mb-3 text-[14.5px]">
+                    <b>{num(drag.orders)} orders</b> sit within US$10 below US${thr}, an average
+                    of <b>{usd(dragAvgGap)}</b> short. The cart drawer already pushes baskets towards a
+                    tier, so a share of them will lift to qualify.
+                  </p>
+                  <div className="mb-3 overflow-x-auto">
+                    <table className="w-full text-[14px]">
+                      <thead><tr className="border-b">
+                        <Th align="left" tip="Share of the nearby orders that lift their basket to reach the new line.">If this many lift</Th>
+                        <Th tip="Shipping those orders stop paying, per year.">Shipping lost</Th>
+                        <Th tip="Extra basket they add to qualify, at the contribution margin.">Margin gained</Th>
+                        <Th tip="Total cost of the move including the drag: the static figure plus shipping lost minus margin gained.">Total cost</Th>
+                      </tr></thead>
+                      <tbody>
+                        {[0, 0.25, 0.5, 1].map((share) => {
+                          const o = drag.orders * share;
+                          const lost = (drag.charged / Math.max(drag.orders, 1)) * o * yearFactor;
+                          const gained = o * dragAvgGap * S.cm1 * yearFactor;
+                          const total = extraCost + lost - gained;
+                          return (
+                            <tr key={share} className={cn('border-b last:border-0', share === 0.5 && 'bg-muted/40')}>
+                              <td className="px-3 py-1.5">{(share * 100).toFixed(0)}%{share === 0.5 && ' \u00b7 middle case'}</td>
+                              <td className="px-3 py-1.5 text-right font-mono tabular-nums">{lost ? `\u2212${usdk(lost)}` : '\u2014'}</td>
+                              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-emerald-700 dark:text-emerald-400">{gained ? `+${usdk(gained)}` : '\u2014'}</td>
+                              <td className="px-3 py-1.5 text-right font-mono font-semibold tabular-nums">{usdk(total)}</td>
+                            </tr>);
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-[14px] text-foreground/70">
+                    The drag works <b>against</b> the move here: each lifted order gives
+                    up about <b>{usd(drag.charged / Math.max(drag.orders, 1))}</b> of shipping to add
+                    roughly <b>{usd(dragAvgGap * S.cm1)}</b> of margin. The gap between those two is
+                    why lowering the line costs more than the static figure suggests.
+                  </p>
+                </>
+              )}
             </Card>
           </div>
         </section>
