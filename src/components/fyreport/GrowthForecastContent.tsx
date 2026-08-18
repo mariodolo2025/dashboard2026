@@ -112,12 +112,12 @@ function Stat({ label, value, sub, tone, tip }: {
     : tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
     : tone === 'accent' ? 'text-amber-700 dark:text-amber-400' : '';
   return (
-    <Card className="p-4">
+    <Card className="p-3">
       <div className="flex items-center gap-1.5">
         <span className="text-[10.5px] font-mono uppercase tracking-wider text-muted-foreground">{label}</span>
         {tip && <HelpCircle size={11} className="text-muted-foreground/50 shrink-0" aria-label={tip}><title>{tip}</title></HelpCircle>}
       </div>
-      <div className={cn('mt-1.5 font-mono text-2xl font-semibold tabular-nums tracking-tight', toneCls)}>{value}</div>
+      <div className={cn('mt-1 font-mono text-xl font-semibold tabular-nums tracking-tight', toneCls)}>{value}</div>
       {sub && <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p>}
     </Card>
   );
@@ -315,26 +315,43 @@ export function GrowthForecastContent() {
   );
 
   return (
-    <div className="mx-auto max-w-[1180px] px-6 pb-16">
-      {/* ── Masthead ───────────────────────────────────────────────────── */}
-      <header className="pt-8">
-        <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-amber-700 dark:text-amber-400">
-          Reports · Growth &amp; Supply
-        </p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight">Spend to Stock</h1>
-        <p className="mt-2 max-w-2xl text-[15px] text-muted-foreground">
-          Move the ad budget and see what it takes to supply the demand it creates — what to put
-          into production, in which month, and what it costs.
-        </p>
-      </header>
+    // Same shell as the other reports: fixed header, one scrolling body. Without
+    // the overflow-y-auto pane the overlay clips the content and nothing scrolls.
+    <div className="flex h-full flex-col">
+      {/* ── Header: title, the one line that matters, and the tabs ──────── */}
+      <div className="reports-no-print shrink-0 border-b bg-background">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5">
+          <h3 className="text-sm font-semibold">Spend to Stock</h3>
+          <span className="text-xs text-muted-foreground">
+            Ad budget → demand → what to put into production, and when
+          </span>
+          <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">
+            b {data.fit.b.toFixed(2)} · R² {data.fit.r2.toFixed(2)} · {data.fit.n} mo ·
+            break-even {BE.toFixed(2)}× · target {TG.toFixed(2)}×
+          </span>
+          <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={exportPlan}>
+            <Download className="h-3.5 w-3.5" /> CSV
+          </Button>
+        </div>
+        <nav className="flex flex-wrap px-3" role="tablist">
+          {TABS.map((t) => (
+            <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)}
+              className={cn('-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-wider',
+                tab === t.id ? 'border-amber-600 text-amber-700 dark:text-amber-400'
+                             : 'border-transparent text-muted-foreground hover:text-foreground')}>
+              <t.icon size={12} /> {t.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto bg-muted/20">
+        <div className="mx-auto max-w-[1500px] space-y-4 p-5">
 
       {/* ── Controls ───────────────────────────────────────────────────── */}
-      <Card className="mt-6 overflow-hidden reports-no-print">
-        <div className="border-b px-4 py-2.5 font-mono text-[10.5px] uppercase tracking-[0.13em] text-muted-foreground">
-          Inputs
-        </div>
-        <div className="grid grid-cols-1 divide-y sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-5 lg:divide-x">
-          <div className="p-4">
+      <Card className="overflow-hidden reports-no-print">
+        <div className="grid grid-cols-2 divide-x divide-y sm:grid-cols-3 lg:grid-cols-5 lg:divide-y-0">
+          <div className="p-3">
             <label htmlFor="gf-spend" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
               New ad spend / month
             </label>
@@ -346,7 +363,7 @@ export function GrowthForecastContent() {
                 : `${S.extraSpend > 0 ? '+' : '−'}${audk(Math.abs(S.extraSpend))} (${S.extraSpend > 0 ? '+' : ''}${((S.ratio - 1) * 100).toFixed(0)}%)`}
             </p>
           </div>
-          <div className="p-4">
+          <div className="p-3">
             <label htmlFor="gf-method" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
               Sales response
             </label>
@@ -360,7 +377,7 @@ export function GrowthForecastContent() {
               {linear ? 'Assumes MER never drops. Our data disagrees.' : 'Diminishing returns, fitted to our months.'}
             </p>
           </div>
-          <div className={cn('p-4', linear && 'opacity-40')}>
+          <div className={cn('p-3', linear && 'opacity-40')}>
             <label htmlFor="gf-b" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
               <T tip="How much sales respond to budget. 0.74 means every 10% more spend returns 7.4% more revenue. Fitted from 12 months of our own data.">Elasticity (b)</T>
             </label>
@@ -371,7 +388,7 @@ export function GrowthForecastContent() {
               Fitted {data.fit.b.toFixed(2)} · R² {data.fit.r2.toFixed(2)} · {data.fit.n} months
             </p>
           </div>
-          <div className="p-4">
+          <div className="p-3">
             <label htmlFor="gf-h" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Horizon</label>
             <select id="gf-h" value={horizon} onChange={(e) => setHorizon(+e.target.value)}
               className="w-full rounded border bg-muted/40 px-2.5 py-1.5 text-[13px]">
@@ -379,7 +396,7 @@ export function GrowthForecastContent() {
             </select>
             <p className="mt-1.5 text-[11.5px] text-muted-foreground">Budget ramps evenly.</p>
           </div>
-          <div className="p-4">
+          <div className="p-3">
             <span className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Products covered</span>
             <div className="flex overflow-hidden rounded border">
               {[10, 25, 50].map((n) => (
@@ -398,28 +415,16 @@ export function GrowthForecastContent() {
         </div>
       </Card>
 
-      {/* ── Tabs ───────────────────────────────────────────────────────── */}
-      <nav className="mt-7 flex flex-wrap border-b reports-no-print" role="tablist">
-        {TABS.map((t) => (
-          <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)}
-            className={cn('-mb-px flex items-center gap-1.5 border-b-2 px-3.5 py-2.5 font-mono text-[11.5px] uppercase tracking-wider',
-              tab === t.id ? 'border-amber-600 text-amber-700 dark:text-amber-400'
-                           : 'border-transparent text-muted-foreground hover:text-foreground')}>
-            <t.icon size={13} /> {t.label}
-          </button>
-        ))}
-      </nav>
-
       {/* ══ WHERE WE ARE ══════════════════════════════════════════════ */}
       {tab === 'now' && (
-        <section className="pt-6">
-          <div className="mb-1 flex items-baseline gap-3">
-            <h2 className="text-lg font-semibold tracking-tight">Where we are</h2><Prov kind="measured" />
+        <section>
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <h2 className="text-[13px] font-semibold">Where we are</h2><Prov kind="measured" />
           </div>
-          <p className="mb-5 max-w-3xl text-[13px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
             Nothing on this screen is a forecast. These are the numbers the projection starts from.
           </p>
-          <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Ad spend / month" value={audk(data.baseline.spend)}
               sub={`AUD · Meta · avg of ${data.baselineMonths} months`}
               tip="Average Meta spend over the last complete months. USD accounts converted at the month's rate." />
@@ -432,7 +437,7 @@ export function GrowthForecastContent() {
               tone={data.baseline.mer >= BE ? 'ok' : 'risk'}
               tip="Below this MER each sale loses money. 1 ÷ contribution margin, read from the Advertising tab's unit economics — never recalculated here." />
           </div>
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-2.5 lg:grid-cols-2">
             <Card className="overflow-hidden">
               <div className="flex items-center justify-between border-b px-4 py-2.5">
                 <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Spend and revenue by month</span>
@@ -504,14 +509,14 @@ export function GrowthForecastContent() {
 
       {/* ══ PROJECTION ════════════════════════════════════════════════ */}
       {tab === 'proj' && (
-        <section className="pt-6">
-          <div className="mb-1 flex items-baseline gap-3">
-            <h2 className="text-lg font-semibold tracking-tight">The projection</h2><Prov kind="projected" />
+        <section>
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <h2 className="text-[13px] font-semibold">The projection</h2><Prov kind="projected" />
           </div>
-          <p className="mb-5 max-w-3xl text-[13px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
             What the new budget returns, and whether the last dollar of it still pays.
           </p>
-          <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Revenue / month" value={audk(S.revenue)} tone="accent"
               sub={`${((S.revenue / data.baseline.revenue - 1) * 100).toFixed(1)}% vs today`}
               tip="Today's revenue × (new spend ÷ today's spend) ^ elasticity." />
@@ -579,17 +584,17 @@ export function GrowthForecastContent() {
 
       {/* ══ PRODUCTION ════════════════════════════════════════════════ */}
       {tab === 'prod' && (
-        <section className="pt-6">
-          <div className="mb-1 flex items-baseline gap-3">
-            <h2 className="text-lg font-semibold tracking-tight">Production plan</h2><Prov kind="projected" />
+        <section>
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <h2 className="text-[13px] font-semibold">Production plan</h2><Prov kind="projected" />
             <Button size="sm" variant="outline" onClick={exportPlan} className="ml-auto reports-no-print">
               <Download size={13} className="mr-1.5" /> CSV
             </Button>
           </div>
-          <p className="mb-5 max-w-3xl text-[13px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
             Units to put into production each month. Click any product to open its running balance.
           </p>
-          <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Units to produce" value={num(totalQty)} tone="accent"
               sub={`Across ${plans.filter((p) => p.totalQty > 0).length} of ${plans.length} products`}
               tip="Total units to start across the selected products over the horizon." />
@@ -687,11 +692,11 @@ export function GrowthForecastContent() {
 
       {/* ══ CALENDAR ══════════════════════════════════════════════════ */}
       {tab === 'cal' && (
-        <section className="pt-6">
-          <div className="mb-1 flex items-baseline gap-3">
-            <h2 className="text-lg font-semibold tracking-tight">Calendar</h2><Prov kind="projected" />
+        <section>
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <h2 className="text-[13px] font-semibold">Calendar</h2><Prov kind="projected" />
           </div>
-          <p className="mb-5 max-w-3xl text-[13px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
             The same plan read as deadlines. A run started in one month only lands after its lead
             time, so this is the month the order has to leave — not the month it is needed.
           </p>
@@ -733,16 +738,16 @@ export function GrowthForecastContent() {
 
       {/* ══ SHIPPING ══════════════════════════════════════════════════ */}
       {tab === 'ship' && (
-        <section className="pt-6">
-          <div className="mb-1 flex items-baseline gap-3">
-            <h2 className="text-lg font-semibold tracking-tight">Shipping · the free-shipping threshold</h2>
+        <section>
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <h2 className="text-[13px] font-semibold">Shipping · the free-shipping threshold</h2>
             <Prov kind="measured" />
           </div>
-          <p className="mb-5 max-w-3xl text-[13px] text-muted-foreground">
+          <p className="mb-3 max-w-4xl text-[12px] text-muted-foreground">
             US orders over US${data.us.thresholds[0]?.threshold ?? 100} already ship free. This is
             what moving that line costs, and what the orders sitting just below it are worth.
           </p>
-          <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             <Card className="p-4 reports-no-print">
               <label htmlFor="gf-thr" className="mb-2 block font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">Threshold (USD)</label>
               <input id="gf-thr" type="number" min={0} max={200} step={5} value={thr}
@@ -768,7 +773,7 @@ export function GrowthForecastContent() {
               sub={nudgePct ? `${num(nudgeLifted * yearFactor)} orders lifted / year` : 'Move the dial'}
               tip="Extra margin from orders that lift their basket to reach the threshold, at the contribution margin." />
           </div>
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-2.5 lg:grid-cols-2">
             <Card className="overflow-hidden">
               <div className="flex items-center justify-between border-b px-4 py-2.5">
                 <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">What each threshold costs</span>
@@ -816,10 +821,10 @@ export function GrowthForecastContent() {
 
       {/* ══ MEMO ══════════════════════════════════════════════════════ */}
       {tab === 'memo' && (
-        <section className="pt-6">
-          <h2 className="mb-1 text-lg font-semibold tracking-tight">Memo</h2>
-          <p className="mb-5 text-[13px] text-muted-foreground">One page, ready to send.</p>
-          <Card className="p-7">
+        <section>
+          <h2 className="text-[13px] font-semibold">Memo</h2>
+          <p className="mb-3 text-[12px] text-muted-foreground">One page, ready to send.</p>
+          <Card className="p-6">
             <p className="max-w-3xl text-[16px] leading-relaxed">
               Raising ad spend from <b>{audk(data.baseline.spend)}</b> to <b>{audk(spend!)}</b> a month
               projects revenue of <b>{audk(S.revenue)}</b>, up <b>{((S.revenue / data.baseline.revenue - 1) * 100).toFixed(0)}%</b>.
@@ -896,14 +901,14 @@ export function GrowthForecastContent() {
 
       {/* ══ HELP ══════════════════════════════════════════════════════ */}
       {tab === 'help' && (
-        <section className="pt-6">
-          <h2 className="mb-1 text-lg font-semibold tracking-tight">Help</h2>
-          <p className="mb-5 text-[13px] text-muted-foreground">
+        <section>
+          <h2 className="text-[13px] font-semibold">Help</h2>
+          <p className="mb-3 text-[12px] text-muted-foreground">
             What each concept means, how to read it, and where every number comes from.
           </p>
 
-          <Card className="mb-4 p-6">
-            <h3 className="mb-2 text-[17px] font-semibold">Elasticity — the dial marked “b”</h3>
+          <Card className="p-5">
+            <h3 className="mb-2 text-[15px] font-semibold">Elasticity — the dial marked “b”</h3>
             <p className="mb-2.5 max-w-3xl text-muted-foreground">
               It is how much sales respond when you move the budget.
               <b className="text-foreground"> At {data.fit.b.toFixed(2)}, every 10% more spend returns
@@ -928,8 +933,8 @@ export function GrowthForecastContent() {
             </p>
           </Card>
 
-          <Card className="mb-4 p-6">
-            <h3 className="mb-2 text-[17px] font-semibold">Why spend and sales are not proportional</h3>
+          <Card className="p-5">
+            <h3 className="mb-2 text-[15px] font-semibold">Why spend and sales are not proportional</h3>
             <ul className="mb-2.5 max-w-3xl list-disc space-y-1.5 pl-5 text-muted-foreground">
               <li><b className="text-foreground">Meta shows the ads to the easiest people first.</b> It starts with
                 those who already visited or search for coffee gear. They buy cheaply. Give it more
@@ -945,8 +950,8 @@ export function GrowthForecastContent() {
             </p>
           </Card>
 
-          <Card className="mb-4 p-6">
-            <h3 className="mb-2 text-[17px] font-semibold">Return on the extra spend — and why the average lies</h3>
+          <Card className="p-5">
+            <h3 className="mb-2 text-[15px] font-semibold">Return on the extra spend — and why the average lies</h3>
             <p className="mb-2.5 max-w-3xl text-muted-foreground">
               Think of the ads as salespeople. The first one serves the customers already in the shop —
               sells a lot, no effort. The tenth has to go out into the street. Sells far less.
@@ -965,8 +970,8 @@ export function GrowthForecastContent() {
             </p>
           </Card>
 
-          <Card className="mb-4 p-6">
-            <h3 className="mb-2 text-[17px] font-semibold">The two thresholds: {BE.toFixed(2)} and {TG.toFixed(2)}</h3>
+          <Card className="p-5">
+            <h3 className="mb-2 text-[15px] font-semibold">The two thresholds: {BE.toFixed(2)} and {TG.toFixed(2)}</h3>
             <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[13px]">
               Break-even MER = 1 ÷ contribution margin = 1 ÷ {(ue?.cm1 ?? 0.706).toFixed(3)} = {BE.toFixed(2)}
             </p>
@@ -987,8 +992,8 @@ export function GrowthForecastContent() {
             </p>
           </Card>
 
-          <Card className="mb-4 p-6">
-            <h3 className="mb-2 text-[17px] font-semibold">The production plan</h3>
+          <Card className="p-5">
+            <h3 className="mb-2 text-[15px] font-semibold">The production plan</h3>
             <p className="mb-2.5 max-w-3xl text-muted-foreground">Each product carries a running balance, month by month:</p>
             <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[13px]">
               opening stock − what sells + what arrives = closing stock
@@ -1006,8 +1011,8 @@ export function GrowthForecastContent() {
             </p>
           </Card>
 
-          <Card className="mb-4 p-6">
-            <h3 className="mb-2 text-[17px] font-semibold">Shipping and the free-shipping line</h3>
+          <Card className="p-5">
+            <h3 className="mb-2 text-[15px] font-semibold">Shipping and the free-shipping line</h3>
             <p className="mb-2.5 max-w-3xl text-muted-foreground">
               Costs come from <b className="text-foreground">Xero</b> (what each carrier actually invoiced), split
               across markets using Starshipit, which knows each parcel's destination. Starshipit's own
@@ -1027,8 +1032,8 @@ export function GrowthForecastContent() {
             </p>
           </Card>
 
-          <Card className="p-6">
-            <h3 className="mb-3 text-[17px] font-semibold">Where every number comes from</h3>
+          <Card className="p-5">
+            <h3 className="mb-3 text-[15px] font-semibold">Where every number comes from</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-[13px]">
                 <thead><tr className="border-b">
@@ -1073,7 +1078,7 @@ export function GrowthForecastContent() {
         </section>
       )}
 
-      <footer className="mt-10 border-t pt-4 text-[11.5px] text-muted-foreground">
+      <footer className="border-t pt-3 text-[11px] text-muted-foreground">
         Elasticity fitted over {data.fit.n} months (R² {data.fit.r2.toFixed(2)}).
         Unit economics {ue ? `from ${ue.month}` : 'unavailable'}. Product mix over the last
         {' '}{data.lookbackDays} days. <button onClick={load} disabled={loading}
@@ -1081,6 +1086,8 @@ export function GrowthForecastContent() {
           {loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </footer>
+        </div>
+      </div>
     </div>
   );
 }
