@@ -1512,14 +1512,34 @@ const HELP_SECTIONS: { title: string; body: ReactNode }[] = [
     ),
   },
   {
-    title: 'Loading the monthly Google spend CSV',
+    title: 'Updating the Google spend (do this monthly)',
     body: (
       <>
-        <p>In Google Ads: Reports → Report editor → daily cost by campaign → download as CSV.</p>
-        <p>Open <b>Data health</b> from the top bar of this tab and load the days with the manual
-        spend form at the bottom of the drawer.</p>
-        <p>Verify: the daily MER line has no gap over the loaded period, and the tab's Google
-        spend total matches the panel's.</p>
+        <p>Meta arrives on its own three times a day. <b>Google does not</b> — until its API access
+        comes through, someone has to export it. Without this the MER line breaks and the Google
+        columns read low.</p>
+        <p><b>1. Open the account.</b>{' '}
+          <a href="https://ads.google.com/aw/campaigns" target="_blank" rel="noreferrer"
+             className="underline font-medium">ads.google.com/aw/campaigns</a>{' '}
+          — then check the account selector at the top says <b>Pesado 58.5</b>. It opens on
+          whichever account you used last, and exporting the wrong one is a silent mistake.</p>
+        <p><b>2. Build the export.</b> Left menu <b>Insights and reports</b> → <b>Report editor</b> →{' '}
+        <b>Custom</b> → <b>Table</b>. Drag <b>Day</b> and <b>Campaign</b> into rows, and{' '}
+        <b>Cost</b>, <b>Conversions</b> and <b>Conv. value</b> into columns.</p>
+        <p><b>3. Set the range and download.</b> Cover from <b>25 Jun 2026</b> (the first day with
+        spend) to today, not just the new days: Google keeps revising past conversions, so a full
+        re-export refreshes the old ones too. Then <b>Download → .csv</b>.</p>
+        <p><b>4. Hand the file over.</b> Send the .csv and it gets parsed and loaded — the loader
+        overwrites the days it covers, so re-loading the same range is safe and repeatable.</p>
+        <p className="text-muted-foreground">For a single day you can skip all of this: open{' '}
+        <b>Data health</b> in the top bar and type it into the form at the bottom.</p>
+        <p><b>Check it worked:</b> the daily MER line has no gaps, and the Google spend in{' '}
+        <b>Data health</b> matches the total Google's own screen shows for the same dates.</p>
+        <p className="text-muted-foreground">The last day of any export is always partial — it was
+        taken mid-day. It corrects itself on the next load.</p>
+        <p className="text-muted-foreground">Don't use the Campaigns table's own{' '}
+        <b>Segment → Time → Day</b>: it is greyed out on this account. The Report editor has no
+        such limit.</p>
       </>
     ),
   },
