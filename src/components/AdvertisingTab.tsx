@@ -40,6 +40,7 @@ import { supabase } from '@/lib/supabase';
 import { STORE_DATE_PRESETS, storeToday, storeDay, shiftDays, ymd } from '@/lib/storeDate';
 import GoogleSpendForm from '@/components/advertising/GoogleSpendForm';
 import GoogleCsvUpload from '@/components/advertising/GoogleCsvUpload';
+import UnitEconomicsForm from '@/components/advertising/UnitEconomicsForm';
 import type {
   AdvertisingDashboard, AdvertisingIncrementality, ChannelView, MerPoint,
   GoogleBucketRow, ChannelMixRow, OverlapSplit, LiveOrder, UnitEconomics,
@@ -1437,10 +1438,17 @@ function ScalePlan({ ue, plan, blended, from, to, totalOrders, draft, onDraft, o
         </div>
       )}
 
-      <p className="text-[13px] text-muted-foreground/70 mt-4">
-        Constants from Juan's July workbook (CM1 {(ue.cm1Pct * 100).toFixed(1)}%, fixed {fmtU(ue.fixedCostsUsd)},
-        ${ue.revenuePerOrderUsd}/order, {(ue.pctNewCustomers * 100).toFixed(1)}% new) — refreshed monthly.
-      </p>
+      <div className="mt-4 pt-3 border-t border-border/40 space-y-2">
+        <p className="text-[13px] text-muted-foreground/70">
+          Constants from Juan's workbook, month <b>{ue.month}</b> — CM1 {(ue.cm1Pct * 100).toFixed(1)}%,
+          fixed {fmtU(ue.fixedCostsUsd)}/month, ${ue.revenuePerOrderUsd}/order,
+          {' '}{(ue.pctNewCustomers * 100).toFixed(1)}% new customers, target margin
+          {' '}{(ue.targetMarginPct * 100).toFixed(0)}%. Everything above, and the two threshold lines
+          on the campaign chart, is calculated from those seven numbers — none of them is fixed in
+          the code.
+        </p>
+        <UnitEconomicsForm ue={ue} onSaved={onSaved} />
+      </div>
     </Card>
   );
 }
