@@ -1385,8 +1385,15 @@ function ScalePlan({ ue, plan, blended, from, to, totalOrders, draft, onDraft, o
               sub={<>= orders × {(ue.pctNewCustomers * 100).toFixed(1)}% first purchases</>} />
             <SimStat label="Target CAC" value={fmtU(targetCac)}
               sub="= spend ÷ new customers" />
-            <SimStat label="Target MER" value={fmtX(requiredMer)}
-              sub="= revenue ÷ spend — what the store must return blended" />
+            {/* NOT the same number as the "Target MER" on the Overview card, and
+                the old shared name caused exactly the confusion it looks like it
+                would. That one is the bar for a MEASURED window, fixed for the
+                month. This one is what THIS proposed budget has to return. Same
+                formula, different revenue: the target falls as revenue grows,
+                because fixed costs are a smaller share of a bigger business. */}
+            <SimStat label="Required MER · for this budget" value={fmtX(requiredMer)}
+              sub={<>= revenue ÷ spend. Moves with both sliders — it is the bar for the plan you are
+                proposing, not the fixed target for the month</>} />
           </div>
           <div className="flex flex-wrap gap-2">
             {cacChip}
@@ -1475,6 +1482,32 @@ const HELP_SECTIONS: { title: string; body: ReactNode }[] = [
         {' '}— not enough evidence yet, leave the budget alone and collect more weeks.</p>
         <p>Never decide from one end of the bar alone. Reading only the platform's end is what the
         agencies do; reading only ours would be equally wrong in the other direction.</p>
+      </>
+    ),
+  },
+  {
+    title: 'The two "target MER" numbers, and why they differ',
+    body: (
+      <>
+        <p>The tab shows a target MER in two places and they are usually different numbers. That is
+        not a bug, but the shared name was, so they now read differently on screen.</p>
+        <p><b>Overview → the MER card says "target at today's revenue".</b> A fixed bar for the
+        month, straight from Juan's workbook. Use it to judge what already happened. It has to stay
+        still: a yardstick that moves cannot compare this week against last.</p>
+        <p><b>Planning → "Required MER · for this budget".</b> Moves with both sliders. It is what
+        the budget you are proposing would have to return. Use it before spending, not after.</p>
+        <p>Both come from the same formula:</p>
+        <p className="font-mono text-[13px]">target = 1 ÷ ( contribution margin − target margin − fixed costs ÷ revenue )</p>
+        <p><b>Revenue is inside it.</b> Fixed costs are a smaller share of a bigger business, so the
+        bar falls as you grow. At US$336k a month the target is 2.77×; at US$750k, with the same
+        fixed costs, it is 2.27×. Same ambition, bigger business, lower bar.</p>
+        <p><b>Why this matters in money:</b> judging a plan that doubles the business against the
+        bar of today's business calls a good budget a failure. The Spend to Stock report did exactly
+        that until 18 Aug 2026 — it showed a projection returning 2.53× as "not covering fixed costs
+        plus the target margin" when the real bar at that size was 2.27×.</p>
+        <p>The caveat that keeps this honest: the bar only falls if fixed costs stay flat while you
+        grow. If scaling adds people, warehousing or worse product cost, put those in the workbook
+        first — the target rises again.</p>
       </>
     ),
   },
@@ -1884,7 +1917,7 @@ function needsAttention(d: AdvertisingDashboard): Attention[] {
   }
   if (ue && ue.targetMer !== null && b.mer >= ue.breakevenMer && b.mer < ue.targetMer) {
     items.push({
-      text: `MER is ${fmtX(b.mer)} — above breakeven, below the ${fmtX(ue.targetMer)} target margin.`,
+      text: `MER is ${fmtX(b.mer)} — above breakeven, below the ${fmtX(ue.targetMer)} target for a business this size.`,
       go: 'campaigns',
     });
   }
@@ -2100,6 +2133,15 @@ export default function AdvertisingTab() {
                               <p className="mt-1.5"><b>Target {ue.targetMer === null ? '—' : fmtX(ue.targetMer)}</b>:
                               what you need for a {Math.round(ue.targetMarginPct * 100)}% operating profit,
                               once fixed costs (US${fmtNum(ue.fixedCostsUsd)}/month) are covered too.</p>
+                              <p className="mt-1.5"><b>This target is for a business of today's size.</b> It
+                              is calculated at the workbook's revenue of US${fmtNum(ue.baselineRevenueUsd)}/month.
+                              Fixed costs are a smaller share of a bigger business, so the bar falls as you
+                              grow — at double that revenue it would be lower. That is why the Planning
+                              screen shows a different number: there you are proposing a budget, and the bar
+                              is recalculated for the revenue that budget produces.</p>
+                              <p className="mt-1.5">Here it stays fixed on purpose. This card measures what
+                              already happened, and a yardstick that moves cannot compare one month with
+                              the next.</p>
                               <p className="mt-1.5 text-muted-foreground">Both come from Juan's unit-economics
                               workbook, month {ue.month}. They refresh when the workbook does.</p>
                             </>
@@ -2107,7 +2149,7 @@ export default function AdvertisingTab() {
                         </>
                       }
                       sub={ue
-                        ? <>Net sales ÷ ad spend. Breakeven {fmtX(ue.breakevenMer)} · target {ue.targetMer === null ? 'unreachable at current economics' : fmtX(ue.targetMer)} <span className="text-muted-foreground/60">(Juan's workbook, {ue.month})</span></>
+                        ? <>Net sales ÷ ad spend. Breakeven {fmtX(ue.breakevenMer)} · target at today's revenue {ue.targetMer === null ? 'unreachable at current economics' : fmtX(ue.targetMer)} <span className="text-muted-foreground/60">(Juan's workbook, {ue.month})</span></>
                         : 'Net sales ÷ ad spend. No unit-economics row for this window.'}
                     />
                     <KpiCard

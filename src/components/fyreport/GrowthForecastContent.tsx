@@ -48,7 +48,13 @@ interface Payload {
   baseline: { spend: number; revenue: number; mer: number };
   fit: { b: number; r2: number; n: number; excluded: string[] };
   history: { month: string; spend: number; revenue: number; mer: number; excluded: boolean }[];
-  unitEconomics: { cm1: number; breakevenMer: number; targetMer: number; month: string; source: string } | null;
+  unitEconomics: {
+    cm1: number; breakevenMer: number; targetMer: number; month: string; source: string;
+    /** The inputs behind targetMer. The target is NOT a constant: it falls as
+     *  revenue grows, because fixed costs shrink as a share of it. A projection
+     *  must re-evaluate it at the revenue IT produces. */
+    targetMarginPct: number; fixedCostsUsd: number; baselineRevenueUsd: number;
+  } | null;
   products: Product[];
   us: {
     orders: number; aov: number; windowDays: number;
@@ -290,7 +296,29 @@ export function GrowthForecastContent() {
 
   const ue = data.unitEconomics;
   const BE = ue?.breakevenMer ?? 1.42;
-  const TG = ue?.targetMer ?? 2.77;
+  // The BENCHMARK target: what the workbook's own month needed. Right for
+  // judging a measured window, wrong for judging a bigger business.
+  const TG_TODAY = ue?.targetMer ?? 2.77;
+
+  /** The target MER at a given monthly revenue.
+   *
+   *  target = 1 / ( CM1% − target margin% − fixed costs / revenue )
+   *
+   *  Fixed costs are a smaller share of a larger revenue, so the bar FALLS as
+   *  the business grows. Juan's workbook says the same: "Target MER for your
+   *  target margin — at this month's revenue only… Falls as revenue grows."
+   *  Holding a $750k/month projection to a target computed at $335k/month
+   *  understates it by half a turn and reads as a failure when it is not. */
+  const targetAt = (revenueUsd: number): number | null => {
+    if (!ue || !(revenueUsd > 0)) return null;
+    const den = ue.cm1 - ue.targetMarginPct - ue.fixedCostsUsd / revenueUsd;
+    return den > 0 ? 1 / den : null;
+  };
+
+  /** The bar the PROJECTION must clear: recomputed at the revenue the projection
+   *  itself produces. Falls back to the benchmark when the workbook row is
+   *  missing, so the report degrades instead of showing nothing. */
+  const TG_AT = targetAt(S.revenue) ?? (ue ? TG_TODAY : null);
   const totalQty  = plans.reduce((a, p) => a + p.totalQty, 0);
   const totalCost = plans.reduce((a, p) => a + p.totalCost, 0);
   const firstStart = plans.flatMap((p) => p.starts.map((o) => ({ ...o, sku: p.sku })))
@@ -389,7 +417,7 @@ export function GrowthForecastContent() {
           </span>
           <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">
             b {data.fit.b.toFixed(2)} · R² {data.fit.r2.toFixed(2)} · {data.fit.n} mo ·
-            break-even {BE.toFixed(2)}× · target {TG.toFixed(2)}×
+            break-even {BE.toFixed(2)}× · target today {TG_TODAY.toFixed(2)}×
           </span>
           <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={exportPlan}>
             <Download className="h-3.5 w-3.5" /> CSV
@@ -586,11 +614,11 @@ export function GrowthForecastContent() {
               sub={`${((S.revenue / data.baseline.revenue - 1) * 100).toFixed(1)}% vs today`}
               tip="Today's revenue × (new spend ÷ today's spend) ^ elasticity." />
             <Stat label="MER after" value={`${S.mer.toFixed(2)}×`}
-              tone={S.mer >= TG ? 'ok' : S.mer >= BE ? 'warn' : 'risk'}
+              tone={TG_AT !== null && S.mer >= TG_AT ? 'ok' : S.mer >= BE ? 'warn' : 'risk'}
               sub={`${data.baseline.mer.toFixed(2)}× today`}
-              tip="Projected revenue ÷ new spend. Falls as budget rises: that is what an elasticity below 1.00 means." />
+              tip="Projected revenue ÷ new spend. Falls as budget rises: that is what an elasticity below 1.00 means. It is judged against the target AT THIS REVENUE, not against today's." />
             <Stat label="Return on the extra spend" value={`$${S.marginal.toFixed(2)}`}
-              tone={S.marginal >= TG ? 'ok' : S.marginal >= BE ? 'warn' : 'risk'}
+              tone={TG_AT !== null && S.marginal >= TG_AT ? 'ok' : S.marginal >= BE ? 'warn' : 'risk'}
               sub={S.marginal >= BE ? `Clears break-even (${BE.toFixed(2)})` : `BELOW break-even (${BE.toFixed(2)})`}
               tip="Extra revenue ÷ extra spend — what the last dollar returns, not the average. This is the number that says when to stop." />
             <Stat label="Extra contribution / month"
@@ -601,20 +629,35 @@ export function GrowthForecastContent() {
 
           <Card className="mb-4 p-4">
             <div className="mb-3 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
-              Efficiency against the two thresholds
+              Efficiency against the two thresholds — at this projected revenue
             </div>
             <div className="relative h-7 overflow-hidden rounded border bg-muted/40">
               <div className="absolute inset-y-0 left-0 bg-amber-500/20" style={{ width: `${Math.min(100, (S.mer / 4) * 100)}%` }} />
               <div className="absolute inset-y-0 w-0.5 bg-red-500" style={{ left: `${(BE / 4) * 100}%` }} />
-              <div className="absolute inset-y-0 w-0.5 bg-amber-500" style={{ left: `${(TG / 4) * 100}%` }} />
+              {TG_AT !== null && (
+                <div className="absolute inset-y-0 w-0.5 bg-amber-500" style={{ left: `${Math.min(99.5, (TG_AT / 4) * 100)}%` }} />
+              )}
               <div className="absolute -inset-y-1 w-1 rounded bg-foreground" style={{ left: `${Math.min(99, (S.mer / 4) * 100)}%` }} />
             </div>
-            <div className="mt-1 flex justify-between font-mono text-[10px] text-muted-foreground">
-              <span>0</span><span>break-even {BE.toFixed(2)}</span><span>target {TG.toFixed(2)}</span><span>4.0</span>
+            {/* Labels sit at the SAME percentage as the line each one names.
+                They used to be spread by justify-between over four items, which
+                puts them at fixed thirds: the break-even caption landed near its
+                line by luck (35.5% against 33%) and the target caption sat ~12
+                points to the right of its own. Any change to the numbers moved
+                the lines and left the captions where they were. */}
+            <div className="relative mt-1 h-4 font-mono text-[10px] text-muted-foreground">
+              <span className="absolute left-0">0</span>
+              <span className="absolute -translate-x-1/2 whitespace-nowrap"
+                    style={{ left: `${(BE / 4) * 100}%` }}>break-even {BE.toFixed(2)}</span>
+              {TG_AT !== null && (
+                <span className="absolute -translate-x-1/2 whitespace-nowrap"
+                      style={{ left: `${Math.min(94, (TG_AT / 4) * 100)}%` }}>target {TG_AT.toFixed(2)}</span>
+              )}
+              <span className="absolute right-0">4.0</span>
             </div>
             <p className="mt-3 max-w-3xl text-[14px] text-foreground/70">
               {S.mer < BE ? <><b className="text-red-600 dark:text-red-400">Below break-even.</b> At this budget the store loses money on the marginal sale.</>
-              : S.mer < TG ? <><b className="text-amber-600 dark:text-amber-400">Between the two lines.</b> Each sale contributes, but at this efficiency the business is not covering fixed costs plus the target margin.</>
+              : TG_AT !== null && S.mer < TG_AT ? <><b className="text-amber-600 dark:text-amber-400">Between the two lines.</b> Each sale contributes, but at this efficiency the business is not covering fixed costs plus the target margin.</>
               : <><b className="text-emerald-600 dark:text-emerald-400">Above target.</b> This budget clears both thresholds.</>}
             </p>
           </Card>
@@ -952,7 +995,12 @@ export function GrowthForecastContent() {
               projects revenue of <b>{audk(S.revenue)}</b>, up <b>{((S.revenue / data.baseline.revenue - 1) * 100).toFixed(0)}%</b>.
               The gap between those two percentages is the point: the return is real but not
               proportional, and MER falls from {data.baseline.mer.toFixed(2)}× to {S.mer.toFixed(2)}× —
-              {S.mer >= TG ? ' still above' : ' below'} the {TG.toFixed(2)}× operating target.
+              {TG_AT !== null && S.mer >= TG_AT ? ' still above' : ' below'} the
+              {' '}{TG_AT !== null ? TG_AT.toFixed(2) : TG_TODAY.toFixed(2)}× operating target
+              {TG_AT !== null && Math.abs(TG_AT - TG_TODAY) >= 0.05
+                ? <> for a business of that size — the bar falls from {TG_TODAY.toFixed(2)}× because
+                  fixed costs are a smaller share of a bigger revenue</>
+                : null}.
               Supplying it needs <b>{num(totalQty)} units</b> into production across
               {' '}{plans.filter((p) => p.totalQty > 0).length} products, <b>{audk(totalCost)}</b> at
               factory cost, with the first run starting <b>{firstStart ? firstStart.label : '—'}</b>.
@@ -996,7 +1044,8 @@ export function GrowthForecastContent() {
                 <>
                   <b>The next dollar still pays.</b> At this budget each extra advertising dollar
                   returns ${S.marginal.toFixed(2)} of revenue, against a break-even of ${BE.toFixed(2)} and
-                  an operating target of ${TG.toFixed(2)}.
+                  an operating target of ${TG_AT !== null ? TG_AT.toFixed(2) : TG_TODAY.toFixed(2)} —
+                  the target at the revenue this budget produces, not at today's.
                 </>,
                 <>
                   <b>Elasticity holds near {S.bb.toFixed(2)}.</b> Fitted across {data.fit.n} months
@@ -1096,7 +1145,7 @@ export function GrowthForecastContent() {
           </Card>
 
           <Card className="p-5">
-            <h3 className="mb-2 text-[15px] font-semibold">The two thresholds: {BE.toFixed(2)} and {TG.toFixed(2)}</h3>
+            <h3 className="mb-2 text-[15px] font-semibold">The two thresholds — and why the target moves</h3>
             <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[14px]">
               Break-even MER = 1 ÷ contribution margin = 1 ÷ {(ue?.cm1 ?? 0.706).toFixed(3)} = {BE.toFixed(2)}
             </p>
@@ -1108,12 +1157,29 @@ export function GrowthForecastContent() {
             </p>
             <ul className="mb-2.5 max-w-3xl list-disc space-y-1 pl-5 text-muted-foreground">
               <li><b className="text-foreground">{BE.toFixed(2)} — break-even.</b> Below this you lose money on each sale.</li>
-              <li><b className="text-foreground">{TG.toFixed(2)} — target.</b> Here you also cover fixed costs and keep the target margin.</li>
+              <li><b className="text-foreground">{TG_TODAY.toFixed(2)} — target at today's revenue.</b> Here you
+                also cover fixed costs and keep the {ue ? (ue.targetMarginPct * 100).toFixed(0) : '20'}% margin.</li>
             </ul>
+            <p className="mb-2.5 max-w-3xl text-muted-foreground">
+              <b className="text-foreground">Break-even never moves</b> — it is 1 ÷ contribution margin and
+              nothing else. <b className="text-foreground">The target does.</b> It is
+            </p>
+            <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[14px]">
+              target = 1 ÷ ( contribution margin − target margin − fixed costs ÷ revenue )
+            </p>
+            <p className="mb-2.5 max-w-3xl text-muted-foreground">
+              and revenue is in it. Fixed costs are a smaller share of a bigger business, so the bar
+              <b className="text-foreground"> falls as you grow</b>. At today's
+              {' '}{ue ? audk(ue.baselineRevenueUsd) : '—'} a month the target is {TG_TODAY.toFixed(2)}×;
+              at the {audk(S.revenue)} this projection produces it is
+              {' '}{TG_AT !== null ? `${TG_AT.toFixed(2)}×` : '—'}.
+              <b className="text-foreground"> The projection above is judged against that second number</b>,
+              because judging a bigger business by a smaller one's bar calls a good budget a failure.
+            </p>
             <p className="max-w-3xl text-muted-foreground">
-              Both are read straight from the Advertising tab's unit economics
-              {ue ? ` (${ue.month})` : ''}. <b className="text-foreground">This report never recalculates them</b>,
-              so the two screens can never disagree.
+              The inputs are read straight from the Advertising tab's unit economics
+              {ue ? ` (${ue.month})` : ''} and never re-typed here, so the two screens cannot disagree
+              about the economics — only about the revenue each one is talking about.
             </p>
           </Card>
 
