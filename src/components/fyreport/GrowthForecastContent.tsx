@@ -181,6 +181,13 @@ export function GrowthForecastContent() {
   const [b, setB] = useState<number | null>(null);
   const [linear, setLinear] = useState(false);
   const [horizon, setHorizon] = useState(6);
+  // How the budget moves across the horizon. A straight ramp to a target is one
+  // plan among several, not the only shape a budget takes: a fixed monthly step
+  // and a hand-written month-by-month plan are just as real, and the second is
+  // what an actual media plan looks like.
+  const [budgetMode, setBudgetMode] = useState<'ramp' | 'growth' | 'manual'>('ramp');
+  const [growthPct, setGrowthPct] = useState(10);
+  const [manual, setManual] = useState<number[]>([]);
   const [topN, setTopN] = useState(10);
   const [openSku, setOpenSku] = useState<string | null>(null);
   const [thr, setThr] = useState(100);
@@ -204,36 +211,61 @@ export function GrowthForecastContent() {
   };
   useEffect(() => { void load(); }, []);
 
+  /** The month-by-month budget, before anything is derived from it.
+   *
+   *  ramp   — straight line from today's spend to the target.
+   *  growth — a fixed percentage step on the previous month, compounding.
+   *  manual — whatever is typed into each month.
+   *
+   *  Everything downstream (revenue, production, the calendar) reads this, so
+   *  the three modes cost nothing beyond the plan itself. */
+  const budget = useMemo(() => {
+    if (!data || spend === null) return [];
+    const base = data.baseline.spend;
+    const out: number[] = [];
+    let prev = base;
+    for (let i = 1; i <= horizon; i++) {
+      let sp: number;
+      if (budgetMode === 'growth') sp = prev * (1 + growthPct / 100);
+      else if (budgetMode === 'manual') sp = manual[i - 1] ?? prev;  // extending a shorter plan holds the last month
+      else sp = base + (spend - base) * (i / horizon);
+      out.push(Math.max(0, sp));
+      prev = sp;
+    }
+    return out;
+  }, [data, spend, horizon, budgetMode, growthPct, manual]);
+
+  // The headline figures describe where the plan ENDS, which in ramp mode is
+  // the target the user typed and in the other two is wherever the plan lands.
+  const endSpend = budget.length ? budget[budget.length - 1] : (spend ?? 0);
+
   const S = useMemo(() => {
     if (!data || spend === null || b === null) return null;
     const bb = linear ? 1 : b;
     const base = data.baseline;
-    const ratio = spend / base.spend;
+    const ratio = endSpend / base.spend;
     const revenue = base.revenue * Math.pow(ratio, bb);
-    const extraSpend = spend - base.spend;
+    const extraSpend = endSpend - base.spend;
     const extraRev = revenue - base.revenue;
     const cm1 = data.unitEconomics?.cm1 ?? 0.706;
     return {
       bb, ratio, revenue, extraSpend, extraRev, cm1,
-      mer: revenue / spend,
+      mer: revenue / endSpend,
       // Return on the LAST dollar, not the average. This is the number that
       // says when to stop; the average always looks better than the margin.
-      marginal: extraSpend !== 0 ? extraRev / extraSpend : (bb * revenue) / spend,
+      marginal: extraSpend !== 0 ? extraRev / extraSpend : (bb * revenue) / endSpend,
       contribution: extraRev * cm1 - extraSpend,
       list: data.products.slice(0, topN),
     };
-  }, [data, spend, b, linear, topN]);
+  }, [data, spend, endSpend, b, linear, topN]);
 
   const months = useMemo(() => {
     if (!S || !data) return [];
-    const out: { i: number; label: string; spend: number; rev: number }[] = [];
-    for (let i = 1; i <= horizon; i++) {
-      const sp = data.baseline.spend + (spend! - data.baseline.spend) * (i / horizon);
-      out.push({ i, label: monthLabel(i), spend: sp,
-                 rev: data.baseline.revenue * Math.pow(sp / data.baseline.spend, S.bb) });
-    }
-    return out;
-  }, [S, data, spend, horizon]);
+    return budget.map((sp, idx) => ({
+      i: idx + 1, label: monthLabel(idx + 1), spend: sp,
+      rev: data.baseline.revenue * Math.pow(sp / data.baseline.spend, S.bb),
+    }));
+  }, [S, data, budget]);
 
   /** Running balance per product, and the runs that keep it above water.
    *
@@ -377,7 +409,10 @@ export function GrowthForecastContent() {
   const absorbedAfter = absorbedToday + extraCost;
 
   const curveData = (() => {
-    const maxX = Math.max(spend! * 1.3, data.baseline.spend * 1.8);
+    // Scale to where the PLAN ends, not to the box: a stepped or hand-typed
+    // budget can finish well past the ramp target, and the chosen point has
+    // to stay on the chart.
+    const maxX = Math.max(endSpend * 1.3, data.baseline.spend * 1.8);
     const pts: any[] = [];
     for (let i = 0; i <= 40; i++) {
       const sp = (maxX * i) / 40;
@@ -443,14 +478,48 @@ export function GrowthForecastContent() {
         <div className="grid grid-cols-2 divide-x divide-y sm:grid-cols-3 lg:grid-cols-5 lg:divide-y-0">
           <div className="p-3">
             <label htmlFor="gf-spend" className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
-              New ad spend / month
+              <T tip="How the budget moves across the horizon. Ramp draws a straight line to a target; Monthly step applies the same percentage increase to the previous month; Month by month lets you type each one.">Budget plan</T>
             </label>
-            <input id="gf-spend" type="number" step={5000} min={20000} value={spend!}
-              onChange={(e) => setSpend(Math.max(1, +e.target.value || 0))}
-              className="w-full rounded border bg-muted/40 px-2.5 py-1.5 font-mono text-base font-semibold tabular-nums" />
+            <div className="mb-2 flex overflow-hidden rounded border">
+              {([['ramp', 'Ramp'], ['growth', 'Step %'], ['manual', 'By month']] as const).map(([m, lbl]) => (
+                <button key={m}
+                  onClick={() => {
+                    // Switching into manual seeds it with whatever plan is on
+                    // screen. Without this the row collapses to a flat baseline
+                    // and the user loses the shape they were looking at.
+                    if (m === 'manual' && budget.length) setManual(budget.map(Math.round));
+                    setBudgetMode(m);
+                  }}
+                  aria-pressed={budgetMode === m}
+                  className={cn('flex-1 border-r px-1.5 py-1.5 font-mono text-[12px] last:border-r-0',
+                    budgetMode === m ? 'bg-amber-600 font-semibold text-white'
+                                     : 'bg-muted/40 text-foreground/70 hover:text-foreground')}>
+                  {lbl}
+                </button>))}
+            </div>
+            {budgetMode === 'ramp' && (
+              <input id="gf-spend" type="number" step={5000} min={20000} value={spend!}
+                onChange={(e) => setSpend(Math.max(1, +e.target.value || 0))}
+                className="w-full rounded border bg-muted/40 px-2.5 py-1.5 font-mono text-base font-semibold tabular-nums" />
+            )}
+            {budgetMode === 'growth' && (
+              <div className="flex items-center gap-2">
+                <input id="gf-spend" type="number" step={1} min={-50} max={100} value={growthPct}
+                  onChange={(e) => setGrowthPct(+e.target.value || 0)}
+                  className="w-20 rounded border bg-muted/40 px-2.5 py-1.5 font-mono text-base font-semibold tabular-nums" />
+                <span className="font-mono text-[14px] text-foreground/70">% each month</span>
+              </div>
+            )}
+            {budgetMode === 'manual' && (
+              <div id="gf-spend" className="rounded border border-dashed bg-muted/20 px-2.5 py-1.5 font-mono text-[13px] text-foreground/70">
+                Type each month below ↓
+              </div>
+            )}
             <p className="mt-1.5 text-[13.5px] text-foreground/70">
-              {S.extraSpend === 0 ? 'Same as today'
-                : `${S.extraSpend > 0 ? '+' : '−'}${audk(Math.abs(S.extraSpend))} (${S.extraSpend > 0 ? '+' : ''}${((S.ratio - 1) * 100).toFixed(0)}%)`}
+              {budgetMode === 'ramp'
+                ? (S.extraSpend === 0 ? 'Same as today'
+                   : `${S.extraSpend > 0 ? '+' : '\u2212'}${audk(Math.abs(S.extraSpend))} (${S.extraSpend > 0 ? '+' : ''}${((S.ratio - 1) * 100).toFixed(0)}%) by month ${horizon}`)
+                : `Ends at ${audk(endSpend)}/mo \u00b7 ${audk(budget.reduce((a, v) => a + v, 0))} over ${horizon} months`}
             </p>
           </div>
           <div className="p-3">
@@ -501,6 +570,50 @@ export function GrowthForecastContent() {
             <p className="mt-1.5 text-[13.5px] text-foreground/70">
               = {(S.list.reduce((a, s) => a + s.share, 0) * 100).toFixed(0)}% of revenue
             </p>
+          </div>
+        </div>
+
+        {/* The plan itself, month by month. Editable in manual mode, read-only
+            in the other two — either way it is the same row of numbers, so the
+            shape of the budget is visible before anything is derived from it. */}
+        <div className="border-t bg-muted/30 px-3 py-2.5">
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <span className="font-mono text-[12px] font-semibold uppercase tracking-wide text-foreground/75">
+              <T tip="Ad spend planned for each month of the horizon, in AUD. In 'By month' mode every cell is editable; in the other modes it shows what the rule produces.">Ad spend by month</T>
+            </span>
+            <span className="font-mono text-[12px] text-foreground/55">
+              total {audk(budget.reduce((a, v) => a + v, 0))} \u00b7 AUD
+            </span>
+            {budgetMode === 'manual' && (
+              <button onClick={() => setManual([])}
+                className="ml-auto font-mono text-[12px] text-foreground/60 underline hover:text-foreground">
+                reset to the ramp
+              </button>)}
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto pb-1">
+            {budget.map((sp, idx) => (
+              <div key={idx} className="min-w-[92px] flex-1 rounded border bg-background px-2 py-1.5">
+                <div className="font-mono text-[11.5px] uppercase tracking-wide text-foreground/60">
+                  {monthLabel(idx + 1)}
+                </div>
+                {budgetMode === 'manual' ? (
+                  <input type="number" step={5000} min={0}
+                    value={Math.round(sp)}
+                    onChange={(e) => {
+                      const next = budget.map((v) => Math.round(v));
+                      next[idx] = Math.max(0, +e.target.value || 0);
+                      setManual(next);
+                    }}
+                    className="w-full bg-transparent font-mono text-[14px] font-semibold tabular-nums outline-none" />
+                ) : (
+                  <div className="font-mono text-[14px] font-semibold tabular-nums">{audk(sp)}</div>
+                )}
+                <div className="font-mono text-[11px] tabular-nums text-foreground/55">
+                  {idx === 0
+                    ? `${sp >= data.baseline.spend ? '+' : '\u2212'}${Math.abs(((sp / data.baseline.spend) - 1) * 100).toFixed(0)}% vs today`
+                    : `${sp >= budget[idx - 1] ? '+' : '\u2212'}${Math.abs(((sp / budget[idx - 1]) - 1) * 100).toFixed(0)}%`}
+                </div>
+              </div>))}
           </div>
         </div>
       </Card>
@@ -679,7 +792,7 @@ export function GrowthForecastContent() {
                 <Line dataKey="fitted" stroke="#b45309" dot={false} strokeWidth={2.2} name="fitted" />
                 <Scatter data={data.history.map((h) => ({ spend: h.spend, fitted: h.revenue, ex: h.excluded }))}
                   dataKey="fitted" fill="#475569" />
-                <ReferenceDot x={spend!} y={S.revenue} r={5} fill="#b45309" stroke="#fff" strokeWidth={2} />
+                <ReferenceDot x={endSpend} y={S.revenue} r={5} fill="#b45309" stroke="#fff" strokeWidth={2} />
               </ComposedChart>
             </ResponsiveContainer>
             <p className="mt-2 text-[13.5px] text-foreground/70">
