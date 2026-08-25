@@ -10,11 +10,15 @@ export function DateRangePresets({ onSelect }: { onSelect: (r: DateRange) => voi
   const curFyStartYear = today.getMonth() >= 6 ? today.getFullYear() : today.getFullYear() - 1;
   const lastFyFrom = new Date(curFyStartYear - 1, 6, 1);   // Jul 1 (previous FY)
   const lastFyTo = new Date(curFyStartYear, 5, 30);        // Jun 30
+  const thisFyFrom = new Date(curFyStartYear, 6, 1);       // Jul 1 (current FY)
 
   const presets: { label: string; range: DateRange }[] = [
     { label: 'Last week', range: { from: startOfWeek(subWeeks(today, 1), { weekStartsOn: 1 }), to: endOfWeek(subWeeks(today, 1), { weekStartsOn: 1 }) } },
     { label: 'Last month', range: { from: startOfMonth(subMonths(today, 1)), to: endOfMonth(subMonths(today, 1)) } },
     { label: 'Last 30 days', range: { from: subDays(today, 29), to: today } },
+    // Year to date within the fiscal year, not the calendar one — it is the
+    // window every other FY figure in the dashboard is measured over.
+    { label: 'This FY', range: { from: thisFyFrom, to: today } },
     { label: 'Last FY', range: { from: lastFyFrom, to: lastFyTo } },
   ];
 

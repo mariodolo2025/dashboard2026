@@ -84,6 +84,20 @@ export function yesterday(): { from: string; to: string } {
  * "Last week" means the same thing in the B2C explorer and the Web Upgrade
  * panel. `from`/`to` are inclusive.
  */
+/** Dolo's fiscal year runs 1 July to 30 June. "This FY" is 1 July of the current
+ *  fiscal year through today — the window most of Mario's questions are really
+ *  asking about, and the one every other FY figure in the dashboard uses.
+ *
+ *  Derived in STORE days (Brisbane), like every other range here: taking the
+ *  browser's month would roll the year over ten hours early each 1 July. */
+export function thisFinancialYear(): { from: string; to: string } {
+  const today = storeDay();
+  // Months are 0-based: 6 = July. Before July we are still in the FY that
+  // started last calendar year.
+  const startYear = today.getUTCMonth() >= 6 ? today.getUTCFullYear() : today.getUTCFullYear() - 1;
+  return { from: `${startYear}-07-01`, to: storeToday() };
+}
+
 export const STORE_DATE_PRESETS: {
   label: string;
   range: () => { from: string; to: string };
@@ -93,4 +107,5 @@ export const STORE_DATE_PRESETS: {
   { label: '30 days', range: () => ({ from: shiftDays(-29), to: storeToday() }) },
   { label: '90 days', range: () => ({ from: shiftDays(-89), to: storeToday() }) },
   { label: '12 months', range: () => ({ from: shiftDays(-364), to: storeToday() }) },
+  { label: 'This FY', range: thisFinancialYear },
 ];
