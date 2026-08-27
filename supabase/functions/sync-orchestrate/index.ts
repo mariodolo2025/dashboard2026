@@ -92,6 +92,13 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   // mapping that historical events still reference.
   { name: 'Shopify variant map', fn: 'shopify-variant-map-sync', body: { days: 7 } },
   { name: 'Shopify CSV', fn: 'shopify-export-csv', body: { dest: 'MARIO Total sales by product variant.csv' } },
+  // DDP Markets reconciliation (DE/DK/CH): what checkout charged vs the
+  // Starshipit label vs what ZONOS billed, per order. Rolling 14 days is the
+  // whole job: older charged data is immutable, the Starshipit pass always
+  // retries every still-pending order regardless of window, and the ZONOS pass
+  // matches by tracking against ALL local rows — the window only bounds which
+  // ZONOS records are read, and those are created at label time.
+  { name: 'DDP markets', fn: 'ddp-sync', body: { days: 14 } },
   // Meta ads: pull daily spend + purchase conversion value into meta_ads_daily
   // (trailing 30d re-pull for attribution revisions), then regenerate the
   // "2-Mario-for-Danshboard.csv" the dashboard reads (native currency per row).

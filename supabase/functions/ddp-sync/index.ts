@@ -18,6 +18,10 @@
 //
 //   POST {}                          → sync the default window
 //   POST { "since": "2026-08-01" }   → override the window start
+//   POST { "days": 14 }              → rolling window (the orchestrator's shape:
+//                                      re-reads recent Shopify orders and recent
+//                                      ZONOS records; Starshipit always retries
+//                                      every pending order regardless of window)
 // =============================================================================
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -44,7 +48,13 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors });
   try {
     const body = await req.json().catch(() => ({}));
-    const since: string = typeof body?.since === 'string' ? body.since : DDP_START;
+    const days = Number(body?.days);
+    const rolling = Number.isFinite(days) && days > 0
+      ? new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10)
+      : null;
+    const since: string = typeof body?.since === 'string' ? body.since
+      : rolling && rolling > DDP_START ? rolling
+      : DDP_START;
 
     const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
