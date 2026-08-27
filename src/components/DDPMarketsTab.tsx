@@ -49,7 +49,29 @@ interface Payload {
   exceptions: { awaitingZonos: string[]; awaitingFreight: string[]; zonosUnmatched: { tracking: string; country: string; amount: number }[] };
 }
 
-const FLAG: Record<string, string> = { DE: '🇩🇪', DK: '🇩🇰', CH: '🇨🇭' };
+const COUNTRY_NAME: Record<string, string> = { DE: 'Germany', DK: 'Denmark', CH: 'Switzerland' };
+
+// Real SVG flags: Windows renders emoji flags as bare letters, which is what
+// made the markets read as "just the code" in the first place.
+function Flag({ cc, className }: { cc: string; className?: string }) {
+  const cls = cn('inline-block h-[13px] w-[19px] shrink-0 rounded-[2px] border border-black/10 align-[-1.5px]', className);
+  if (cc === 'DE') return (
+    <svg viewBox="0 0 3 2" className={cls} aria-hidden>
+      <rect width="3" height="2" fill="#000" /><rect y="0.667" width="3" height="1.333" fill="#DD0000" /><rect y="1.333" width="3" height="0.667" fill="#FFCE00" />
+    </svg>
+  );
+  if (cc === 'DK') return (
+    <svg viewBox="0 0 37 28" className={cls} aria-hidden>
+      <rect width="37" height="28" fill="#C8102E" /><rect x="12" width="4" height="28" fill="#fff" /><rect y="12" width="37" height="4" fill="#fff" />
+    </svg>
+  );
+  if (cc === 'CH') return (
+    <svg viewBox="0 0 32 32" className={cls} aria-hidden>
+      <rect width="32" height="32" fill="#DA291C" /><rect x="13" y="6" width="6" height="20" fill="#fff" /><rect x="6" y="13" width="20" height="6" fill="#fff" />
+    </svg>
+  );
+  return null;
+}
 const aud = (v: number | null | undefined, dec = 0) =>
   v === null || v === undefined ? '—'
     : `${v < 0 ? '−' : ''}A$${Math.abs(v).toLocaleString('en-AU', { minimumFractionDigits: dec, maximumFractionDigits: dec })}`;
@@ -209,12 +231,20 @@ export default function DDPMarketsTab() {
       {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-[13px]">{error}</div>}
 
       {/* ── KPI strip ────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <div className="cursor-help rounded-xl border bg-card p-3.5" title={T.orders}>
           <div className="text-[13px] text-muted-foreground">DDP orders</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? k.orders : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
             {k ? ['DE', 'DK', 'CH'].filter((c) => k.byCountry[c]).map((c) => `${c} ${k.byCountry[c]}`).join(' · ') : ''}
+          </div>
+        </div>
+        <div className="cursor-help rounded-xl border bg-card p-3.5"
+          title="Merchandise revenue of these orders: Shopify subtotal (before shipping, duties and taxes), shop_money USD converted to AUD with the monthly rate the whole dashboard uses.">
+          <div className="text-[13px] text-muted-foreground">Revenue</div>
+          <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.revenue) : '…'}</div>
+          <div className="text-[13px] text-muted-foreground tabular-nums">
+            {data ? data.countries.map((c) => `${c.code} ${aud(c.revenue)}`).join(' · ') : ''}
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5" title={T.charged}>
@@ -248,13 +278,13 @@ export default function DDPMarketsTab() {
           <div key={c.code} className="cursor-help rounded-xl border bg-card px-3.5 py-2.5"
             title={`${c.code}: ${c.orders} orders (${c.matchedOrders} matched), ${aud(c.revenue)} merchandise revenue. Charged ${aud(c.charged)} vs paid ${aud(c.paid)} over matched orders.${c.code === 'CH' ? ' Switzerland ships without ZONOS by design — matched with freight alone.' : ''}`}>
             <div className="flex items-baseline justify-between">
-              <span className="text-[13px] font-semibold">{FLAG[c.code]} {c.code} · {c.orders} orders</span>
+              <span className="flex items-center gap-1.5 text-[13px] font-semibold"><Flag cc={c.code} /> {COUNTRY_NAME[c.code]} · {c.orders} orders</span>
               <span className={cn('text-sm font-bold tabular-nums', (c.net ?? 0) < 0 ? 'text-red-600' : 'text-emerald-700')}>
                 {c.matchedOrders ? `${aud(c.netPerOrder, 2)}/order` : 'no matched orders'}
               </span>
             </div>
             <div className="text-[13px] text-muted-foreground tabular-nums">
-              recovery {c.recoveryPct ?? '—'}%{c.code === 'CH' ? ' · no ZONOS (by design)' : ''}
+              revenue {aud(c.revenue)} · recovery {c.recoveryPct ?? '—'}%{c.code === 'CH' ? ' · no ZONOS (by design)' : ''}
             </div>
           </div>
         ))}
@@ -391,7 +421,7 @@ export default function DDPMarketsTab() {
                     title={r.tracking ? `${r.tracking}${r.carrier ? ` · ${r.carrier}` : ''}` : 'no tracking yet'}>
                     <td className="py-1.5 pr-2 font-semibold text-foreground">{r.order}</td>
                     <td className="py-1.5 pr-2 whitespace-nowrap">{new Date(`${r.date}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}</td>
-                    <td className="py-1.5 pr-2 whitespace-nowrap">{FLAG[r.country]} {r.country}</td>
+                    <td className="py-1.5 pr-2 whitespace-nowrap"><span className="flex items-center gap-1.5"><Flag cc={r.country} /> {COUNTRY_NAME[r.country]}</span></td>
                     <td className="border-l py-1.5 pl-2 text-right">{n2(r.chargedShipping)}</td>
                     <td className="py-1.5 pl-2 text-right">{n2(r.chargedDuties)}</td>
                     <td className="py-1.5 pl-2 text-right">{n2(r.chargedTaxes)}</td>
