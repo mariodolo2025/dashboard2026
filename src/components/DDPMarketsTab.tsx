@@ -31,6 +31,7 @@ interface Kpis {
   revenue: number; chargedTotal: number; chargedShipping: number; chargedDuties: number;
   chargedTaxes: number; paidTotal: number; paidFreight: number; paidZonosDT: number;
   paidZonosFees: number; netAbsorbed: number; netPerOrder: number; recoveryPct: number | null;
+  adSpend: number; adCampaigns: number; adFirstDay: string | null; mer: number | null; revenueSinceAds: number;
 }
 interface Component { key: string; charged: number; paid: number; gap: number; perOrder: number; orders: number }
 interface Week { weekStart: string; charged: number; paid: number; orders: number }
@@ -231,7 +232,7 @@ export default function DDPMarketsTab() {
       {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-[13px]">{error}</div>}
 
       {/* ── KPI strip ────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
         <div className="cursor-help rounded-xl border bg-card p-3.5" title={T.orders}>
           <div className="text-[13px] text-muted-foreground">DDP orders</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? k.orders : '…'}</div>
@@ -245,6 +246,16 @@ export default function DDPMarketsTab() {
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.revenue) : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
             {data ? data.countries.map((c) => `${c.code} ${aud(c.revenue)}`).join(' · ') : ''}
+          </div>
+        </div>
+        <div className="cursor-help rounded-xl border bg-card p-3.5"
+          title={`Meta spend of the EU campaigns (names starting with "Europe", currently ${k?.adCampaigns ?? 0}), inside the window. AUD; USD rows convert at the house monthly rate. They target Germany, Denmark and Switzerland TOGETHER, so the spend cannot be split per country. MER = merchandise revenue since the first ad day (${k?.adFirstDay ?? '—'}) ÷ this spend — blended, not attributed.`}>
+          <div className="text-[13px] text-muted-foreground">EU ad spend</div>
+          <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.adSpend) : '…'}</div>
+          <div className="text-[13px] text-muted-foreground tabular-nums">
+            {k ? (k.adSpend > 0
+              ? `since ${k.adFirstDay ? new Date(`${k.adFirstDay}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }) : '—'} · MER ${k.mer ?? '—'}×`
+              : 'no EU campaigns in window') : ''}
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5" title={T.charged}>
