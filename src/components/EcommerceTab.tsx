@@ -69,7 +69,7 @@ interface Dash {
 
 const HELP: Record<string, string> = {
   mer: "Marketing Efficiency Ratio — total store revenue ÷ total ad spend. The attribution-proof 'north star': how many dollars of revenue every ad dollar returns across all orders, not just the ones a platform claims.",
-  revenue: 'Gross sales minus discounts and returns (excludes tax and shipping). The revenue that actually reaches the business.',
+  revenue: 'Gross sales minus discounts and returns, PLUS the shipping charged to customers, EXCLUDING all tax (GST and checkout sales tax). Matches Shopify’s Net sales + Shipping charges. Changed 28-Aug-2026: shipping is income Dolo keeps; tax is a pass-through.',
   spend: "Total Meta ad spend across the USA (USD) and Australia (AUD) accounts, converted to AUD at each month's rate.",
   poas: 'Profit on Ad Spend — contribution margin ÷ ad spend, using an editable blended-margin assumption. Unlike ROAS it accounts for product cost, so it reflects profit, not just revenue, per ad dollar.',
   orders: 'Count of distinct Shopify orders in the selected period and market.',
@@ -352,9 +352,15 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
               <div className="ecom-strip">
                 <div className="ecom-card accent">
                   <div className="ecom-klabel">Net Revenue <Info k="revenue" /></div>
-                  <div className="ecom-val">{money(k.revenue)}<Usd value={k.revenueUsd} /></div>
-                  <div className="ecom-sub">net of discounts &amp; returns</div>
-                  <div className="ecom-dwrap"><Delta cur={Number(k.revenue) || 0} prev={prior?.revenue as number} /></div>
+                  <div className="ecom-val">{money(k.revenue)}<span className="ecom-usd">{`(US$${Math.round(Number(k.revenueUsd) || 0).toLocaleString('en-US')})`}</span></div>
+                  <div className="ecom-sub">incl. shipping &middot; excl. tax &middot; net of discounts &amp; returns</div>
+                  <div className="ecom-dwrap" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+                    <Delta cur={Number(k.revenue) || 0} prev={prior?.revenue as number} />
+                    <span className="ecom-faint" style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+                      title="What this window's figure contains: the shipping customers paid (kept in) and the tax collected (taken out - it is remitted, never revenue).">
+                      ship {money(k.shipping)} in &middot; tax {money(k.taxes)} out
+                    </span>
+                  </div>
                 </div>
                 <div className="ecom-card">
                   <div className="ecom-klabel">Ad Spend <Info k="spend" /></div>
