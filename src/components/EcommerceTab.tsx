@@ -94,12 +94,10 @@ const HELP: Record<string, string> = {
 // ── formatters ──
 // Abbreviated amount without the sign, so the USD companion can be built in the
 // same shape: "$55K (US$38K)" reads as one figure, "$55K (US$38,152)" reads as two.
-const moneyN = (v: number | null | undefined) => {
-  const n = Number(v) || 0;
-  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-  if (Math.abs(n) >= 1000) return `${Math.round(n / 1000)}K`;
-  return `${Math.round(n)}`;
-};
+// Full figures, always: $68,152, never $68K (Mario, 28-Aug-2026 - abbreviated
+// values made the tabs impossible to reconcile against each other and Shopify).
+const moneyN = (v: number | null | undefined) =>
+  Math.round(Number(v) || 0).toLocaleString('en-US');
 const money = (v: number | null | undefined) => `$${moneyN(v)}`;
 // `decimals` is for the few figures the tab prints exactly (AOV, CPO, CPC, CPM):
 // there the companion follows the same precision instead of abbreviating.
@@ -352,7 +350,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
               <div className="ecom-strip">
                 <div className="ecom-card accent">
                   <div className="ecom-klabel">Net Revenue <Info k="revenue" /></div>
-                  <div className="ecom-val">{money(k.revenue)}<span className="ecom-usd">{`(US$${Math.round(Number(k.revenueUsd) || 0).toLocaleString('en-US')})`}</span></div>
+                  <div className="ecom-val">{money(k.revenue)}<Usd value={k.revenueUsd} /></div>
                   <div className="ecom-sub">incl. shipping &middot; excl. tax &middot; net of discounts &amp; returns</div>
                   <div className="ecom-dwrap" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
                     <Delta cur={Number(k.revenue) || 0} prev={prior?.revenue as number} />
