@@ -356,7 +356,7 @@ export default function EcommerceTab({ mode = 'tab' }: EcommerceTabProps) {
                     <Delta cur={Number(k.revenue) || 0} prev={prior?.revenue as number} />
                     <span className="ecom-faint" style={{ fontSize: 12, whiteSpace: 'nowrap' }}
                       title="What this window's figure contains: the shipping customers paid (kept in) and the tax collected (taken out - it is remitted, never revenue).">
-                      ship {money(k.shipping)} in &middot; tax {money(k.taxes)} out
+                      ship A{money(k.shipping)} in &middot; tax A{money(k.taxes)} out
                     </span>
                   </div>
                 </div>
