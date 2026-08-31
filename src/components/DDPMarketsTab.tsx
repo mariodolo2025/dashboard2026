@@ -24,6 +24,7 @@ import { STORE_DATE_PRESETS, storeToday } from '@/lib/storeDate';
 import { cn } from '@/lib/utils';
 
 const DDP_START = '2026-08-01'; // the markets opened here; nothing exists before
+const ADS_START = '2026-08-22'; // the EU Meta campaigns' first spend day
 
 // ── shapes returned by ddp_markets_dashboard ─────────────────────────────────
 interface Kpis {
@@ -82,7 +83,8 @@ const n2 = (v: number | null | undefined) =>
 // Presets that make sense for a window that starts 1 Aug 2026: the module-wide
 // long presets collapse onto "since launch" anyway.
 const PRESETS: { label: string; range: () => { from: string; to: string } }[] = [
-  { label: 'Since launch', range: () => ({ from: DDP_START, to: storeToday() }) },
+  { label: 'Since ads (22 Aug)', range: () => ({ from: ADS_START, to: storeToday() }) },
+  { label: 'From 1 Aug', range: () => ({ from: DDP_START, to: storeToday() }) },
   { label: '30 days', range: STORE_DATE_PRESETS.find((p) => p.label === '30 days')!.range },
   { label: 'This FY', range: STORE_DATE_PRESETS.find((p) => p.label === 'This FY')!.range },
 ];
@@ -112,24 +114,26 @@ const T = {
 };
 
 export default function DDPMarketsTab() {
-  const [from, setFrom] = useState(DDP_START);
+  const [from, setFrom] = useState(ADS_START);
   const [to, setTo] = useState(storeToday());
-  const [preset, setPreset] = useState('Since launch');
+  const [preset, setPreset] = useState('Since ads (22 Aug)');
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [ledgerOpen, setLedgerOpen] = useState(false);
+  // Country filter: narrows every figure server-side (p_country). null = all.
+  const [country, setCountry] = useState<string | null>(null);
 
-  const load = useCallback(async (f: string, t: string) => {
+  const load = useCallback(async (f: string, t: string, c: string | null) => {
     setLoading(true); setError(null);
-    const { data: d, error: e } = await supabase.rpc('ddp_markets_dashboard', { p_from: f, p_to: t });
+    const { data: d, error: e } = await supabase.rpc('ddp_markets_dashboard', { p_from: f, p_to: t, p_country: c });
     if (e) setError(e.message); else setData(d as unknown as Payload);
     setLoading(false);
   }, []);
 
-  useEffect(() => { void load(from, to); }, [load, from, to]);
+  useEffect(() => { void load(from, to, country); }, [load, from, to, country]);
 
   const runSync = useCallback(async () => {
     setSyncing(true); setSyncNote(null);
@@ -147,13 +151,13 @@ export default function DDPMarketsTab() {
       setSyncNote(j?.success
         ? `Synced — ${j.shopify?.ddpOrders ?? 0} orders · freight +${j.starshipit?.matched ?? 0} · ZONOS +${j.zonos?.matched ?? 0}`
         : `Sync failed: ${j?.message ?? res.status}`);
-      await load(from, to);
+      await load(from, to, country);
     } catch (e) {
       setSyncNote(`Sync failed: ${String(e)}`);
     } finally {
       setSyncing(false);
     }
-  }, [from, to, load]);
+  }, [from, to, country, load]);
 
   const k = data?.kpis;
   const weekly = useMemo(() => (data?.weekly ?? []).map((w) => ({
@@ -231,6 +235,27 @@ export default function DDPMarketsTab() {
       {syncNote && <div className="text-[13px] text-muted-foreground">{syncNote}</div>}
       {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-[13px]">{error}</div>}
 
+      {/* ── country filter: every figure below narrows server-side ───────── */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button type="button" onClick={() => setCountry(null)}
+          className={cn('rounded-full border px-3 py-1 text-[13px]', country === null ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
+          title="Every market together.">
+          All markets
+        </button>
+        {(['DE', 'CH', 'DK'] as const).map((cc) => (
+          <button key={cc} type="button" onClick={() => setCountry(country === cc ? null : cc)}
+            className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px]', country === cc ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
+            title={`Only ${COUNTRY_NAME[cc]}: KPIs, component gaps, weekly chart and ledger all narrow to this market. EU ad spend stays EU-wide - the campaigns cannot be split per country.`}>
+            <Flag cc={cc} /> {COUNTRY_NAME[cc]}
+          </button>
+        ))}
+        {country && (
+          <span className="text-[13px] text-muted-foreground">
+            viewing {COUNTRY_NAME[country]} only · ad spend stays EU-wide
+          </span>
+        )}
+      </div>
+
       {/* ── KPI strip ────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
         <div className="cursor-help rounded-xl border bg-card p-3.5" title={T.orders}>
@@ -249,12 +274,12 @@ export default function DDPMarketsTab() {
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5"
-          title={`Meta spend of the EU campaigns (names starting with "Europe", currently ${k?.adCampaigns ?? 0}), inside the window. AUD; USD rows convert at the house monthly rate. They target Germany, Denmark and Switzerland TOGETHER, so the spend cannot be split per country. MER = merchandise revenue since the first ad day (${k?.adFirstDay ?? '—'}) ÷ this spend — blended, not attributed.`}>
+          title={`Meta spend of the EU campaigns (names starting with "Europe", currently ${k?.adCampaigns ?? 0}), inside the window. AUD; USD rows convert at the house monthly rate. They target Germany, Denmark and Switzerland TOGETHER, so neither the spend nor the MER can be split per country: MER is ALWAYS EU-wide — all three markets' merchandise revenue since the first ad day (${k?.adFirstDay ?? '—'}) ÷ this spend — and does not move with the country filter. Blended, not attributed.`}>
           <div className="text-[13px] text-muted-foreground">EU ad spend</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.adSpend) : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
             {k ? (k.adSpend > 0
-              ? `since ${k.adFirstDay ? new Date(`${k.adFirstDay}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }) : '—'} · MER ${k.mer ?? '—'}×`
+              ? `since ${k.adFirstDay ? new Date(`${k.adFirstDay}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }) : '—'} · MER ${k.mer ?? '—'}× EU-wide`
               : 'no EU campaigns in window') : ''}
           </div>
         </div>
@@ -304,8 +329,11 @@ export default function DDPMarketsTab() {
       {/* ── components + weekly ──────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <div className="rounded-xl border bg-card p-4">
-          <div className="cursor-help text-sm font-bold" title="Each pair: what checkout charged (dark) vs what it really cost (teal), matched orders only.">
+          <div className="cursor-help text-sm font-bold" title="Each pair: what checkout charged (dark) vs what it really cost (teal). Only matched orders compare - counting charged money from orders that have no cost in front of them yet would always flatter the checkout.">
             Charged vs paid, by component
+            <span className="ml-2 font-normal text-muted-foreground text-[13px]">
+              over {k ? `${k.matchedOrders} of ${k.orders}` : '…'} matched orders
+            </span>
           </div>
           <div className="mb-3 mt-1 flex gap-4 text-[13px] text-muted-foreground">
             <span><span className="mr-1.5 inline-block h-2.5 w-2.5 rounded-sm bg-slate-700" />Charged to customer</span>
@@ -400,9 +428,9 @@ export default function DDPMarketsTab() {
           <span className="ml-1 font-normal text-muted-foreground text-[13px]">one row per order, three sources side by side</span>
         </button>
         {ledgerOpen && (
-          <div className="overflow-x-auto px-4 pb-4">
+          <div className="max-h-[65vh] overflow-auto px-4 pb-4">
             <table className="w-full min-w-[980px] border-collapse text-[13px] tabular-nums">
-              <thead>
+              <thead className="sticky top-0 z-10 bg-card">
                 <tr className="text-[13px] uppercase tracking-wide text-muted-foreground">
                   <th className="pb-1 pr-2 text-left" colSpan={3}></th>
                   <th className="border-l pb-1 text-center text-slate-700" colSpan={4}
