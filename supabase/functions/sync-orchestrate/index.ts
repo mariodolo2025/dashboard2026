@@ -50,7 +50,7 @@ function assemblyChunks(): { name: string; fn: string; body: unknown }[] {
 }
 
 // Ordered steps of a full refresh. Each underlying call finishes under 150s.
-const STEPS: { name: string; fn: string; body: unknown }[] = [
+const STEPS: { name: string; fn: string; body: unknown; optional?: boolean }[] = [
   // Refresh USD→AUD market rates first. Safe now that Shopify is native AUD: AU is
   // rate-independent, US/other convert via the view at the current rate.
   { name: 'FX rates', fn: 'fx-rates-sync', body: {} },
@@ -115,7 +115,11 @@ const STEPS: { name: string; fn: string; body: unknown }[] = [
   // Rebuild the dashboard's pre-parsed snapshot so the main load serves it
   // instead of re-parsing ~23 MB of CSVs (which intermittently hit the edge
   // resource limit / HTTP 546). endDate defaults to now inside parse-csv-data.
-  { name: 'Dashboard snapshot', fn: 'parse-csv-data', body: { materialize: true, startDate: '2023-01-01T00:00:00.000Z' } },
+  // Optional: a regeneration artifact. It failed 17 of its last 33 attempts on
+  // worker resources and each failure branded the WHOLE run 'error' while every
+  // data step had succeeded; the dashboard just keeps serving the previous
+  // snapshot. A failure now records as 'warn' and the run still counts as done.
+  { name: 'Dashboard snapshot', fn: 'parse-csv-data', body: { materialize: true, startDate: '2023-01-01T00:00:00.000Z' }, optional: true },
 ];
 // A step lock older than this is treated as dead and reclaimed. MUST exceed the
 // edge wall-clock ceiling (~400s = 6.7 min) so a reclaim NEVER races a live
@@ -228,9 +232,9 @@ Deno.serve(async (req: Request) => {
         });
         const payload = await r.json().catch(() => ({}));
         const ok = r.ok && payload?.success !== false;
-        entry = { name: step.name, status: ok ? 'ok' : 'error', rows: rowsOf(payload), ms: Date.now() - started, message: ok ? null : (payload?.message ?? `HTTP ${r.status}`), at: new Date().toISOString() };
+        entry = { name: step.name, status: ok ? 'ok' : (step.optional ? 'warn' : 'error'), rows: rowsOf(payload), ms: Date.now() - started, message: ok ? null : (payload?.message ?? `HTTP ${r.status}`), at: new Date().toISOString() };
       } catch (e) {
-        entry = { name: step.name, status: 'error', rows: null, ms: Date.now() - started, message: e instanceof Error ? e.message : 'failed', at: new Date().toISOString() };
+        entry = { name: step.name, status: step.optional ? 'warn' : 'error', rows: null, ms: Date.now() - started, message: e instanceof Error ? e.message : 'failed', at: new Date().toISOString() };
       }
       const nextCursor = cursor + 1;
       const steps = [...(run!.steps ?? []), entry];
@@ -238,7 +242,7 @@ Deno.serve(async (req: Request) => {
       // Only advance if we still own the lock (defense-in-depth: if a reclaim ran
       // this step in another worker, our stale write must not clobber it). Reset
       // attempts to 0 so the next step starts with a full retry budget.
-      await supabase.from('sync_runs').update({
+      const { data: advanced } = await supabase.from('sync_runs').update({
         cursor: nextCursor,
         steps,
         attempts: 0,
@@ -246,7 +250,24 @@ Deno.serve(async (req: Request) => {
         locked_at: null, // release for the next tick
         finished_at: done ? new Date().toISOString() : null,
         updated_at: new Date().toISOString(),
-      }).eq('id', run!.id).eq('locked_at', lockToken);
+      }).eq('id', run!.id).eq('locked_at', lockToken).select('id');
+
+      // Auto-chain (Codex P0, 31-Aug-2026): a 20-step run driven only by the
+      // 1-minute tick spends ~60% of its wall clock waiting for the scheduler
+      // (~24 min total for ~10 min of work). When THIS worker really advanced
+      // the cursor (the lock-token match proves it) and steps remain, invoke
+      // the driver again right away; the chained call claims the next step
+      // through the exact same RPC, so every lock/retry invariant holds. The
+      // cron tick stays as the watchdog that revives a broken chain.
+      if (!done && Array.isArray(advanced) && advanced.length > 0) {
+        try {
+          await fetch(`${base}/functions/v1/sync-orchestrate`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trigger: 'chain' }),
+          });
+        } catch { /* watchdog tick picks it up within a minute */ }
+      }
     })();
 
     const er = (globalThis as any).EdgeRuntime;
