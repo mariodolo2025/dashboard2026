@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -22,7 +22,7 @@ import { Warehouse, TrendingUp, TrendingDown, Minus, Info, Download, Loader2 } f
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import type { StockValuationTotals, StockValuationHistoryRecord } from '@/lib/aim2026/types';
-import { fetchWarehouseDetail, downloadAsCSV } from '@/lib/aim2026/api';
+import { fetchWarehouseDetail, fetchValuationHistory, downloadAsCSV } from '@/lib/aim2026/api';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -80,6 +80,39 @@ function PieTooltipContent({ active, payload }: any) {
 export function StockValuationDialog({ open, onOpenChange, valuation, history }: StockValuationDialogProps) {
   const [downloadingWH, setDownloadingWH] = useState<string | null>(null);
 
+  // Historical view: the KPI opens on today, but the daily snapshot series goes
+  // back to Nov-2025 - a date picker swaps every figure on this dialog to the
+  // closest snapshot at or before that day. Empty selection = latest/live.
+  const [asOf, setAsOf] = useState<string>('');
+  const [fullHistory, setFullHistory] = useState<StockValuationHistoryRecord[]>([]);
+  useEffect(() => {
+    if (open && fullHistory.length === 0) {
+      void fetchValuationHistory(400).then((rows) => setFullHistory(rows));
+    }
+  }, [open, fullHistory.length]);
+
+  const series = fullHistory.length > 0 ? fullHistory : history;
+  const minDay = series.length ? series[series.length - 1].snapshotDate : '';
+  const maxDay = series.length ? series[0].snapshotDate : '';
+  // Closest snapshot at or before the chosen day (series is newest-first).
+  const selected = useMemo(() => {
+    if (!asOf) return null;
+    return series.find((r) => r.snapshotDate <= asOf) ?? null;
+  }, [asOf, series]);
+  const historical = selected !== null;
+  const latestTotal = series[0]?.totalInventory ?? valuation?.totalInventory ?? 0;
+  const shown: StockValuationTotals | null = historical
+    ? {
+        mainWarehouse: selected!.mainWarehouse,
+        china: selected!.china,
+        container: selected!.container,
+        dhl: selected!.dhl,
+        onProduction: selected!.onProduction,
+        pesadoKorea: selected!.pesadoKorea,
+        totalInventory: selected!.totalInventory,
+      } as StockValuationTotals
+    : valuation;
+
   const handleWarehouseDownload = useCallback(async (warehouseKey: string, label: string) => {
     setDownloadingWH(warehouseKey);
     try {
@@ -112,17 +145,17 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
   }, []);
 
   const pieData = useMemo(() => {
-    if (!valuation) return [];
+    if (!shown) return [];
     return LOCATIONS
       .map((loc) => ({
         name: loc.label,
         key: loc.key,
-        value: valuation[loc.key as keyof StockValuationTotals] as number,
+        value: shown[loc.key as keyof StockValuationTotals] as number,
         color: loc.color,
         desc: loc.desc,
       }))
       .filter((d) => d.value > 0);
-  }, [valuation]);
+  }, [shown]);
 
   const trend = useMemo(() => {
     if (history.length < 2) return { direction: 'stable' as const, percent: 0 };
@@ -135,7 +168,7 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
     };
   }, [history]);
 
-  if (!valuation) return null;
+  if (!shown) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -143,26 +176,59 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
         {/* ── Header ──────────────────────────────────────────────────── */}
         <div className="px-6 pt-6 pb-4 border-b bg-muted/20">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-lg">
+            <DialogTitle className="flex flex-wrap items-center gap-2 text-lg">
               <Warehouse size={18} className="text-blue-500" />
               Stock Valuation Breakdown
-            </DialogTitle>
-            <DialogDescription className="flex items-center gap-2 mt-1">
-              Total inventory value across all locations:{' '}
-              <span className="font-bold text-foreground tabular-nums">
-                {fmtCurrencyFull(valuation.totalInventory)} AUD
+              <span className="ml-auto flex items-center gap-1.5 pr-6">
+                <input
+                  type="date"
+                  value={asOf}
+                  min={minDay}
+                  max={maxDay}
+                  onChange={(e) => setAsOf(e.target.value)}
+                  className="h-7 rounded-md border bg-background px-2 text-xs font-normal"
+                  title={`View the valuation as of any day. Daily snapshots from ${minDay || '…'} to ${maxDay || '…'}; the closest snapshot at or before the chosen day is shown, revalued at one cost basis.`}
+                />
+                {historical && (
+                  <button
+                    type="button"
+                    onClick={() => setAsOf('')}
+                    className="h-7 rounded-md border px-2 text-xs font-medium hover:bg-muted"
+                    title="Back to the live valuation."
+                  >
+                    Today
+                  </button>
+                )}
               </span>
-              {trend.direction === 'up' && (
+            </DialogTitle>
+            <DialogDescription className="flex flex-wrap items-center gap-2 mt-1">
+              {historical ? (
+                <>Total inventory value on <b className="text-foreground">{selected!.snapshotDate}</b>:</>
+              ) : (
+                <>Total inventory value across all locations:</>
+              )}{' '}
+              <span className="font-bold text-foreground tabular-nums">
+                {fmtCurrencyFull(shown.totalInventory)} AUD
+              </span>
+              {historical && latestTotal > 0 && (
+                <span
+                  className={cn('text-[11px] font-medium tabular-nums', shown.totalInventory <= latestTotal ? 'text-emerald-600' : 'text-red-500')}
+                  title={`Today's valuation (${fmtCurrencyFull(latestTotal)}) minus the ${selected!.snapshotDate} snapshot.`}
+                >
+                  {latestTotal - shown.totalInventory >= 0 ? '+' : '−'}{fmtCurrencyFull(Math.abs(latestTotal - shown.totalInventory))} to today
+                </span>
+              )}
+              {!historical && trend.direction === 'up' && (
                 <span className="flex items-center gap-0.5 text-[11px] text-emerald-600 font-medium">
                   <TrendingUp size={12} /> +{trend.percent.toFixed(1)}%
                 </span>
               )}
-              {trend.direction === 'down' && (
+              {!historical && trend.direction === 'down' && (
                 <span className="flex items-center gap-0.5 text-[11px] text-red-500 font-medium">
                   <TrendingDown size={12} /> -{trend.percent.toFixed(1)}%
                 </span>
               )}
-              {trend.direction === 'stable' && (
+              {!historical && trend.direction === 'stable' && (
                 <span className="flex items-center gap-0.5 text-[11px] text-muted-foreground">
                   <Minus size={12} /> stable
                 </span>
@@ -227,16 +293,16 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
               </h4>
               <div className="space-y-3">
                 {pieData.map((d, i) => {
-                  const pct = valuation.totalInventory > 0 ? (d.value / valuation.totalInventory) * 100 : 0;
+                  const pct = shown.totalInventory > 0 ? (d.value / shown.totalInventory) * 100 : 0;
                   const isDownloading = downloadingWH === d.key;
                   return (
                     <div key={i} className="group">
                       <div className="flex items-center justify-between text-xs mb-1">
                         <button
                           onClick={() => handleWarehouseDownload(d.key, d.name)}
-                          disabled={isDownloading}
+                          disabled={isDownloading || historical}
                           className="flex items-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-                          title={`Download CSV with SKU-level detail for ${d.name}`}
+                          title={historical ? 'SKU-level detail exists only for the current snapshot - switch back to Today to download.' : `Download CSV with SKU-level detail for ${d.name}`}
                         >
                           <div className="w-2.5 h-2.5 rounded" style={{ backgroundColor: d.color }} />
                           <span className="font-medium">{d.name}</span>
@@ -264,23 +330,23 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
                   );
                 })}
                 <div className="flex items-center justify-between text-xs pt-3 border-t mt-3">
-                  <span className="font-semibold">Total Inventory</span>
-                  <span className="font-bold tabular-nums text-base">{fmtCurrencyFull(valuation.totalInventory)}</span>
+                  <span className="font-semibold">Total Inventory{historical ? ` on ${selected!.snapshotDate}` : ''}</span>
+                  <span className="font-bold tabular-nums text-base">{fmtCurrencyFull(shown.totalInventory)}</span>
                 </div>
               </div>
             </div>
           </div>
 
           {/* ── History Chart ────────────────────────────────────────── */}
-          {history.length > 0 && (
+          {series.length > 0 && (
             <div>
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                Valuation Trend (Weekly Snapshots)
+                Valuation Trend (daily snapshots{fullHistory.length ? ` · since ${minDay}` : ''})
               </h4>
               <div className="h-44">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart
-                    data={[...history].reverse()}
+                    data={[...series].reverse()}
                     margin={{ top: 5, right: 10, left: 0, bottom: 0 }}
                   >
                     <defs>
