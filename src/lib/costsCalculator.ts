@@ -123,10 +123,18 @@ export const calculateItemAmount = (
       if (isCurrentMonth && currentMonthInfo) {
         const periodEndDate = new Date(periodEnd!);
         const todayBrisbane = getBrisbaneToday();
-        const days_elapsed_for_current_month = Math.min(
-          periodEndDate.getDate(),
-          todayBrisbane.getDate()
-        );
+        // The "days elapsed" clamp only makes sense while today is INSIDE the
+        // data's last month. Comparing bare day-of-month numbers across
+        // different months made min(31, 1) = 1 every 1st of the month once the
+        // P&L lagged - August divided by ONE day and multiplied by the window
+        // (x30: Advertising $203k showed as $6.1M on 1-Sep-2026). If today is
+        // past that month, the month is simply complete.
+        const todayInDataMonth =
+          todayBrisbane.getFullYear() === monthData.year &&
+          todayBrisbane.getMonth() + 1 === monthData.month;
+        const days_elapsed_for_current_month = todayInDataMonth
+          ? Math.min(periodEndDate.getDate(), todayBrisbane.getDate())
+          : periodEndDate.getDate();
         const dataEndDate = new Date(
           monthData.year,
           monthData.month - 1,
