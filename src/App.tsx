@@ -230,7 +230,22 @@ function App() {
   const [isLoadingCsv, setIsLoadingCsv] = useState<boolean>(false);
 
   // Load data from Supabase Edge Function
-  const loadDataFromSupabase = async () => {
+  // One snapshot request per window, ever (Codex P0, 31-Aug-2026): the mount
+  // effect and the dateRange effect used to fire this TWICE on first paint -
+  // 2x 11.7MB parsed for one usable copy - and React StrictMode doubles effect
+  // invocations in dev on top. Concurrent callers for the same window now
+  // share one in-flight promise.
+  const inflightLoadRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const loadDataFromSupabase = () => {
+    const key = `${dateRange.from?.toISOString() ?? ''}|${dateRange.to?.toISOString() ?? ''}`;
+    if (inflightLoadRef.current?.key === key) return inflightLoadRef.current.promise;
+    const promise = doLoadDataFromSupabase().finally(() => {
+      if (inflightLoadRef.current?.key === key) inflightLoadRef.current = null;
+    });
+    inflightLoadRef.current = { key, promise };
+    return promise;
+  };
+  const doLoadDataFromSupabase = async () => {
     setIsLoading(true);
     try {
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/parse-csv-data`, {
@@ -784,9 +799,9 @@ function App() {
     }
   };
 
-  // Load data on component mount
+  // On mount only credentials load here: the dateRange effect below fires on
+  // first render too (the range initializes populated) and owns the snapshot.
   useEffect(() => {
-    loadDataFromSupabase();
     loadUnleashedCredentials();
   }, []);
 
