@@ -483,8 +483,83 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ success: false, message: `Unknown warehouse key: ${warehouseKey}` }, 400);
       }
 
-      // Valuation uses either landed cost or FOB × exchange rate
-      const useFOB = warehouseKey === "china" || warehouseKey === "onProduction";
+      // China / On Production are valued at BARE product cost; the rest at
+      // landed cost. product_cost_china is ALREADY AUD (the KPI calc says so:
+      // "LANDED COST - NO FX conversion - costs are already AUD"). This CSV
+      // used to multiply it by the USD->AUD rate AGAIN, inflating those two
+      // warehouses by 54% against the on-screen snapshot.
+      const useBareCost = warehouseKey === "china" || warehouseKey === "onProduction";
+
+      // Quantities come from the SAME rows the on-screen snapshot summed — the
+      // KPI cache — not from the SOH pseudo-warehouses, which miss SKUs whose
+      // production lives only in production orders (a A$26.6k gap on 30-Aug:
+      // CA3070KT alone was 500 units the SOH path never saw). Korea is the one
+      // warehouse the cache does not carry, so it stays on the SOH path below.
+      if (warehouseKey !== "pesadoKorea") {
+        const pageSizeK = 1000;
+        let allKPIRows: any[] = [];
+        let offK = 0;
+        while (true) {
+          const { data: page, error } = await supabase
+            .from("aim2026_kpi_cache")
+            .select("sku, kpi_data")
+            .range(offK, offK + pageSizeK - 1);
+          if (error) return jsonResponse({ success: false, message: error.message }, 500);
+          if (!page || page.length === 0) break;
+          allKPIRows = allKPIRows.concat(page);
+          if (page.length < pageSizeK) break;
+          offK += pageSizeK;
+        }
+        const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+        const detail = allKPIRows
+          .map((row: any) => {
+            const d = row.kpi_data ?? {};
+            const container = num(d.container);
+            const dhl = num(d.dhl);
+            let quantity = 0, allocated = 0, available = 0;
+            if (warehouseKey === "mainWarehouse") {
+              quantity = num(d.sohMainWH); allocated = num(d.allocatedMainWH); available = num(d.availableMainWH);
+            } else if (warehouseKey === "china") {
+              // Net of in-transit, exactly like the snapshot: those units still
+              // sit in China SOH until AU receipt and are valued in Container/DHL.
+              quantity = Math.max(0, num(d.sohChina) - container - dhl);
+              allocated = num(d.allocatedChina); available = num(d.availableChina);
+            } else if (warehouseKey === "container") {
+              quantity = container; available = container;
+            } else if (warehouseKey === "dhl") {
+              quantity = dhl; available = dhl;
+            } else if (warehouseKey === "onProduction") {
+              quantity = num(d.onProduction); available = quantity;
+            }
+            const costChina = num(d.productCostChina);
+            const landedAUD = num(d.landedCostAUD);
+            const unitCost = useBareCost ? costChina : landedAUD;
+            return {
+              sku: row.sku,
+              product: String(d.product ?? ""),
+              productGroup: String(d.productGroup ?? ""),
+              warehouse: warehouseKey,
+              quantity, allocated, available,
+              unitCostChina: costChina,
+              landedCostAUD: landedAUD,
+              unitCostUsed: Math.round(unitCost * 100) / 100,
+              totalValue: Math.round(quantity * unitCost * 100) / 100,
+              valuationMethod: useBareCost ? "Product cost (AUD, no landed uplift)" : "Landed Cost AUD",
+            };
+          })
+          .filter((r) => r.quantity > 0)
+          .sort((a, b) => b.totalValue - a.totalValue);
+        const grandTotal = detail.reduce((sum, r) => sum + r.totalValue, 0);
+        return jsonResponse({
+          success: true,
+          data: detail,
+          snapshotDate: new Date().toISOString().slice(0, 10),
+          warehouse: warehouseKey,
+          grandTotal: Math.round(grandTotal * 100) / 100,
+          skuCount: detail.length,
+          source: "kpi_cache",
+        });
+      }
 
       // Get config for exchange rate
       const { data: configRows } = await supabase
@@ -557,7 +632,7 @@ Deno.serve(async (req: Request) => {
           const kpi = kpiMap.get(s.sku) ?? {};
           const costChina = Number(kpi.productCostChina ?? 0);
           const landedAUD = Number(kpi.landedCostAUD ?? 0);
-          const unitCost = useFOB ? costChina * exchangeRate : landedAUD;
+          const unitCost = useBareCost ? costChina : landedAUD;
           const totalValue = s.quantity * unitCost;
 
           return {
@@ -572,7 +647,7 @@ Deno.serve(async (req: Request) => {
             landedCostAUD: landedAUD,
             unitCostUsed: Math.round(unitCost * 100) / 100,
             totalValue: Math.round(totalValue * 100) / 100,
-            valuationMethod: useFOB ? "FOB × Exchange Rate" : "Landed Cost AUD",
+            valuationMethod: useBareCost ? "Product cost (AUD, no landed uplift)" : "Landed Cost AUD",
           };
         })
         .sort((a: any, b: any) => b.totalValue - a.totalValue);

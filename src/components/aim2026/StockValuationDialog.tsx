@@ -37,7 +37,7 @@ interface StockValuationDialogProps {
 
 const LOCATIONS = [
   { key: 'mainWarehouse', label: 'Main Warehouse', color: '#3b82f6', desc: 'Physical stock in the main warehouse in Australia, valued at landed cost (AUD).' },
-  { key: 'china', label: 'China WH (net)', color: '#8b5cf6', desc: 'Stock physically in the China warehouse, valued at FOB cost × exchange rate. Net of units already in transit (Container/DHL): those ship from China but stay in the China SOH until AU receipt, so they are subtracted here to avoid double-counting.' },
+  { key: 'china', label: 'China WH (net)', color: '#8b5cf6', desc: 'Stock physically in the China warehouse, valued at bare product cost (AUD). Net of units already in transit (Container/DHL): those ship from China but stay in the China SOH until AU receipt, so they are subtracted here to avoid double-counting.' },
   { key: 'container', label: 'Container (Sea)', color: '#06b6d4', desc: 'Stock currently in sea freight containers en route to Australia (already netted out of China WH).' },
   { key: 'dhl', label: 'DHL (Express)', color: '#f97316', desc: 'Stock being shipped via DHL express courier (5-7 business days).' },
   { key: 'onProduction', label: 'On Production', color: '#a855f7', desc: 'Stock currently being manufactured in China, not yet shipped.' },
@@ -126,7 +126,7 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
           Quantity: r.quantity,
           Allocated: r.allocated,
           Available: r.available,
-          'Cost China (USD)': r.unitCostChina,
+          'Cost China (AUD)': r.unitCostChina,
           'Landed Cost (AUD)': r.landedCostAUD,
           'Unit Cost Used': r.unitCostUsed,
           'Total Value (AUD)': r.totalValue,
@@ -243,8 +243,7 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
             <Info size={14} className="text-blue-500 mt-0.5 flex-shrink-0" />
             <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
               <strong>What is this?</strong> Stock Valuation shows the total monetary value of your inventory 
-              across all physical locations. Main WH is valued at landed cost (AUD), while China/Production 
-              locations are valued at FOB cost × exchange rate. Hover over each location for details.
+              across all physical locations. Main WH is valued at landed cost (AUD); China and Production are valued at bare product cost (already AUD, no landed uplift - freight, duty and insurance have not been incurred yet). Hover over each location for details.
             </p>
           </div>
 
