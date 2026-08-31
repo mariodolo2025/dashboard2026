@@ -114,7 +114,9 @@ weekly as (
   select coalesce(jsonb_agg(jsonb_build_object(
     'weekStart', w, 'charged', c, 'paid', p, 'orders', n) order by w), '[]'::jsonb) as j
   from (
-    select date_trunc('week', day)::date as w,
+    -- store weeks (Monday start) with the first label clamped to the window:
+    -- a week that begins before p_from must not print a date outside the range
+    select greatest(date_trunc('week', day)::date, p_from) as w,
            round(sum(charged_total)) as c, round(sum(paid_total)) as p, count(*) as n
     from m group by 1
   ) t

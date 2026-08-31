@@ -101,7 +101,7 @@ const T = {
   compShipping: 'Shipping charged at checkout vs the Starshipit label cost, over matched orders in the window.',
   compDT: 'Duties + taxes charged at checkout vs what ZONOS billed. DE + DK only — Switzerland has no ZONOS leg by design.',
   compFees: 'ZONOS per-order service fees. Never charged to the customer — a structural cost of selling DDP.',
-  weekly: 'Charged vs paid per week (matched orders, store days). The vertical gap is what Dolo absorbs that week.',
+  weekly: 'Charged vs paid per week (matched orders, store weeks starting Monday; the first and last week are clipped to the selected range). The vertical gap is what Dolo absorbs that week.',
   ledger: 'One row per order, three sources side by side. Net only appears when the order is fully matched.',
   colShip: 'Shipping charged at checkout (AUD, monthly FX). Source: Shopify total_shipping_price_set.',
   colDuties: 'Duties charged at checkout. Source: Shopify current_total_duties_set.',
