@@ -417,9 +417,19 @@ const parseShopifyData = (csvText: string, rateMap: Record<string, number>): Sho
       // The Shopify CSV is now regenerated from the DB in AUD (native amounts,
       // US/other converted at market FX), so read these columns directly — no
       // USD→AUD conversion here (that double-converted foreign sales).
-      const netSales = cleanNumber(netSalesStr);
+      const rawNet = cleanNumber(netSalesStr);
       const taxes = cleanNumber(taxesStr);
       const shipping = cleanNumber(shippingStr);
+      // Net EX TAX (1-Sep-2026): raw net carries the tax baked into shelf
+      // prices (AU GST, and now DE/DK VAT), so screens that also list "taxes"
+      // as their own line were counting it twice - By Channel's total beat
+      // Shopify's by exactly that amount. Same audited formula as the B2C
+      // explorer: the line's tax is spread over what was taxed, goods AND
+      // shipping, so k = 1 - taxes/(net + shipping). Clamped to [0, 1];
+      // zero-value giveaway lines carrying shipping tax stay at 0.
+      const taxedBase = rawNet + shipping;
+      const k = taxedBase > 0 ? Math.min(1, Math.max(0, 1 - taxes / taxedBase)) : 1;
+      const netSales = Math.round(rawNet * k * 100) / 100;
 
       // Determine region based on shipping country
       let region = 'Other';
@@ -646,10 +656,13 @@ Deno.serve(async (req: Request) => {
     // compares it against the stamp inside the existing snapshot and SKIPS the
     // whole 23MB parse when nothing changed - the orchestrator asks for a
     // rebuild 3x/day whether or not any source moved (Codex P1, 31-Aug-2026).
+    // v2: netSales is ex-tax. Version prefix makes a CODE change invalidate
+    // the snapshot even when the five sources have not moved.
+    const PARSER_VERSION = 'v2';
     let sourcesStamp = '';
     try {
       const { data: fl } = await supabase.storage.from('csv-files').list(folder || undefined, { limit: 200 });
-      sourcesStamp = (fl ?? [])
+      sourcesStamp = PARSER_VERSION + '|' + (fl ?? [])
         .filter((f: any) => f.name.endsWith('.csv'))
         .map((f: any) => `${f.name}@${f.updated_at ?? ''}`)
         .sort()

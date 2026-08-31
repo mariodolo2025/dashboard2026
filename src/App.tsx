@@ -850,27 +850,27 @@ function App() {
     return differenceInDays(addDays(dateRange.to, 1), dateRange.from);
   }, [dateRange]);
 
-  // Filtered data based on date range
+  // Filtered data based on date range. Compared as DAY STRINGS, not instants:
+  // rows carry UTC-midnight dates and the old inclusive interval with
+  // addDays(to, 1) swallowed the whole next day - an Aug 1-31 selection summed
+  // 1-Sep too (verified to the cent: the dash-vs-snapshot gap equalled the
+  // 1-Sep bucket exactly).
   const filteredData = useMemo(() => {
     if (!dateRange || !dateRange.from || !dateRange.to) return { unleashed: [], shopify: [], oldShopify: [], meta: [] };
+    const fromDay = format(dateRange.from, 'yyyy-MM-dd');
+    const toDay = format(dateRange.to, 'yyyy-MM-dd');
+    const inWindow = (d: Date | null | undefined) => {
+      if (!d) return false;
+      const day = d.toISOString().slice(0, 10);
+      return day >= fromDay && day <= toDay;
+    };
 
-    const unleashed = unleashedData.filter(row =>
-      row.orderDate && isWithinInterval(row.orderDate, { start: dateRange.from!, end: addDays(dateRange.to!, 1) })
-    );
-
-    const shopify = shopifyData.filter(row =>
-      row.date && isWithinInterval(row.date, { start: dateRange.from!, end: addDays(dateRange.to!, 1) })
-    );
-
-    const oldShopify = oldShopifyData.filter(row =>
-      row.date && isWithinInterval(row.date, { start: dateRange.from!, end: addDays(dateRange.to!, 1) })
-    );
-
-    const meta = metaData.filter(row =>
-      row.date && isWithinInterval(row.date, { start: dateRange.from!, end: addDays(dateRange.to!, 1) })
-    );
-
-    return { unleashed, shopify, oldShopify, meta };
+    return {
+      unleashed: unleashedData.filter(row => inWindow(row.orderDate)),
+      shopify: shopifyData.filter(row => inWindow(row.date)),
+      oldShopify: oldShopifyData.filter(row => inWindow(row.date)),
+      meta: metaData.filter(row => inWindow(row.date)),
+    };
   }, [unleashedData, shopifyData, oldShopifyData, metaData, dateRange]);
 
 
