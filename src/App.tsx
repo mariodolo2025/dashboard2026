@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { RangeCalendar } from '@/components/RangeCalendar';
 import { format, parseISO, isValid, startOfWeek, isWithinInterval, parse, addDays, differenceInDays } from 'date-fns';
 import { Calendar as CalendarIcon, Download, RefreshCw, ChevronDown, ChevronUp, Link2, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Search, X, AlertTriangle, PanelLeftClose, PanelLeft, Settings, LogOut, UserPlus, ShoppingBag } from 'lucide-react';
