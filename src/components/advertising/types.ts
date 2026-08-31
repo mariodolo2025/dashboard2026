@@ -189,6 +189,22 @@ export interface AdvertisingIncrementality {
     minPct: number; p25Pct: number; medianPct: number; p75Pct: number; maxPct: number;
     samePeriodAug2025Pct: number;
   };
+  /** The same distribution in MONTHS — the unit the chart's bars are drawn in.
+   * Computed live from the closed zero-spend months, so the band and the bars
+   * can never disagree. The 10-day `band` above is for the 10-day card only:
+   * drawing it over monthly bars set a ceiling (62.3%) no month can reach, so
+   * no month could ever read as a signal (migration 20260901100000). */
+  monthlyBand: {
+    months: number;
+    period: string;
+    minPct: number; p25Pct: number; medianPct: number; p75Pct: number; maxPct: number;
+    maxMonth: string;
+  };
+  /** The last COMPLETE month, and whether it cleared the best month the store
+   * ever had with zero Google spend. Null before any month has closed. */
+  latestClosedMonth: {
+    month: string; ratioPct: number; googleSpendAud: number; aboveZeroSpendMax: boolean;
+  } | null;
   last10Days: { to: string; bagAud: number; ratioPct: number };
   /** Brand-cut natural experiment (2026-08-06, $375/day -> $50/day). If the bag
    * holds while brand spend stays cut, brand was harvesting. Verdict 2026-08-31. */

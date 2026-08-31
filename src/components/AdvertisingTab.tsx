@@ -1033,14 +1033,30 @@ function LiveOrdersCard({ orders }: { orders: LiveOrder[] }) {
 
 // ── B3: incrementality — "Is Google adding sales?" ───────────────────────────
 
+/** Where a TEN-DAY reading sits against the ten-day zero-spend windows. Only the
+ *  "Last 10 days" card may use this: ten-day windows are much noisier than
+ *  months (max 62.3% vs 34.9%), so judging a month by them sets a bar no month
+ *  can clear — the units bug fixed in migration 20260901100000. */
 function bandPosition(r: number, band: AdvertisingIncrementality['band']): string {
   if (r > band.maxPct)
     return `above the zero-spend maximum (${band.maxPct}%) — outside everything the no-spend period ever produced`;
   if (r > band.p75Pct)
-    return `above p75 (${band.p75Pct}%) but below the zero-spend maximum (${band.maxPct}%) — historical windows reached this with zero spend`;
+    return `above p75 (${band.p75Pct}%) but below the zero-spend maximum (${band.maxPct}%) — 10-day stretches reached this with zero spend, so on its own it proves nothing`;
   if (r >= band.p25Pct)
     return `inside the zero-spend band (p25 ${band.p25Pct}% – p75 ${band.p75Pct}%) — indistinguishable from no ads`;
   return `below the zero-spend p25 (${band.p25Pct}%)`;
+}
+
+/** Where a WHOLE MONTH sits against the months that had zero Google spend —
+ *  the comparison the chart is actually making. */
+function monthPosition(r: number, mb: AdvertisingIncrementality['monthlyBand']): string {
+  if (r > mb.maxPct)
+    return `above all ${mb.months} months the store ever had with zero Google spend (the best was ${fmtMonth(mb.maxMonth)} at ${mb.maxPct}%)`;
+  if (r > mb.p75Pct)
+    return `above the usual month (p75 ${mb.p75Pct}%) but still inside what zero-spend months reached (up to ${mb.maxPct}%)`;
+  if (r >= mb.p25Pct)
+    return `inside the ordinary range of zero-spend months (${mb.p25Pct}%–${mb.p75Pct}%) — indistinguishable from no ads`;
+  return `below the ordinary range of zero-spend months (under ${mb.p25Pct}%)`;
 }
 
 function IncrementalityBlock({ inc, loading, error }: {
@@ -1071,7 +1087,14 @@ function IncrementalityBlock({ inc, loading, error }: {
     );
   }
   const data = inc!;
-  const { band, brandCut, last10Days } = data;
+  const { band, monthlyBand, brandCut, last10Days, latestClosedMonth } = data;
+  // The brand-cut experiment is over once its verdict date has passed — the
+  // card must stop saying "preliminary" on a month that has closed.
+  const verdictIn = storeToday() <= brandCut.verdictDate;
+  const bagHeld = brandCut.post.ratioPct >= brandCut.pre.ratioPct;
+  const cutPct = brandCut.pre.brandSpendPerDayAud > 0
+    ? Math.round(100 * (1 - brandCut.post.brandSpendPerDayAud / brandCut.pre.brandSpendPerDayAud))
+    : null;
 
   return (
     <Card className="p-4">
@@ -1085,12 +1108,16 @@ function IncrementalityBlock({ inc, loading, error }: {
               everything the rest of the store brings.</b> One number per month.</p>
               <p className="mt-1.5">Why divided instead of the plain amount: the store grows and shrinks
               on its own, so the plain amount would move even if Google did nothing.</p>
-              <p className="mt-1.5"><b>The grey band</b> is what that ratio did over {band.windows} different
-              stretches of {band.windowDays} days back when <b>you spent nothing on Google</b>. If today's
-              months sit inside that band, paid Google is not adding anything you weren't already getting.
-              Above it, and sustained, it is.</p>
-              <p className="mt-1.5">Careful: those stretches ranged from {band.minPct}% to {band.maxPct}%
-              with zero spend. One month above the band proves nothing.</p>
+              <p className="mt-1.5"><b>The grey band</b> is what that same ratio did over the {monthlyBand.months} whole
+              months ({monthlyBand.period}) when <b>you spent nothing on Google</b> — half of them landed
+              between {monthlyBand.p25Pct}% and {monthlyBand.p75Pct}%. A month inside the band is
+              indistinguishable from having no ads at all.</p>
+              <p className="mt-1.5"><b>The orange line</b> is the highest any of those months reached
+              ({monthlyBand.maxPct}%, {fmtMonth(monthlyBand.maxMonth)}) — the best the store ever did on
+              free Google alone. That is the line that has to be cleared, and stay cleared.</p>
+              <p className="mt-1.5">Months, not shorter stretches, on purpose: ten-day stretches swung all
+              the way to {band.maxPct}% with zero spend. Judging a month by that number sets a bar no month
+              can reach, so nothing would ever register.</p>
             </>
           }
         />
@@ -1098,11 +1125,30 @@ function IncrementalityBlock({ inc, loading, error }: {
       <p className="text-[13px] text-muted-foreground/70 mb-3">
         Everything Google brings (paid clicks + free search results, counted together because
         before 6 Aug 2026 they could not be told apart) ÷ everything the rest of the store brings,
-        month by month — against what that ratio did over {band.windows} stretches of {band.windowDays} days
-        back when Google spend was zero.
+        month by month — against what that ratio did over the {monthlyBand.months} whole months
+        ({monthlyBand.period}) when Google spend was zero.
       </p>
 
-      <div className="h-[220px]">
+      {/* The two reference lines are explained HERE, not with labels drawn on the
+          plot. Mario, 2026-09-01: "fijate que se solapan textos" — at 12px the two
+          in-chart labels sat ~14px apart and ran across the tallest bars. A legend
+          outside the plot cannot collide with anything, whatever the data does. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 mb-2 text-[13px]">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-[2px] bg-[#3b82f6]" />
+          Google ÷ rest of store, that month
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-4 rounded-[2px] bg-[#94a3b8]/40 border-y border-dashed border-[#64748b]" />
+          Months without Google: usual range {monthlyBand.p25Pct}%–{monthlyBand.p75Pct}%, typical {monthlyBand.medianPct}%
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-0 w-4 border-t-2 border-[#f59e0b]" />
+          <b className="font-medium">Best month without Google {monthlyBand.maxPct}%</b> — the line to clear
+        </span>
+      </div>
+
+      <div className="h-[260px]">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={data.monthly} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border/40" vertical={false} />
@@ -1110,11 +1156,17 @@ function IncrementalityBlock({ inc, loading, error }: {
                    axisLine={false} tickLine={false} minTickGap={12} />
             <YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={44}
                    tickFormatter={(v: number) => `${v}%`} domain={[0, 'auto']} />
-            {/* Counterfactual band: p25–p75 of the zero-spend 10-day windows. */}
-            <ReferenceArea y1={band.p25Pct} y2={band.p75Pct} fill="#94a3b8" fillOpacity={0.18}
+            {/* Counterfactual band IN MONTHS — the same unit as the bars. Drawing
+                the 10-day band here put the ceiling at 62.3%, which no month can
+                reach, so no month could ever read as a signal (mig 20260901100000). */}
+            <ReferenceArea y1={monthlyBand.p25Pct} y2={monthlyBand.p75Pct} fill="#94a3b8" fillOpacity={0.18}
                            ifOverflow="extendDomain" />
-            <ReferenceLine y={band.medianPct} stroke="#64748b" strokeDasharray="4 3"
-                           label={{ value: `zero-spend median ${band.medianPct}%`, position: 'insideTopRight', fontSize: 12, fill: '#64748b' }} />
+            <ReferenceLine y={monthlyBand.medianPct} stroke="#64748b" strokeDasharray="4 3" />
+            {/* The line that actually has to be cleared: the best month the store
+                ever had on free Google alone. Labelled in the legend above, never
+                on the plot — see the note there. */}
+            <ReferenceLine y={monthlyBand.maxPct} stroke="#f59e0b" strokeWidth={1.5}
+                           ifOverflow="extendDomain" />
             <RTooltip
               cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }}
               content={({ active, payload }) => {
@@ -1127,6 +1179,13 @@ function IncrementalityBlock({ inc, loading, error }: {
                     <div className="flex justify-between gap-4"><span className="text-muted-foreground">Google bag</span><span className="tabular-nums">{fmtAud(p.bagAud)}</span></div>
                     <div className="flex justify-between gap-4"><span className="text-muted-foreground">Rest of store</span><span className="tabular-nums">{fmtAud(p.restAud)}</span></div>
                     <div className="flex justify-between gap-4"><span className="text-muted-foreground">Google spend</span><span className="tabular-nums">{fmtAud(p.googleSpendAud)}</span></div>
+                    <div className="pt-1 mt-1 border-t border-border/50 max-w-[260px] text-muted-foreground">
+                      {p.ratioPct > monthlyBand.maxPct
+                        ? `Above every month without Google (best ${monthlyBand.maxPct}%).`
+                        : p.ratioPct >= monthlyBand.p25Pct && p.ratioPct <= monthlyBand.p75Pct
+                          ? 'Inside the ordinary range of months without Google.'
+                          : `Between ${monthlyBand.minPct}% and ${monthlyBand.maxPct}% — the range months without Google covered.`}
+                    </div>
                   </div>
                 );
               }}
@@ -1136,23 +1195,50 @@ function IncrementalityBlock({ inc, loading, error }: {
         </ResponsiveContainer>
       </div>
       <p className="text-[13px] text-muted-foreground/70 mt-1 mb-3">
-        Shaded band: p25–p75 of the zero-spend windows ({band.period}).
+        Both references come from the {monthlyBand.months} whole months the store ran with no Google
+        spend at all ({monthlyBand.period}) — the best of them was {fmtMonth(monthlyBand.maxMonth)}.
+        Months measured against months: the same unit as the bars.
       </p>
 
       <div className="grid gap-3 grid-cols-1 md:grid-cols-3">
+        {/* A TEN-DAY reading, so it is judged against ten-day windows — the one
+            place on this panel where the wider `band` is the right yardstick. */}
         <StatCard label="Last 10 days" value={`${last10Days.ratioPct.toFixed(1)}%`} accent="#3b82f6"
-          sub={`To ${fmtDay(last10Days.to)} — ${bandPosition(last10Days.ratioPct, band)}.`} />
+          sub={`To ${fmtDay(last10Days.to)}. Against 10-day stretches, not months: ${bandPosition(last10Days.ratioPct, band)}.`} />
         <StatCard label={`Brand cut (${fmtDay(brandCut.cutDate)})`}
           value={`${brandCut.pre.ratioPct.toFixed(1)}% → ${brandCut.post.ratioPct.toFixed(1)}%`} accent="#8b5cf6"
-          sub={`Brand spend ${fmtAud(brandCut.pre.brandSpendPerDayAud)}/day → ${fmtAud(brandCut.post.brandSpendPerDayAud)}/day. If the bag holds while brand spend stays cut, brand was harvesting demand it didn't create.`} />
-        <StatCard label="Verdict due" value={fmtDay(brandCut.verdictDate)} accent="#f59e0b"
-          sub="After a full month at the reduced brand spend. Until then every reading is preliminary." />
+          sub={`Brand spend ${fmtAud(brandCut.pre.brandSpendPerDayAud)}/day → ${fmtAud(brandCut.post.brandSpendPerDayAud)}/day, held ${brandCut.post.days} days. If the bag holds while brand spend stays cut, brand was harvesting demand it didn't create.`} />
+        {verdictIn
+          ? (
+            <StatCard label="Verdict due" value={fmtDay(brandCut.verdictDate)} accent="#f59e0b"
+              sub="After a full month at the reduced brand spend. Until then every reading is preliminary." />
+          )
+          : (
+            <StatCard
+              label={`Brand verdict · ${fmtDay(brandCut.verdictDate)}`}
+              value={`${brandCut.post.ratioPct >= brandCut.pre.ratioPct ? '+' : ''}${(brandCut.post.ratioPct - brandCut.pre.ratioPct).toFixed(1)} pts`}
+              accent="#f59e0b"
+              warn={!bagHeld}
+              sub={bagHeld
+                ? <>Brand spend cut {cutPct}% and held {brandCut.post.days} days, and Google&apos;s share of the
+                  store <b>rose</b>. Brand was harvesting demand it did not create.
+                  Saving ≈ {fmtAud(brandCut.pre.brandSpendPerDayAud - brandCut.post.brandSpendPerDayAud)}/day.</>
+                : <>Brand spend cut {cutPct}% and Google&apos;s share of the store <b>fell</b>. Brand was
+                  contributing — restoring it is the safe read.</>} />
+          )}
       </div>
 
       <p className="text-[13px] text-muted-foreground/70 mt-3">
-        Reading rule: the yardstick is the whole Google bag ÷ the rest of the store.
-        Historical {band.windowDays}-day windows reached {band.maxPct}% with zero spend — only a
-        sustained departure from the band means anything.
+        <b>Reading rule:</b> the yardstick is the whole Google bag ÷ the rest of the store, one whole
+        month against the months that had no Google spend. One month over the orange line is a signal,
+        not a proof — it takes two or three in a row.
+        {latestClosedMonth && (
+          <>
+            {' '}<b>{fmtMonth(latestClosedMonth.month)}</b> — the last complete month — closed at{' '}
+            <b>{latestClosedMonth.ratioPct.toFixed(1)}%</b> on {fmtAud(latestClosedMonth.googleSpendAud)} of
+            Google spend: {monthPosition(latestClosedMonth.ratioPct, monthlyBand)}.
+          </>
+        )}
       </p>
     </Card>
   );
@@ -1327,6 +1413,66 @@ function ScalePlan({ ue, plan, blended, from, to, totalOrders, draft, onDraft, o
     ];
   }
 
+  // ── Scoring a finished month ────────────────────────────────────────────────
+  // Mario, 2026-09-01, with August closed: the pace table says how fast the month
+  // ran, never whether the objective was MET. That takes the two rows it does not
+  // carry — the MER actually achieved, and the operating profit that came out of
+  // it. Same numbers he was given in chat, on the screen that owns them.
+  //
+  // GATED ON A WHOLE CALENDAR MONTH on purpose. Fixed costs are a per-month
+  // figure: applying $48,559/month to a 12-day window would invent a loss that
+  // never happened. First of the month to last day of the same month, or the
+  // block does not render.
+  const lastDayOfTo = new Date(Date.UTC(Number(to.slice(0, 4)), Number(to.slice(5, 7)), 0)).getUTCDate();
+  const isWholeMonth = from.slice(0, 7) === to.slice(0, 7)
+    && from.slice(8) === '01'
+    && Number(to.slice(8)) === lastDayOfTo;
+
+  type ScoreRow = {
+    label: string; plan: string; actual: string; note: string; tone: 'green' | 'amber' | 'red';
+  };
+  let closed: {
+    met: boolean;
+    /** What the month was given and what it turned over — the inputs. */
+    inputs: ScoreRow[];
+    /** The objective itself, rendered apart because it is the one that decides. */
+    profit: ScoreRow & { deltaUsd: number; deltaPct: number | null };
+  } | null = null;
+
+  if (showTracking && plan && isWholeMonth) {
+    const planRevenueUsd = (plan.targetProfitUsd + ue.fixedCostsUsd + plan.plannedSpendUsd) / ue.cm1Pct;
+    const planMer = ratio(planRevenueUsd, plan.plannedSpendUsd);
+    const actualMer = ratio(blended.revenueUsd, blended.spendUsd);
+    // Juan's formula, the same one the plan was built with — read forwards.
+    const actualProfit = blended.revenueUsd * ue.cm1Pct - ue.fixedCostsUsd - blended.spendUsd;
+    const met = actualProfit >= plan.targetProfitUsd;
+    const merCleared = actualMer !== null && planMer !== null && actualMer >= planMer;
+    const pctOf = (a: number, b: number) => (b > 0 ? `${Math.round((100 * a) / b)}% of plan` : '—');
+    closed = {
+      met,
+      inputs: [
+        { label: 'Ad spend', plan: fmtU(plan.plannedSpendUsd), actual: fmtU(blended.spendUsd),
+          note: pctOf(blended.spendUsd, plan.plannedSpendUsd), tone: 'amber' },
+        { label: 'Revenue', plan: fmtU(planRevenueUsd), actual: fmtU(blended.revenueUsd),
+          note: pctOf(blended.revenueUsd, planRevenueUsd),
+          tone: blended.revenueUsd >= planRevenueUsd ? 'green' : 'amber' },
+        { label: 'MER', plan: `${fmtX(planMer)} required`, actual: fmtX(actualMer),
+          note: merCleared ? 'cleared' : 'short', tone: merCleared ? 'green' : 'red' },
+      ],
+      profit: {
+        label: 'Operating profit',
+        plan: fmtU(plan.targetProfitUsd),
+        actual: fmtU(actualProfit),
+        note: met ? 'met' : 'missed',
+        tone: met ? 'green' : 'red',
+        deltaUsd: actualProfit - plan.targetProfitUsd,
+        deltaPct: plan.targetProfitUsd > 0
+          ? (actualProfit - plan.targetProfitUsd) / plan.targetProfitUsd
+          : null,
+      },
+    };
+  }
+
   return (
     <Card className="p-4">
       <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
@@ -1402,46 +1548,159 @@ function ScalePlan({ ue, plan, blended, from, to, totalOrders, draft, onDraft, o
         </div>
       </div>
 
+      {/* One panel, two readings of the same month: what it RESULTED IN (only once
+          the month is whole) and how it PACED. Mario, 2026-09-01: "lo has
+          implementado sin ningún tipo de estética" — two bare tables floating
+          under the simulator. Same numbers, given a frame: a verdict-coloured
+          rule on top, the objective row set apart from the rows that feed it,
+          and one shared column grid so the two halves line up as one thing. */}
       {showTracking && plan && (
-        <div className="mt-5">
-          <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            Plan tracking — {fmtMonth(plan.month)}
-          </h4>
-          <div className="overflow-x-auto">
-            <table className="w-full max-w-2xl min-w-[480px] text-[15px]">
-              <thead>
-                <tr className="text-[13px] uppercase tracking-wider text-muted-foreground">
-                  <th className="text-left font-medium pb-1.5">Per day</th>
-                  <th className="text-right font-medium pb-1.5">Plan requires</th>
-                  <th className="text-right font-medium pb-1.5">Actual (window)</th>
-                  <th className="text-right font-medium pb-1.5">Pace</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tracking.map((t) => {
-                  const pace = ratio(t.actual, t.required);
-                  const tone = pace === null ? 'amber'
-                    : t.label.startsWith('Spend')
-                      ? (pace >= 0.8 && pace <= 1.2 ? 'green' : 'amber')
-                      : pace >= 1 ? 'green' : pace >= 0.9 ? 'amber' : 'red';
-                  return (
-                    <tr key={t.label} className="border-t border-border/40">
-                      <td className="py-1.5">{t.label}</td>
-                      <td className="py-1.5 text-right tabular-nums">{t.money ? fmtU(t.required) : fmtNum(t.required)}</td>
-                      <td className="py-1.5 text-right tabular-nums font-medium">{t.money ? fmtU(t.actual) : fmtNum(t.actual)}</td>
-                      <td className="py-1.5 text-right">
-                        <Chip tone={tone}>{pace === null ? '—' : `${Math.round(pace * 100)}%`}</Chip>
+        <div className="mt-5 rounded-xl border border-border/60 overflow-hidden">
+          <div
+            className="h-[3px]"
+            style={{
+              background: `linear-gradient(90deg, ${
+                closed ? (closed.met ? '#10b981' : '#ef4444') : '#94a3b8'}, transparent)`,
+            }}
+          />
+
+          <div className="flex items-center justify-between gap-3 flex-wrap px-4 py-3 bg-muted/30 border-b border-border/60">
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              {closed ? 'Month closed' : 'Plan tracking'} — {fmtMonth(plan.month)}
+            </h4>
+            {closed && (
+              <Chip tone={closed.met ? 'green' : 'red'} className="text-[13px] px-2.5 py-1">
+                {closed.met ? '✓ Objective met' : '✕ Objective missed'}
+              </Chip>
+            )}
+          </div>
+
+          {closed && (
+            <div className="px-4 pt-3 pb-4">
+              {/* The answer in one line, before the evidence. */}
+              <p className="text-[15px] leading-snug mb-3 max-w-3xl">
+                Operating profit came in at <b className="tabular-nums">{closed.profit.actual}</b> against
+                the <span className="tabular-nums">{closed.profit.plan}</span> committed —{' '}
+                <b className={cn('tabular-nums',
+                  closed.met ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                  {fmtU(Math.abs(closed.profit.deltaUsd))} {closed.met ? 'above' : 'short'}
+                  {closed.profit.deltaPct !== null
+                    && ` (${closed.met ? '+' : '−'}${Math.abs(Math.round(closed.profit.deltaPct * 100))}%)`}
+                </b>.
+              </p>
+
+              <div className="overflow-x-auto">
+                <table className="w-full max-w-2xl min-w-[520px] table-fixed text-[15px]">
+                  <colgroup>
+                    <col />
+                    <col className="w-[23%]" />
+                    <col className="w-[23%]" />
+                    <col className="w-[22%]" />
+                  </colgroup>
+                  <thead>
+                    <tr className="text-[13px] uppercase tracking-wider text-muted-foreground">
+                      <th className="text-left font-medium pb-1.5">Whole month</th>
+                      <th className="text-right font-medium pb-1.5">Plan</th>
+                      <th className="text-right font-medium pb-1.5">Actual</th>
+                      <th className="text-right font-medium pb-1.5" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {closed.inputs.map((r) => (
+                      <tr key={r.label} className="border-t border-border/40">
+                        <td className="py-2">{r.label}</td>
+                        <td className="py-2 text-right tabular-nums text-muted-foreground">{r.plan}</td>
+                        <td className="py-2 text-right tabular-nums font-semibold">{r.actual}</td>
+                        <td className="py-2 text-right"><Chip tone={r.tone}>{r.note}</Chip></td>
+                      </tr>
+                    ))}
+                    {/* The objective, set apart: it is the row that decides. */}
+                    <tr className={cn('border-t-2',
+                      closed.met
+                        ? 'border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-950/25'
+                        : 'border-red-500/40 bg-red-50/70 dark:bg-red-950/25')}>
+                      <td className="py-2.5 pl-2 font-medium rounded-l-md">{closed.profit.label}</td>
+                      <td className="py-2.5 text-right tabular-nums text-muted-foreground">{closed.profit.plan}</td>
+                      <td className="py-2.5 text-right tabular-nums font-semibold text-lg">{closed.profit.actual}</td>
+                      <td className="py-2.5 pr-2 text-right rounded-r-md">
+                        <Chip tone={closed.profit.tone}>{closed.profit.note}</Chip>
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-[13px] text-muted-foreground/70 mt-2.5 max-w-2xl leading-snug">
+                Operating profit = revenue × CM1 {(ue.cm1Pct * 100).toFixed(1)}% − fixed {fmtU(ue.fixedCostsUsd)}
+                {' '}− ad spend. Juan&apos;s formula, the same one that produced the plan, so the two columns
+                are comparable. Revenue and spend are the window above, {from} → {to} — a full calendar month,
+                which is what makes the monthly fixed costs apply.
+              </p>
+              {/* Named, not buried: migration 20260828090000 changed the revenue base
+                  (shipping in, tax out) and says in its own header that the workbook
+                  cells still describe the OLD base until Juan re-expresses them. So
+                  CM1 is being applied to shipping revenue it was never measured on,
+                  and the profit reads high by roughly (shipping × CM1).
+                  NO FIGURE FOR THE OLD BASE HERE ON PURPOSE: blended returns neither
+                  shipping nor tax, so it could only be a hand-typed literal — right
+                  for one month and wrong for every other. Adding shippingUsd/taxesUsd
+                  to advertising_dashboard's blended would make it computable. */}
+              <p className="text-[13px] mt-1.5 max-w-2xl leading-snug text-amber-700 dark:text-amber-400">
+                <b>Provisional.</b> Revenue has included the shipping charged since 28 Aug 2026, but
+                Juan&apos;s CM1 and fixed costs still describe the old base, which left shipping out. CM1
+                is therefore being applied to shipping revenue it was never measured against, so this
+                profit reads high — the beat is smaller than it looks here, and a thin one could turn out
+                not to be a beat at all. It settles when Juan re-states the workbook on the new base.
+              </p>
+            </div>
+          )}
+
+          <div className={cn('px-4 pt-3 pb-4', closed && 'border-t border-border/60 bg-muted/15')}>
+            <h5 className="text-[13px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+              {closed ? 'How it paced' : 'Per day'}
+            </h5>
+            <div className="overflow-x-auto">
+              <table className="w-full max-w-2xl min-w-[520px] table-fixed text-[15px]">
+                <colgroup>
+                  <col />
+                  <col className="w-[23%]" />
+                  <col className="w-[23%]" />
+                  <col className="w-[22%]" />
+                </colgroup>
+                <thead>
+                  <tr className="text-[13px] uppercase tracking-wider text-muted-foreground">
+                    <th className="text-left font-medium pb-1.5">Per day</th>
+                    <th className="text-right font-medium pb-1.5">Plan requires</th>
+                    <th className="text-right font-medium pb-1.5">Actual</th>
+                    <th className="text-right font-medium pb-1.5">Pace</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tracking.map((t) => {
+                    const pace = ratio(t.actual, t.required);
+                    const tone = pace === null ? 'amber'
+                      : t.label.startsWith('Spend')
+                        ? (pace >= 0.8 && pace <= 1.2 ? 'green' : 'amber')
+                        : pace >= 1 ? 'green' : pace >= 0.9 ? 'amber' : 'red';
+                    return (
+                      <tr key={t.label} className="border-t border-border/40">
+                        <td className="py-2">{t.label}</td>
+                        <td className="py-2 text-right tabular-nums text-muted-foreground">{t.money ? fmtU(t.required) : fmtNum(t.required)}</td>
+                        <td className="py-2 text-right tabular-nums font-semibold">{t.money ? fmtU(t.actual) : fmtNum(t.actual)}</td>
+                        <td className="py-2 text-right">
+                          <Chip tone={tone}>{pace === null ? '—' : `${Math.round(pace * 100)}%`}</Chip>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[13px] text-muted-foreground/70 mt-2.5 leading-snug">
+              Actual = the window selected above ({from} → {to}), divided by its days.
+              {!closed && ' Select a whole calendar month to score it against the plan.'}
+            </p>
           </div>
-          <p className="text-[13px] text-muted-foreground/70 mt-2">
-            Actual = the window selected above ({from} → {to}). Select the current month to read
-            it as month-to-date.
-          </p>
         </div>
       )}
 
@@ -1850,8 +2109,9 @@ function SecondaryStrip({ b }: { b: AdvertisingDashboard['blended'] }) {
     },
     {
       label: 'AOV', value: fmtAud(aov),
-      tip: <p>Average order value: net sales ÷ orders. GST included, shipping not — so it reads
-        higher than the AOV in Triple Whale, which strips tax and adds shipping.</p>,
+      tip: <p>Average order value: net sales ÷ orders — on the same base as every revenue figure
+        here, with the shipping the customer paid included and tax taken out. Triple Whale builds
+        its AOV the same way, so the two are comparable.</p>,
     },
     {
       label: 'New-customer share', value: ncShare === null ? '—' : fmtPct(ncShare * 100),
@@ -2162,15 +2422,24 @@ export default function AdvertisingTab() {
                         <>
                           <p><b>Everything the store sold in the selected days</b>, whatever brought the
                           customer in — ads, search, email or nothing at all.</p>
-                          <p className="mt-1.5">Australian orders carry GST inside the price, and it is left
-                          in on purpose so these figures line up with Triple Whale. The B2C Sales Explorer
-                          strips it, which is why that tab shows less.</p>
-                          <p className="mt-1.5">Shipping charged to the customer is <b>not</b> included here.
-                          Triple Whale does include it — that is the whole difference between its sales
-                          number and ours.</p>
+                          {/* These two paragraphs used to say the opposite — GST left in,
+                              shipping left out. The base changed on 28-Aug-2026 (migration
+                              20260828090000_revenue_base_ship_in_tax_out) and these texts
+                              were missed; the E-commerce equivalents were updated the same
+                              day, so the wording here follows theirs. Verified against the
+                              bridge for Aug 2026: 576,180 gross − 23,189 discounts − 5,733
+                              returns + 51,580 shipping − 29,697 tax = 569,141, this card. */}
+                          <p className="mt-1.5">What is inside: what the products sold for, after discounts
+                          and returns, <b>plus</b> the shipping the customer paid, <b>minus</b> all tax.
+                          Since 28 Aug 2026: the shipping is money the business keeps, the tax is only
+                          passed on to the tax office and was never revenue. Triple Whale counts it the
+                          same way, so the two are on the same footing.</p>
+                          <p className="mt-1.5">The B2C Sales Explorer keeps its own basis — no tax
+                          <i>and</i> no shipping — because its job is to match Shopify Analytics to the
+                          cent. That is why it shows less than this.</p>
                         </>
                       }
-                      sub="Same figure as the E-commerce tab: AUD, Brisbane day, GST included on AU orders."
+                      sub="Same figure as the E-commerce tab. AUD, Brisbane day: products after discounts and returns, plus shipping charged, minus tax."
                     />
                     <KpiCard
                       label="Ad spend"

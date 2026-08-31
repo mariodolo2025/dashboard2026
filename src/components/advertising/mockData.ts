@@ -363,6 +363,25 @@ export const ADVERTISING_INCREMENTALITY_MOCK: AdvertisingIncrementality = {
     maxPct: 62.3,
     samePeriodAug2025Pct: 29.6,
   },
+  // The same distribution in MONTHS — the unit the chart's bars use. Derived
+  // from the eleven zero-spend months above (27.4 … 31.0), so the mock band and
+  // the mock bars agree the way the real ones do (migration 20260901100000).
+  monthlyBand: {
+    months: 11,
+    period: '2025-07..2026-05',
+    minPct: 27.4,
+    p25Pct: 28.4,
+    medianPct: 29.1,
+    p75Pct: 30.0,
+    maxPct: 31.0,
+    maxMonth: '2025-12',
+  },
+  // 2026-08 is a partial month in this mock, so the last COMPLETE one is July —
+  // and it sits below the zero-spend maximum, which exercises the "no signal
+  // yet" wording of the reading rule.
+  latestClosedMonth: {
+    month: '2026-07', ratioPct: 30.1, googleSpendAud: 7_400, aboveZeroSpendMax: false,
+  },
   last10Days: { to: '2026-08-19', bagAud: 46_300, ratioPct: 51.8 },
   brandCut: {
     cutDate: '2026-08-06',
