@@ -1482,7 +1482,6 @@ function GenerateProductionCsvSection() {
       const totalMerged = allNewLines.length + keptLines.length;
 
       // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/b38be47e-507c-4d05-9e9f-2280ddcea66d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'567404'},body:JSON.stringify({sessionId:'567404',runId:'run1',hypothesisId:'H-A-H-D',location:'SettingsPanel.tsx:allNewLines-before-merge',message:'allNewLines first 3 lines before merge',data:{total:allNewLines.length,first3:allNewLines.slice(0,3),keptCount:keptLines.length,keptFirst3:keptLines.slice(0,3)},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
 
       const deltaLines = allNewLines.filter((line) => {
@@ -1504,7 +1503,6 @@ function GenerateProductionCsvSection() {
 
       // #region agent log
       const mergedDataLines = mergedCSVToUpload.split('\n').slice(2).filter(l => l.trim());
-      fetch('http://127.0.0.1:7243/ingest/b38be47e-507c-4d05-9e9f-2280ddcea66d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'567404'},body:JSON.stringify({sessionId:'567404',runId:'run1',hypothesisId:'H-B-H-C',location:'SettingsPanel.tsx:mergedCSV-built',message:'mergedCSVToUpload first 3 data lines',data:{totalLines:mergedDataLines.length,first3:mergedDataLines.slice(0,3),deltaFirst3:deltaLines.slice(0,3)},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
 
       setProgress({
@@ -1521,7 +1519,6 @@ function GenerateProductionCsvSection() {
 
       // #region agent log
       const uploadPreviewLines = mergedCSVToUpload.split('\n').slice(2,5);
-      fetch('http://127.0.0.1:7243/ingest/b38be47e-507c-4d05-9e9f-2280ddcea66d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'567404'},body:JSON.stringify({sessionId:'567404',runId:'run1',hypothesisId:'H-C',location:'SettingsPanel.tsx:before-upload',message:'content being sent to uploadProductionCSV',data:{lines2to4:uploadPreviewLines,totalChars:mergedCSVToUpload.length},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
       let upRes;
       try {

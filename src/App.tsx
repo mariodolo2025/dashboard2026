@@ -20,18 +20,28 @@ import { signOut } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { XeroData, computeCostsSnapshot, loadCostsConfigFromSupabase, saveCostsConfig, loadCostsConfig, saveCostsConfigToSupabase } from '@/lib/costsCalculator';
 import { CostsSnapshot } from '@/lib/utils';
-import SalesEvolutionContent from '@/components/SalesEvolutionContent';
-import InventoryReorderDashboard from '@/components/InventoryReorderDashboard';
-import MarioDashboard from '@/components/MarioDashboard';
-import CostsCanvas from '@/components/CostsCanvas';
-import { AIM2026Overlay } from '@/components/AIM2026Overlay';
-import { B2CSalesExplorer } from '@/components/B2CSalesExplorer';
-import { ReportsOverlay } from '@/components/ReportsOverlay';
-import { ConnectionsPanel } from '@/components/ConnectionsPanel';
-import EcommerceTab from '@/components/EcommerceTab';
-import WebUpgradeTab from '@/components/WebUpgradeTab';
-import AdvertisingTab from '@/components/AdvertisingTab';
-import DDPMarketsTab from '@/components/DDPMarketsTab';
+// Every module below opens from a pill or a button — none is needed for first
+// paint, and eagerly importing them all produced a single 2.7MB bundle
+// (Codex P1, 31-Aug-2026). React.lazy moves each behind its own chunk that
+// downloads the first time its surface opens.
+import { lazy, Suspense } from 'react';
+const SalesEvolutionContent = lazy(() => import('@/components/SalesEvolutionContent'));
+const InventoryReorderDashboard = lazy(() => import('@/components/InventoryReorderDashboard'));
+const MarioDashboard = lazy(() => import('@/components/MarioDashboard'));
+const CostsCanvas = lazy(() => import('@/components/CostsCanvas'));
+const AIM2026Overlay = lazy(() => import('@/components/AIM2026Overlay').then((m) => ({ default: m.AIM2026Overlay })));
+const B2CSalesExplorer = lazy(() => import('@/components/B2CSalesExplorer').then((m) => ({ default: m.B2CSalesExplorer })));
+const ReportsOverlay = lazy(() => import('@/components/ReportsOverlay').then((m) => ({ default: m.ReportsOverlay })));
+const ConnectionsPanel = lazy(() => import('@/components/ConnectionsPanel').then((m) => ({ default: m.ConnectionsPanel })));
+const EcommerceTab = lazy(() => import('@/components/EcommerceTab'));
+const WebUpgradeTab = lazy(() => import('@/components/WebUpgradeTab'));
+const AdvertisingTab = lazy(() => import('@/components/AdvertisingTab'));
+const DDPMarketsTab = lazy(() => import('@/components/DDPMarketsTab'));
+const ModalFallback = () => (
+  <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading module…
+  </div>
+);
 import { fetchDashboardData, recalcKPIsForDateRange } from '@/lib/aim2026/api';
 import type { SKURow } from '@/lib/aim2026/types';
 import { TrendIndicator } from '@/components/aim2026/TrendIndicator';
@@ -1905,7 +1915,7 @@ function App() {
 
   // If Mario Dashboard is open, render it instead of the main content
   if (showMarioDashboard) {
-    return <MarioDashboard onClose={handleCloseMarioDashboard} />;
+    return <Suspense fallback={<ModalFallback />}><MarioDashboard onClose={handleCloseMarioDashboard} /></Suspense>;
   }
 
   return (
@@ -3427,6 +3437,7 @@ function App() {
             <div className="flex items-center">
               <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
             </div>
+            <Suspense fallback={<ModalFallback />}>
             <SalesEvolutionContent
               unleashedData={unleashedData}
               shopifyData={shopifyData}
@@ -3434,6 +3445,7 @@ function App() {
               startDate={dateRange.from ?? new Date('2025-01-01')}
               endDate={dateRange.to ?? new Date()}
             />
+            </Suspense>
             </div>
           </DialogContent>
         </Dialog>
@@ -3448,10 +3460,12 @@ function App() {
             <div className="flex items-center">
               <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
             </div>
+            <Suspense fallback={<ModalFallback />}>
             <InventoryReorderDashboard 
               startDate={dateRange.from ?? new Date()}
               endDate={dateRange.to ?? new Date()}
             />
+            </Suspense>
             </div>
           </DialogContent>
         </Dialog>
@@ -3463,12 +3477,16 @@ function App() {
             esos sub-modales; modal=false alternativa dejaba click-outside-
             closes el dialog y artifacts al cerrar. Overlay propio = full
             screen, cierra solo con X / Escape, sin side-effects globales. */}
-        <AIM2026Overlay
-          open={activeModal === 'aim-2026'}
-          onClose={() => setActiveModal(null)}
-          dateRange={dateRange}
-          setDateRange={setDateRange}
-        />
+        {activeModal === 'aim-2026' && (
+          <Suspense fallback={<ModalFallback />}>
+            <AIM2026Overlay
+              open
+              onClose={() => setActiveModal(null)}
+              dateRange={dateRange}
+              setDateRange={setDateRange}
+            />
+          </Suspense>
+        )}
 
         {/* B2C Sales Explorer — one SKU's Shopify sales over a chosen window.
             Same full-screen overlay shape as AIM 2026 rather than a Radix
@@ -3489,16 +3507,17 @@ function App() {
               </Button>
             </div>
             <div className="p-6">
-              <B2CSalesExplorer />
+              <Suspense fallback={<ModalFallback />}><B2CSalesExplorer /></Suspense>
             </div>
           </div>
         )}
 
         {/* Reports — op-manager reports container (FY Report, Freight, …) */}
-        <ReportsOverlay
-          open={activeModal === 'fy-report'}
-          onClose={() => setActiveModal(null)}
-        />
+        {activeModal === 'fy-report' && (
+          <Suspense fallback={<ModalFallback />}>
+            <ReportsOverlay open onClose={() => setActiveModal(null)} />
+          </Suspense>
+        )}
 
         {/* E-commerce modal (Shopify + Meta) */}
         <Dialog open={activeModal === 'ecommerce'} onOpenChange={(o) => !o && setActiveModal(null)}>
@@ -3508,7 +3527,7 @@ function App() {
               <DialogDescription>Orders, AOV and Meta Ads metrics</DialogDescription>
             </DialogHeader>
             <div className="mt-4">
-              <EcommerceTab dateRange={dateRange} setDateRange={setDateRange} fxRate={fxRate} />
+              <Suspense fallback={<ModalFallback />}><EcommerceTab dateRange={dateRange} setDateRange={setDateRange} fxRate={fxRate} /></Suspense>
             </div>
           </DialogContent>
         </Dialog>
@@ -3519,7 +3538,7 @@ function App() {
             <DialogHeader className="sr-only">
               <DialogTitle>Web Upgrade performance</DialogTitle>
             </DialogHeader>
-            <WebUpgradeTab dateRange={dateRange} setDateRange={setDateRange} />
+            <Suspense fallback={<ModalFallback />}><WebUpgradeTab dateRange={dateRange} setDateRange={setDateRange} /></Suspense>
           </DialogContent>
         </Dialog>
 
@@ -3531,7 +3550,7 @@ function App() {
               <DialogDescription>Meta vs Google — medición propia (maqueta)</DialogDescription>
             </DialogHeader>
             <div className="mt-4">
-              <AdvertisingTab />
+              <Suspense fallback={<ModalFallback />}><AdvertisingTab /></Suspense>
             </div>
           </DialogContent>
         </Dialog>
@@ -3544,7 +3563,7 @@ function App() {
               <DialogDescription>Checkout vs real landed cost for the DDP European markets</DialogDescription>
             </DialogHeader>
             <div className="mt-1">
-              <DDPMarketsTab />
+              <Suspense fallback={<ModalFallback />}><DDPMarketsTab /></Suspense>
             </div>
           </DialogContent>
         </Dialog>
@@ -3747,7 +3766,7 @@ function App() {
             </DialogDescription>
           </DialogHeader>
           <div className="border-b pb-4">
-            <ConnectionsPanel />
+            <Suspense fallback={<ModalFallback />}><ConnectionsPanel /></Suspense>
           </div>
           <div className="grid gap-4 py-4">
             <div className="grid grid-cols-4 items-center gap-4">
@@ -4179,7 +4198,7 @@ function App() {
             </Button>
           </DialogHeader>
           <div className="mt-4">
-            <CostsCanvas dateRange={dateRange} setDateRange={setDateRange} />
+            <Suspense fallback={<ModalFallback />}><CostsCanvas dateRange={dateRange} setDateRange={setDateRange} /></Suspense>
           </div>
         </DialogContent>
       </Dialog>
