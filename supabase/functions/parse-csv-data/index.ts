@@ -642,6 +642,38 @@ Deno.serve(async (req: Request) => {
       console.log(`Snapshot cache miss for ${pathPrefix || 'root'} — parsing CSVs`);
     }
 
+    // Source fingerprint: the five CSVs' updated_at from storage. materialize
+    // compares it against the stamp inside the existing snapshot and SKIPS the
+    // whole 23MB parse when nothing changed - the orchestrator asks for a
+    // rebuild 3x/day whether or not any source moved (Codex P1, 31-Aug-2026).
+    let sourcesStamp = '';
+    try {
+      const { data: fl } = await supabase.storage.from('csv-files').list(folder || undefined, { limit: 200 });
+      sourcesStamp = (fl ?? [])
+        .filter((f: any) => f.name.endsWith('.csv'))
+        .map((f: any) => `${f.name}@${f.updated_at ?? ''}`)
+        .sort()
+        .join('|');
+    } catch { /* stamp stays empty: never blocks a rebuild */ }
+
+    if (materialize && sourcesStamp) {
+      try {
+        const { data: cur } = await supabase.storage.from('csv-files')
+          .download(`${pathPrefix}${SNAPSHOT_CACHE}`);
+        if (cur) {
+          const head = (await cur.slice(0, 4096).text());
+          const m = head.match(/"sourcesStamp":"([^"]*)"/);
+          // compare against the JSON-escaped form, exactly as stored
+          if (m && m[1] === JSON.stringify(sourcesStamp).slice(1, -1)) {
+            console.log('materialize skipped: sources unchanged');
+            return new Response(JSON.stringify({ success: true, skipped: 'sources unchanged' }), {
+              headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Snapshot-Cache': 'unchanged' },
+            });
+          }
+        }
+      } catch { /* fall through to a full rebuild */ }
+    }
+
     // Get dynamic exchange rates for the date range
     const fxRates = await getExchangeRatesForDateRange(supabase, startDate, endDate);
 
@@ -688,35 +720,35 @@ Deno.serve(async (req: Request) => {
 
     console.log('Using filenames:', fileNames);
 
-    // Download and parse all files
-    const fileContents = await Promise.all(
-      fileNames.map(async (fileName, index) => {
-        const { data, error } = await supabase.storage
-          .from('csv-files')
-          .download(fileName);
+    // Download and parse ONE file at a time, releasing each CSV string before
+    // touching the next. The old Promise.all held all five raw CSVs (~23MB)
+    // AND their parsed arrays in memory at once - the double peak behind 17 of
+    // the last 33 WORKER_RESOURCE_LIMIT deaths of this function.
+    const readText = async (fileName: string): Promise<string> => {
+      if (!fileName || fileName === pathPrefix) return '';
+      const { data, error } = await supabase.storage.from('csv-files').download(fileName);
+      if (error) {
+        console.error(`Error downloading ${fileName}:`, error);
+        return '';
+      }
+      return await data.text();
+    };
+    const nameAt = (i: number): string => fileNames[i] ?? '';
+    // fileNames order (shopify entry removed when absent): unleashed, [shopify],
+    // oldShopify, meta, costs - mirror the old index juggling explicitly.
+    const hasShopify = !!shopifySalesFileName;
 
-        if (error) {
-          console.error(`Error downloading ${fileName}:`, error);
-          return '';
-        }
-
-        return await data.text();
-      })
-    );
-
-    // Map file contents to variables, handling the case where shopify file might be missing
-    const unleashedText = fileContents[0] || '';
-    const shopifyText = shopifySalesFileName ? fileContents[1] || '' : '';
-    const oldShopifyText = shopifySalesFileName ? fileContents[2] || '' : fileContents[1] || '';
-    const metaText = shopifySalesFileName ? fileContents[3] || '' : fileContents[2] || '';
-    const costsText = shopifySalesFileName ? fileContents[4] || '' : fileContents[3] || '';
-
-    // Parse all data using dynamic exchange rates
-    const unleashed = unleashedText ? parseUnleashedData(unleashedText) : [];
-    const shopify = shopifyText ? parseShopifyData(shopifyText, fxRates) : [];
-    const oldShopify = oldShopifyText ? parseOldShopifyData(oldShopifyText) : [];
-    const meta = metaText ? parseMetaData(metaText, fxRates) : [];
-    const costs = costsText ? parseCostsData(costsText) : {};
+    let text = await readText(nameAt(0));
+    const unleashed = text ? parseUnleashedData(text) : [];
+    text = hasShopify ? await readText(nameAt(1)) : '';
+    const shopify = text ? parseShopifyData(text, fxRates) : [];
+    text = await readText(nameAt(hasShopify ? 2 : 1));
+    const oldShopify = text ? parseOldShopifyData(text) : [];
+    text = await readText(nameAt(hasShopify ? 3 : 2));
+    const meta = text ? parseMetaData(text, fxRates) : [];
+    text = await readText(nameAt(hasShopify ? 4 : 3));
+    const costs = text ? parseCostsData(text) : {};
+    text = '';
 
     // Calculate the most recent order date from all data sources
     let lastOrderDate: Date | null = null;
@@ -762,7 +794,8 @@ Deno.serve(async (req: Request) => {
 
     console.log(`Most recent order date found: ${lastOrderDate}`);
 
-    const response: DataResponse = {
+    const response: DataResponse & { sourcesStamp?: string } = {
+      sourcesStamp,
       unleashed,
       shopify,
       oldShopify,
