@@ -123,7 +123,7 @@ countries as (
   select coalesce(jsonb_agg(jsonb_build_object(
     'code', country_code, 'orders', n, 'matchedOrders', nm, 'revenue', rev,
     'charged', c, 'paid', p, 'net', net,
-    'netPerOrder', case when nm = 0 then null else round(net::numeric / nm, 2) end,
+    'netPerOrder', case when nm = 0 then null else round(net_raw / nm, 2) end,
     'recoveryPct', case when p = 0 then null else round(100.0 * c / p, 1) end
   ) order by n desc), '[]'::jsonb) as j
   from (
@@ -133,7 +133,8 @@ countries as (
       round(coalesce(sum(b.subtotal_aud),0)) as rev,
       round(coalesce(sum(b.charged_total) filter (where b.matched),0)) as c,
       round(coalesce(sum(b.paid_total) filter (where b.matched),0)) as p,
-      round(coalesce(sum(b.charged_total - b.paid_total) filter (where b.matched),0)) as net
+      round(coalesce(sum(b.charged_total - b.paid_total) filter (where b.matched),0)) as net,
+      coalesce(sum(b.charged_total - b.paid_total) filter (where b.matched),0) as net_raw
     from base b group by 1
   ) t
 ),

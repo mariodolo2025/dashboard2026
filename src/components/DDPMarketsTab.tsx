@@ -331,7 +331,9 @@ export default function DDPMarketsTab() {
             <div className="flex items-baseline justify-between">
               <span className="flex items-center gap-1.5 text-[13px] font-semibold"><Flag cc={c.code} /> {COUNTRY_NAME[c.code]} · {c.orders} orders</span>
               <span className={cn('text-sm font-bold tabular-nums', (c.net ?? 0) < 0 ? 'text-red-600' : 'text-emerald-700')}>
-                {c.matchedOrders ? `${aud(c.netPerOrder, 2)}/order` : 'no matched orders'}
+                {c.matchedOrders
+                  ? <>{aud(c.netPerOrder, 2)}/order <span className="font-normal text-muted-foreground">· {c.matchedOrders}/{c.orders} matched</span></>
+                  : 'no matched orders'}
               </span>
             </div>
             <div className="text-[13px] text-muted-foreground tabular-nums">
