@@ -31,7 +31,8 @@ interface Kpis {
   orders: number; matchedOrders: number; byCountry: Record<string, number>;
   revenue: number; chargedTotal: number; chargedShipping: number; chargedDuties: number;
   chargedTaxes: number; paidTotal: number; paidFreight: number; paidZonosDT: number;
-  paidZonosFees: number; netAbsorbed: number; netPerOrder: number; recoveryPct: number | null;
+  paidZonosFees: number; chargedMatched: number; paidMatched: number;
+  netAbsorbed: number; netPerOrder: number; recoveryPct: number | null;
   adSpend: number; adCampaigns: number; adFirstDay: string | null; mer: number | null; revenueSinceAds: number;
 }
 interface Component { key: string; charged: number; paid: number; gap: number; perOrder: number; orders: number }
@@ -257,7 +258,8 @@ export default function DDPMarketsTab() {
       </div>
 
       {/* ── KPI strip ────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+      {/* ── row A: the whole window, every order ─────────────────────────── */}
+      <div className="grid grid-cols-3 gap-3">
         <div className="cursor-help rounded-xl border bg-card p-3.5" title={T.orders}>
           <div className="text-[13px] text-muted-foreground">DDP orders</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? k.orders : '…'}</div>
@@ -266,7 +268,7 @@ export default function DDPMarketsTab() {
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5"
-          title="Merchandise revenue of these orders: Shopify subtotal (before shipping, duties and taxes), shop_money USD converted to AUD with the monthly rate the whole dashboard uses.">
+          title="Merchandise revenue of ALL the window's orders: Shopify subtotal (before shipping, duties and taxes), shop_money USD converted to AUD with the monthly rate the whole dashboard uses.">
           <div className="text-[13px] text-muted-foreground">Revenue</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.revenue) : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
@@ -283,27 +285,40 @@ export default function DDPMarketsTab() {
               : 'no EU campaigns in window') : ''}
           </div>
         </div>
-        <div className="cursor-help rounded-xl border bg-card p-3.5" title={T.charged}>
+      </div>
+
+      {/* ── row B: the reconciliation, matched orders only ───────────────── */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="cursor-help rounded-xl border border-dashed bg-muted/30 p-3"
+          title={`Shipping + duties + taxes charged at checkout, but ONLY for the ${k?.matchedOrders ?? '…'} orders whose real costs are already known (freight + ZONOS; Switzerland needs freight only). This is the comparable half of the reconciliation — the total over every order sits below. AUD, monthly FX.`}>
           <div className="text-[13px] text-muted-foreground">Charged to customers</div>
-          <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.chargedTotal) : '…'}</div>
+          <div className="mt-0.5 text-xl font-bold tabular-nums">
+            {k ? aud(k.chargedMatched) : '…'}
+            <span className="ml-1.5 text-[13px] font-normal text-muted-foreground">from {k ? `${k.matchedOrders} of ${k.orders}` : '…'} orders</span>
+          </div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
-            {k ? `ship ${aud(k.chargedShipping)} · duties ${aud(k.chargedDuties)} · taxes ${aud(k.chargedTaxes)}` : ''}
+            {k ? `total charged ${aud(k.chargedTotal)} · ship ${aud(k.chargedShipping)} · duties ${aud(k.chargedDuties)} · taxes ${aud(k.chargedTaxes)}` : ''}
           </div>
         </div>
-        <div className="cursor-help rounded-xl border bg-card p-3.5" title={T.paid}>
+        <div className="cursor-help rounded-xl border border-dashed bg-muted/30 p-3"
+          title={`What Dolo really paid for those SAME ${k?.matchedOrders ?? '…'} matched orders: Starshipit label + everything ZONOS billed. The "known so far" line below adds every cost already recorded on not-yet-matched orders — it is NOT comparable with the total charged above it (different universes). AUD as billed.`}>
           <div className="text-[13px] text-muted-foreground">Paid by Dolo</div>
-          <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.paidTotal) : '…'}</div>
+          <div className="mt-0.5 text-xl font-bold tabular-nums">
+            {k ? aud(k.paidMatched) : '…'}
+            <span className="ml-1.5 text-[13px] font-normal text-muted-foreground">same {k ? k.matchedOrders : '…'} orders</span>
+          </div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
-            {k ? `freight ${aud(k.paidFreight)} · ZONOS ${aud(k.paidZonosDT)} · fees ${aud(k.paidZonosFees)}` : ''}
+            {k ? `known so far ${aud(k.paidTotal)} · freight ${aud(k.paidFreight)} · ZONOS ${aud(k.paidZonosDT)} · fees ${aud(k.paidZonosFees)}` : ''}
           </div>
         </div>
-        <div className="cursor-help rounded-xl border bg-card p-3.5" title={`${T.net} ${T.recovery}`}>
-          <div className="text-[13px] text-muted-foreground">Net absorbed</div>
-          <div className={cn('mt-0.5 text-2xl font-bold tabular-nums', (k?.netAbsorbed ?? 0) < 0 ? 'text-red-600' : 'text-emerald-700')}>
+        <div className="cursor-help rounded-xl border border-dashed bg-muted/30 p-3"
+          title={`Charged minus paid over the matched orders only — the two figures to its left. PARTIAL by nature: ZONOS records arrive days after shipping, and the waiting orders are mostly DE/DK whose costs will push this DOWN when they land (Switzerland matches fastest and is profitable, so the early sample flatters the number). Negative = Dolo absorbs.`}>
+          <div className="text-[13px] text-muted-foreground">Net absorbed <span className="font-normal">(partial · {k ? `${k.matchedOrders}/${k.orders}` : '…'})</span></div>
+          <div className={cn('mt-0.5 text-xl font-bold tabular-nums', (k?.netAbsorbed ?? 0) < 0 ? 'text-red-600' : 'text-emerald-700')}>
             {k ? aud(k.netAbsorbed) : '…'}
           </div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
-            {k ? `${aud(k.netPerOrder, 2)}/order · recovery ${k.recoveryPct ?? '—'}% · ${k.matchedOrders}/${k.orders} matched` : ''}
+            {k ? `${aud(k.netPerOrder, 2)}/order · recovery ${k.recoveryPct ?? '—'}%` : ''}
           </div>
         </div>
       </div>

@@ -73,6 +73,11 @@ kpis as (
     'paidFreight', (select round(coalesce(sum(freight_cost_aud),0)) from base),
     'paidZonosDT', (select round(coalesce(sum(coalesce(zonos_duty_aud,0)+coalesce(zonos_tax_aud,0)),0)) from base),
     'paidZonosFees', (select round(coalesce(sum(zonos_fee_aud),0)) from base),
+    -- The reconciliation headline pair (Mario, 1-Sep): charged and paid over
+    -- the SAME matched universe, so the two big figures are subtractable and
+    -- equal netAbsorbed by construction. The all-orders totals stay alongside.
+    'chargedMatched', (select round(coalesce(sum(charged_total),0)) from m),
+    'paidMatched', (select round(coalesce(sum(paid_total),0)) from m),
     'netAbsorbed', (select round(coalesce(sum(charged_total - paid_total),0)) from m),
     'netPerOrder', (select round(coalesce(avg(charged_total - paid_total),0), 2) from m),
     'recoveryPct', (select case when coalesce(sum(paid_total),0) = 0 then null
