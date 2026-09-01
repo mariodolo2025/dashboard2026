@@ -1,11 +1,11 @@
 // =============================================================================
-// DDP Markets — are the DDP European markets (Germany, Denmark, Switzerland)
-// charging enough to cover what they really cost?
+// DDP Markets — are the DDP European markets (Germany, Denmark, Switzerland,
+// Sweden) charging enough to cover what they really cost?
 //
 // One order, three sources, reconciled server-side by ddp_markets_dashboard:
 //   charged  — Shopify checkout (shipping + duties + taxes)
 //   freight  — Starshipit label cost
-//   ZONOS    — duties/taxes/fees ZONOS bills Dolo (DE and DK; CH ships
+//   ZONOS    — duties/taxes/fees ZONOS bills Dolo (CH ships
 //              without ZONOS by design and is complete with freight alone)
 //
 // Everything shown is AUD. Layout follows the approved mockup: KPI strip,
@@ -52,7 +52,10 @@ interface Payload {
   exceptions: { awaitingZonos: string[]; awaitingFreight: string[]; zonosUnmatched: { tracking: string; country: string; amount: number }[] };
 }
 
-const COUNTRY_NAME: Record<string, string> = { DE: 'Germany', DK: 'Denmark', CH: 'Switzerland' };
+// The whole country list of the tab. The RPC names no country except CH, so a
+// market is added here and in ddp-sync's COUNTRIES — nothing in SQL.
+const COUNTRY_NAME: Record<string, string> = { DE: 'Germany', DK: 'Denmark', CH: 'Switzerland', SE: 'Sweden' };
+const COUNTRIES = ['DE', 'DK', 'CH', 'SE'] as const;
 
 // Real SVG flags: Windows renders emoji flags as bare letters, which is what
 // made the markets read as "just the code" in the first place.
@@ -71,6 +74,11 @@ function Flag({ cc, className }: { cc: string; className?: string }) {
   if (cc === 'CH') return (
     <svg viewBox="0 0 32 32" className={cls} aria-hidden>
       <rect width="32" height="32" fill="#DA291C" /><rect x="13" y="6" width="6" height="20" fill="#fff" /><rect x="6" y="13" width="20" height="6" fill="#fff" />
+    </svg>
+  );
+  if (cc === 'SE') return (
+    <svg viewBox="0 0 16 10" className={cls} aria-hidden>
+      <rect width="16" height="10" fill="#006AA7" /><rect x="5" width="2" height="10" fill="#FECC00" /><rect y="4" width="16" height="2" fill="#FECC00" />
     </svg>
   );
   return null;
@@ -243,7 +251,7 @@ export default function DDPMarketsTab() {
           title="Every market together.">
           All markets
         </button>
-        {(['DE', 'CH', 'DK'] as const).map((cc) => (
+        {COUNTRIES.map((cc) => (
           <button key={cc} type="button" onClick={() => setCountry(country === cc ? null : cc)}
             className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px]', country === cc ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
             title={`Only ${COUNTRY_NAME[cc]}: KPIs, component gaps, weekly chart and ledger all narrow to this market. EU ad spend stays EU-wide - the campaigns cannot be split per country.`}>
@@ -264,7 +272,7 @@ export default function DDPMarketsTab() {
           <div className="text-[13px] text-muted-foreground">DDP orders</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? k.orders : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
-            {k ? ['DE', 'DK', 'CH'].filter((c) => k.byCountry[c]).map((c) => `${c} ${k.byCountry[c]}`).join(' · ') : ''}
+            {k ? COUNTRIES.filter((c) => k.byCountry[c]).map((c) => `${c} ${k.byCountry[c]}`).join(' · ') : ''}
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5"
@@ -324,7 +332,7 @@ export default function DDPMarketsTab() {
       </div>
 
       {/* ── per-country line ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {(data?.countries ?? []).map((c) => (
           <div key={c.code} className="cursor-help rounded-xl border bg-card px-3.5 py-2.5"
             title={`${c.code}: ${c.orders} orders (${c.matchedOrders} matched), ${aud(c.revenue)} merchandise revenue. Charged ${aud(c.charged)} vs paid ${aud(c.paid)} over matched orders.${c.code === 'CH' ? ' Switzerland ships without ZONOS by design — matched with freight alone.' : ''}`}>

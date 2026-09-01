@@ -6,7 +6,7 @@
 // run can never null out another source (the PostgREST full-row-upsert trap).
 // Rows are never deleted.
 //
-//   1. Shopify  — orders shipped to DE / DK / CH: what the CUSTOMER was charged
+//   1. Shopify  — orders shipped to DE / DK / CH / SE: what the CUSTOMER was charged
 //      (shipping, duties, taxes; shop_money USD → AUD with the monthly rate in
 //      currency_exchange_rates, same convention as the rest of the dashboard)
 //      plus the fulfillment tracking number.
@@ -35,8 +35,13 @@ const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const DDP_START = '2026-08-01';
-const COUNTRIES = new Set(['DE', 'DK', 'CH']);
-const SS_COUNTRIES: Record<string, string> = { Germany: 'DE', Denmark: 'DK', Switzerland: 'CH' };
+// Adding a market is this line plus its name/flag in DDPMarketsTab: the RPC
+// derives every country from ddp_shipments.country_code and names only CH (the
+// one market that ships without ZONOS by design), so nothing in SQL changes.
+const COUNTRIES = new Set(['DE', 'DK', 'CH', 'SE']);
+// Unused today — the Starshipit pass matches by order_number, not by country.
+// Kept in step with COUNTRIES so it cannot become a trap if it is ever wired up.
+const SS_COUNTRIES: Record<string, string> = { Germany: 'DE', Denmark: 'DK', Switzerland: 'CH', Sweden: 'SE' };
 const FX_FALLBACK = 1.54; // USD→AUD, same fallback the rest of the project uses
 
 const num = (v: unknown): number => {
