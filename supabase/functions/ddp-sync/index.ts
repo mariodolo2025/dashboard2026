@@ -35,13 +35,11 @@ const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const DDP_START = '2026-08-01';
-// Adding a market is this line plus its name/flag in DDPMarketsTab: the RPC
-// derives every country from ddp_shipments.country_code and names only CH (the
-// one market that ships without ZONOS by design), so nothing in SQL changes.
-const COUNTRIES = new Set(['DE', 'DK', 'CH', 'SE']);
-// Unused today — the Starshipit pass matches by order_number, not by country.
-// Kept in step with COUNTRIES so it cannot become a trap if it is ever wired up.
-const SS_COUNTRIES: Record<string, string> = { Germany: 'DE', Denmark: 'DK', Switzerland: 'CH', Sweden: 'SE' };
+// The market list is DATA now, in ddp_markets (migration 20260902090000) —
+// read below, once, and shared with ddp_markets_dashboard and the tab. It used
+// to be a hardcoded Set here, a second copy in the RPC ('CH' written in as a
+// permanent exception) and a third in the tab; that is what let Switzerland be
+// carried as a live DDP market for a week.
 const FX_FALLBACK = 1.54; // USD→AUD, same fallback the rest of the project uses
 
 const num = (v: unknown): number => {
@@ -62,6 +60,16 @@ Deno.serve(async (req: Request) => {
       : DDP_START;
 
     const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+
+    // Which markets are live. Gates BOTH ends: which Shopify orders are picked
+    // up and which ZONOS records are looked at. Refuse to run on an empty list
+    // rather than quietly syncing nothing — a silent no-op here would read as
+    // "no new orders" for days.
+    const { data: marketRows, error: marketErr } = await supabase
+      .from('ddp_markets').select('country_code').eq('active', true);
+    if (marketErr) return json({ success: false, message: `ddp_markets: ${marketErr.message}` }, 500);
+    if (!marketRows?.length) return json({ success: false, message: 'ddp_markets has no active market' }, 500);
+    const COUNTRIES = new Set(marketRows.map((r) => r.country_code as string));
 
     // ── Monthly USD→AUD rates (currency_exchange_rates: rate = AUD per 1 USD) ──
     const { data: fxRows } = await supabase.from('currency_exchange_rates').select('year, month, rate');

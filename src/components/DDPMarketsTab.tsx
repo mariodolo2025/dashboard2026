@@ -1,6 +1,10 @@
 // =============================================================================
-// DDP Markets — are the DDP European markets (Germany, Denmark, Switzerland,
-// Sweden) charging enough to cover what they really cost?
+// DDP Markets — are the DDP markets charging enough to cover what they cost?
+//
+// WHICH markets those are is data, not code: ddp_markets (active + zonos_expected)
+// is read by the sync, by ddp_markets_dashboard and by this tab, which gets the
+// live list back as `markets`. Three copies of that list is how Switzerland was
+// carried as a DDP market for a week without ZONOS ever being enabled there.
 //
 // One order, three sources, reconciled server-side by ddp_markets_dashboard:
 //   charged  — Shopify checkout (shipping + duties + taxes)
@@ -34,6 +38,9 @@ interface Kpis {
   paidZonosFees: number; chargedMatched: number; paidMatched: number;
   netAbsorbed: number; netPerOrder: number; recoveryPct: number | null;
   adSpend: number; adCampaigns: number; adFirstDay: string | null; mer: number | null; revenueSinceAds: number;
+  /** The market codes whose revenue sits in the MER numerator — only those the
+   *  'Europe%' campaigns actually target, which is not every active market. */
+  merMarkets: string[];
 }
 interface Component { key: string; charged: number; paid: number; gap: number; perOrder: number; orders: number }
 interface Week { weekStart: string; charged: number; paid: number; orders: number }
@@ -50,12 +57,13 @@ interface LedgerRow {
 interface Payload {
   kpis: Kpis; components: Component[]; weekly: Week[]; countries: Country[]; ledger: LedgerRow[];
   exceptions: { awaitingZonos: string[]; awaitingFreight: string[]; zonosUnmatched: { tracking: string; country: string; amount: number }[] };
+  /** The live markets, from ddp_markets — the tab holds no list of its own. */
+  markets: { code: string; name: string }[];
 }
 
-// The whole country list of the tab. The RPC names no country except CH, so a
-// market is added here and in ddp-sync's COUNTRIES — nothing in SQL.
-const COUNTRY_NAME: Record<string, string> = { DE: 'Germany', DK: 'Denmark', CH: 'Switzerland', SE: 'Sweden' };
-const COUNTRIES = ['DE', 'DK', 'CH', 'SE'] as const;
+// Names come from the RPC. Only the flags stay in code — they are drawn, and
+// Windows renders emoji flags as bare letters, which is why they are hand-cut
+// SVG. A market with no flag here simply shows its name.
 
 // Real SVG flags: Windows renders emoji flags as bare letters, which is what
 // made the markets read as "just the code" in the first place.
@@ -74,6 +82,13 @@ function Flag({ cc, className }: { cc: string; className?: string }) {
   if (cc === 'CH') return (
     <svg viewBox="0 0 32 32" className={cls} aria-hidden>
       <rect width="32" height="32" fill="#DA291C" /><rect x="13" y="6" width="6" height="20" fill="#fff" /><rect x="6" y="13" width="20" height="6" fill="#fff" />
+    </svg>
+  );
+  if (cc === 'CA') return (
+    <svg viewBox="0 0 32 16" className={cls} aria-hidden>
+      <rect width="32" height="16" fill="#fff" />
+      <rect width="8" height="16" fill="#D52B1E" /><rect x="24" width="8" height="16" fill="#D52B1E" />
+      <path fill="#D52B1E" d="M16 3.1l1.05 2.1 2.1-.5-.65 2.1 1.8.4-2.2 1.75.5 1.05-2.4-.4.3 2.9h-.9l.3-2.9-2.4.4.5-1.05L11.7 7.2l1.8-.4-.65-2.1 2.1.5z" />
     </svg>
   );
   if (cc === 'SE') return (
@@ -169,6 +184,10 @@ export default function DDPMarketsTab() {
   }, [from, to, country, load]);
 
   const k = data?.kpis;
+  // Names come from the payload; an unknown code falls back to itself rather
+  // than rendering "undefined" if a market is added while the tab is open.
+  const countryName = (cc: string) =>
+    data?.markets.find((m) => m.code === cc)?.name ?? cc;
   const weekly = useMemo(() => (data?.weekly ?? []).map((w) => ({
     ...w, label: new Date(`${w.weekStart}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }),
   })), [data]);
@@ -251,16 +270,16 @@ export default function DDPMarketsTab() {
           title="Every market together.">
           All markets
         </button>
-        {COUNTRIES.map((cc) => (
+        {(data?.markets ?? []).map(({ code: cc }) => (
           <button key={cc} type="button" onClick={() => setCountry(country === cc ? null : cc)}
             className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px]', country === cc ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
-            title={`Only ${COUNTRY_NAME[cc]}: KPIs, component gaps, weekly chart and ledger all narrow to this market. EU ad spend stays EU-wide - the campaigns cannot be split per country.`}>
-            <Flag cc={cc} /> {COUNTRY_NAME[cc]}
+            title={`Only ${countryName(cc)}: KPIs, component gaps, weekly chart and ledger all narrow to this market. EU ad spend stays EU-wide - the campaigns cannot be split per country.`}>
+            <Flag cc={cc} /> {countryName(cc)}
           </button>
         ))}
         {country && (
           <span className="text-[13px] text-muted-foreground">
-            viewing {COUNTRY_NAME[country]} only · ad spend stays EU-wide
+            viewing {countryName(country)} only · ad spend stays EU-wide
           </span>
         )}
       </div>
@@ -272,7 +291,7 @@ export default function DDPMarketsTab() {
           <div className="text-[13px] text-muted-foreground">DDP orders</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? k.orders : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
-            {k ? COUNTRIES.filter((c) => k.byCountry[c]).map((c) => `${c} ${k.byCountry[c]}`).join(' · ') : ''}
+            {k ? (data?.markets ?? []).map((mk) => mk.code).filter((c) => k.byCountry[c]).map((c) => `${c} ${k.byCountry[c]}`).join(' · ') : ''}
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5"
@@ -284,7 +303,7 @@ export default function DDPMarketsTab() {
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5"
-          title={`Meta spend of the EU campaigns (names starting with "Europe", currently ${k?.adCampaigns ?? 0}), inside the window. AUD; USD rows convert at the house monthly rate. They target Germany, Denmark and Switzerland TOGETHER, so neither the spend nor the MER can be split per country: MER is ALWAYS EU-wide — all three markets' merchandise revenue since the first ad day (${k?.adFirstDay ?? '—'}) ÷ this spend — and does not move with the country filter. Blended, not attributed.`}>
+          title={`Meta spend of the EU campaigns (names starting with "Europe", currently ${k?.adCampaigns ?? 0}), inside the window. AUD; USD rows convert at the house monthly rate. Those campaigns target several markets at once, so neither the spend nor the MER can be split per country: MER is the merchandise revenue of ${(k?.merMarkets ?? []).join(' + ') || 'no market'} since the first ad day (${k?.adFirstDay ?? '—'}) ÷ this spend, and it does not move with the country filter. Only markets these campaigns actually target are in that numerator — Canada advertises under its own separate campaign and Sweden has none, so neither is counted here. Blended, not attributed.`}>
           <div className="text-[13px] text-muted-foreground">EU ad spend</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.adSpend) : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
@@ -337,7 +356,7 @@ export default function DDPMarketsTab() {
           <div key={c.code} className="cursor-help rounded-xl border bg-card px-3.5 py-2.5"
             title={`${c.code}: ${c.orders} orders (${c.matchedOrders} matched), ${aud(c.revenue)} merchandise revenue. Charged ${aud(c.charged)} vs paid ${aud(c.paid)} over matched orders.${c.code === 'CH' ? ' Switzerland ships without ZONOS by design — matched with freight alone.' : ''}`}>
             <div className="flex items-baseline justify-between">
-              <span className="flex items-center gap-1.5 text-[13px] font-semibold"><Flag cc={c.code} /> {COUNTRY_NAME[c.code]} · {c.orders} orders</span>
+              <span className="flex items-center gap-1.5 text-[13px] font-semibold"><Flag cc={c.code} /> {countryName(c.code)} · {c.orders} orders</span>
               <span className={cn('text-sm font-bold tabular-nums', (c.net ?? 0) < 0 ? 'text-red-600' : 'text-emerald-700')}>
                 {c.matchedOrders
                   ? <>{aud(c.netPerOrder, 2)}/order <span className="font-normal text-muted-foreground">· {c.matchedOrders}/{c.orders} matched</span></>
@@ -485,7 +504,7 @@ export default function DDPMarketsTab() {
                     title={r.tracking ? `${r.tracking}${r.carrier ? ` · ${r.carrier}` : ''}` : 'no tracking yet'}>
                     <td className="py-1.5 pr-2 font-semibold text-foreground">{r.order}</td>
                     <td className="py-1.5 pr-2 whitespace-nowrap">{new Date(`${r.date}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}</td>
-                    <td className="py-1.5 pr-2 whitespace-nowrap"><span className="flex items-center gap-1.5"><Flag cc={r.country} /> {COUNTRY_NAME[r.country]}</span></td>
+                    <td className="py-1.5 pr-2 whitespace-nowrap"><span className="flex items-center gap-1.5"><Flag cc={r.country} /> {countryName(r.country)}</span></td>
                     <td className="border-l py-1.5 pl-2 text-right">{n2(r.chargedShipping)}</td>
                     <td className="py-1.5 pl-2 text-right">{n2(r.chargedDuties)}</td>
                     <td className="py-1.5 pl-2 text-right">{n2(r.chargedTaxes)}</td>
