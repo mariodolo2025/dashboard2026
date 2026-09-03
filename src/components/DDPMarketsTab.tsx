@@ -9,8 +9,8 @@
 // One order, three sources, reconciled server-side by ddp_markets_dashboard:
 //   charged  — Shopify checkout (shipping + duties + taxes)
 //   freight  — Starshipit label cost
-//   ZONOS    — duties/taxes/fees ZONOS bills Dolo (CH ships
-//              without ZONOS by design and is complete with freight alone)
+//   ZONOS    — duties/taxes/fees ZONOS bills Dolo, for the markets whose
+//              ddp_markets.zonos_expected is true; the rest complete on freight
 //
 // Everything shown is AUD. Layout follows the approved mockup: KPI strip,
 // component gaps + weekly trend, needs-attention, and the per-order ledger
@@ -37,10 +37,19 @@ interface Kpis {
   chargedTaxes: number; paidTotal: number; paidFreight: number; paidZonosDT: number;
   paidZonosFees: number; chargedMatched: number; paidMatched: number;
   netAbsorbed: number; netPerOrder: number; recoveryPct: number | null;
-  adSpend: number; adCampaigns: number; adFirstDay: string | null; mer: number | null; revenueSinceAds: number;
-  /** The market codes whose revenue sits in the MER numerator — only those the
-   *  'Europe%' campaigns actually target, which is not every active market. */
-  merMarkets: string[];
+  /** Total Meta spend across every advertising region in the window. */
+  adSpend: number;
+  /** One entry per advertising region, each with its OWN ratio. Canada buys its
+   *  own campaign and Europe buys one that names Germany and Denmark together,
+   *  so a single blended MER would divide one region's revenue by another's
+   *  spend. Never sum the mers; sum the spends. */
+  adRegions: {
+    region: string; markets: string[]; spend: number; campaigns: number;
+    firstDay: string | null; revenueSinceAds: number; mer: number | null;
+    /** Days Meta actually reported spend on — NOT the calendar span since the
+     *  first ad day. Meta's rows lag, and a paused campaign leaves gaps. */
+    daysWithSpend: number;
+  }[];
 }
 interface Component { key: string; charged: number; paid: number; gap: number; perOrder: number; orders: number }
 interface Week { weekStart: string; charged: number; paid: number; orders: number }
@@ -116,13 +125,13 @@ const clampFrom = (d: string) => (d < DDP_START ? DDP_START : d);
 
 // Every number on this screen names its source on hover.
 const T = {
-  orders: 'Shopify orders shipped to Germany, Denmark or Switzerland in the window (store days, Australia/Brisbane). Source: ddp_shipments, filled by ddp-sync.',
+  orders: 'Shopify orders shipped to a live DDP market in the window (store days, Australia/Brisbane). Which markets are live is ddp_markets.active. Source: ddp_shipments, filled by ddp-sync.',
   charged: 'What customers paid at checkout for shipping + duties + taxes, in AUD (Shopify shop_money USD × the monthly USD→AUD rate the whole dashboard uses). Merchandise is NOT included.',
   paid: 'What Dolo actually paid: Starshipit label cost + everything ZONOS billed (duties, taxes, fees). AUD as billed.',
-  net: 'Charged − paid, summed over MATCHED orders only (both legs present; CH needs freight only). Negative = Dolo absorbs the difference.',
+  net: 'Charged − paid, summed over MATCHED orders only — both legs present, or freight alone where the market does not bill through ZONOS. Negative = Dolo absorbs the difference.',
   recovery: 'Charged ÷ paid over matched orders. 100% = customers cover exactly what the orders cost to land.',
   compShipping: 'Shipping charged at checkout vs the Starshipit label cost, over matched orders in the window.',
-  compDT: 'Duties + taxes charged at checkout vs what ZONOS billed. DE + DK only — Switzerland has no ZONOS leg by design.',
+  compDT: 'Duties + taxes charged at checkout vs what ZONOS billed. Only the markets that bill through ZONOS are in here; the others have no such leg to compare.',
   compFees: 'ZONOS per-order service fees. Never charged to the customer — a structural cost of selling DDP.',
   weekly: 'Charged vs paid per week (matched orders, store weeks starting Monday; the first and last week are clipped to the selected range). The vertical gap is what Dolo absorbs that week.',
   ledger: 'One row per order, three sources side by side. Net only appears when the order is fully matched.',
@@ -131,7 +140,7 @@ const T = {
   colTaxes: 'Taxes charged at checkout. Source: Shopify total_tax_set.',
   colChargedTotal: 'Shipping + duties + taxes charged, AUD.',
   colFreight: 'What the label cost, AUD. Source: Starshipit total_shipping_price.',
-  colZonosDT: 'Duties + taxes ZONOS billed for this tracking, AUD. CH: not applicable by design.',
+  colZonosDT: 'Duties + taxes ZONOS billed for this tracking, AUD. Blank where the market does not bill through ZONOS.',
   colZonosFees: 'ZONOS per-order service fee, AUD.',
   colPaidTotal: 'Freight + ZONOS duties/taxes/fees, AUD.',
   colNet: 'Charged − paid for this order. Blank until every expected leg is matched.',
@@ -227,7 +236,7 @@ export default function DDPMarketsTab() {
         <div>
           <h2 className="text-lg font-bold leading-tight">DDP Markets</h2>
           <p className="text-[13px] text-muted-foreground">
-            Germany · Denmark · Switzerland — checkout vs real landed cost, order by order.
+            {(data?.markets ?? []).map((mk) => mk.name).join(' · ') || 'Loading'} — checkout vs real landed cost, order by order.
             Sources: <b className="text-foreground">Shopify</b> · <b className="text-foreground">Starshipit</b> · <b className="text-foreground">ZONOS</b>.
             All amounts in <b className="text-foreground">AUD</b>.
           </p>
@@ -303,13 +312,37 @@ export default function DDPMarketsTab() {
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5"
-          title={`Meta spend of the EU campaigns (names starting with "Europe", currently ${k?.adCampaigns ?? 0}), inside the window. AUD; USD rows convert at the house monthly rate. Those campaigns target several markets at once, so neither the spend nor the MER can be split per country: MER is the merchandise revenue of ${(k?.merMarkets ?? []).join(' + ') || 'no market'} since the first ad day (${k?.adFirstDay ?? '—'}) ÷ this spend, and it does not move with the country filter. Only markets these campaigns actually target are in that numerator — Canada advertises under its own separate campaign and Sweden has none, so neither is counted here. Blended, not attributed.`}>
-          <div className="text-[13px] text-muted-foreground">EU ad spend</div>
+          title={`Meta spend inside the window, AUD (USD campaigns convert at the house monthly rate). Split by advertising region, never blended: each region's MER is ITS markets' merchandise revenue since ITS first ad day, divided by ITS spend. Europe's campaigns name their targets together so they cannot be split per country, and Canada buys separately - dividing one region's revenue by the other's spend would invent a return. Revenue counts only from the first ad day, or a whole month of sales over a few days of spend would flatter the ads. A region with only a few days of spend gives a wild ratio; the day count is shown for that reason. Markets nobody advertises (Sweden) have no MER at all. Blended within a region, not attributed.`}>
+          <div className="text-[13px] text-muted-foreground">Ad spend</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.adSpend) : '…'}</div>
-          <div className="text-[13px] text-muted-foreground tabular-nums">
-            {k ? (k.adSpend > 0
-              ? `since ${k.adFirstDay ? new Date(`${k.adFirstDay}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }) : '—'} · MER ${k.mer ?? '—'}× EU-wide`
-              : 'no EU campaigns in window') : ''}
+          <div className="text-[13px] text-muted-foreground tabular-nums space-y-0.5">
+            {!k ? '' : k.adRegions.filter((r) => r.spend > 0).length === 0
+              ? 'no campaigns in window'
+              : k.adRegions.filter((r) => r.spend > 0).map((r) => {
+                // Days Meta reported spend on, straight from the RPC. Deriving
+                // it from the calendar counted a day Meta had not reported yet.
+                const days = r.daysWithSpend;
+                return (
+                  <div key={r.region} className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-medium capitalize text-foreground/80">{r.markets.join('+')}</span>
+                    <span>{aud(r.spend)}</span>
+                    <span>· MER {r.mer ?? '—'}×</span>
+                    {/* A ratio built on a handful of days is noise, and 8.38x
+                        reads like a triumph unless the card says otherwise. The
+                        threshold is on the DAY COUNT, not on a hardcoded market:
+                        Europe looked exactly like this in its first week too. */}
+                    {days <= 7
+                      ? (
+                        <span className="text-amber-700 dark:text-amber-500">
+                          · started {r.firstDay
+                            ? new Date(`${r.firstDay}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })
+                            : '—'}, {days} day{days === 1 ? '' : 's'} of spend — too early to read
+                        </span>
+                      )
+                      : <span>· {days} days of spend</span>}
+                  </div>
+                );
+              })}
           </div>
         </div>
       </div>
@@ -317,7 +350,7 @@ export default function DDPMarketsTab() {
       {/* ── row B: the reconciliation, matched orders only ───────────────── */}
       <div className="grid grid-cols-3 gap-3">
         <div className="cursor-help rounded-xl border border-dashed bg-muted/30 p-3"
-          title={`Shipping + duties + taxes charged at checkout, but ONLY for the ${k?.matchedOrders ?? '…'} orders whose real costs are already known (freight + ZONOS; Switzerland needs freight only). This is the comparable half of the reconciliation — the total over every order sits below. AUD, monthly FX.`}>
+          title={`Shipping + duties + taxes charged at checkout, but ONLY for the ${k?.matchedOrders ?? '…'} orders whose real costs are already known (freight + ZONOS, or freight alone where the market does not bill through ZONOS). This is the comparable half of the reconciliation — the total over every order sits below. AUD, monthly FX.`}>
           <div className="text-[13px] text-muted-foreground">Charged to customers</div>
           <div className="mt-0.5 text-xl font-bold tabular-nums">
             {k ? aud(k.chargedMatched) : '…'}
@@ -339,7 +372,7 @@ export default function DDPMarketsTab() {
           </div>
         </div>
         <div className="cursor-help rounded-xl border border-dashed bg-muted/30 p-3"
-          title={`Charged minus paid over the matched orders only — the two figures to its left. PARTIAL by nature: ZONOS records arrive days after shipping, and the waiting orders are mostly DE/DK whose costs will push this DOWN when they land (Switzerland matches fastest and is profitable, so the early sample flatters the number). Negative = Dolo absorbs.`}>
+          title={`Charged minus paid over the matched orders only — the two figures to its left. PARTIAL by nature: ZONOS bills days after the parcel ships, so the orders still waiting carry costs that will push this DOWN when they land. Read it as the best case so far, not the result. Negative = Dolo absorbs.`}>
           <div className="text-[13px] text-muted-foreground">Net absorbed <span className="font-normal">(partial · {k ? `${k.matchedOrders}/${k.orders}` : '…'})</span></div>
           <div className={cn('mt-0.5 text-xl font-bold tabular-nums', (k?.netAbsorbed ?? 0) < 0 ? 'text-red-600' : 'text-emerald-700')}>
             {k ? aud(k.netAbsorbed) : '…'}
@@ -354,7 +387,7 @@ export default function DDPMarketsTab() {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {(data?.countries ?? []).map((c) => (
           <div key={c.code} className="cursor-help rounded-xl border bg-card px-3.5 py-2.5"
-            title={`${c.code}: ${c.orders} orders (${c.matchedOrders} matched), ${aud(c.revenue)} merchandise revenue. Charged ${aud(c.charged)} vs paid ${aud(c.paid)} over matched orders.${c.code === 'CH' ? ' Switzerland ships without ZONOS by design — matched with freight alone.' : ''}`}>
+            title={`${c.code}: ${c.orders} orders (${c.matchedOrders} matched), ${aud(c.revenue)} merchandise revenue. Charged ${aud(c.charged)} vs paid ${aud(c.paid)} over matched orders.`}>
             <div className="flex items-baseline justify-between">
               <span className="flex items-center gap-1.5 text-[13px] font-semibold"><Flag cc={c.code} /> {countryName(c.code)} · {c.orders} orders</span>
               <span className={cn('text-sm font-bold tabular-nums', (c.net ?? 0) < 0 ? 'text-red-600' : 'text-emerald-700')}>
@@ -364,7 +397,7 @@ export default function DDPMarketsTab() {
               </span>
             </div>
             <div className="text-[13px] text-muted-foreground tabular-nums">
-              revenue {aud(c.revenue)} · recovery {c.recoveryPct ?? '—'}%{c.code === 'CH' ? ' · no ZONOS (by design)' : ''}
+              revenue {aud(c.revenue)} · recovery {c.recoveryPct ?? '—'}%
             </div>
           </div>
         ))}
@@ -516,9 +549,9 @@ export default function DDPMarketsTab() {
                     </td>
                     <td className="py-1.5 pl-2 text-right">
                       {!r.zonosExpected
-                        ? <span title="Switzerland ships without ZONOS by design.">n/a</span>
+                        ? <span title="This market does not bill through ZONOS, so there is nothing to match — freight alone completes the order.">n/a</span>
                         : r.zonosDT === null
-                          ? <span className="rounded bg-muted px-1.5 py-0.5 text-[12px]" title="No ZONOS record yet — they appear once the label goes through the integration (live since 25 Aug).">awaiting</span>
+                          ? <span className="rounded bg-muted px-1.5 py-0.5 text-[12px]" title="No ZONOS record yet. They arrive days after the parcel ships, once it clears customs.">awaiting</span>
                           : n2(r.zonosDT)}
                     </td>
                     <td className="py-1.5 pl-2 text-right">{!r.zonosExpected ? '—' : r.zonosFees === null ? '' : n2(r.zonosFees)}</td>
