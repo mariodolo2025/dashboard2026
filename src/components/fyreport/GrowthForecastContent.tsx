@@ -88,10 +88,10 @@ const TABS: { id: Tab; label: string; icon: any }[] = [
 
 // ─── Formatting ─────────────────────────────────────────────────────────────
 
-const aud  = (v: number) => `$${Math.round(v).toLocaleString('en-AU')}`;
+const aud  = (v: number) => `A$${Math.round(v).toLocaleString('en-AU')}`;
 const audk = (v: number) =>
-  Math.abs(v) >= 10000 ? `$${Math.round(v / 1000)}k`
-  : Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(1)}k` : aud(v);
+  Math.abs(v) >= 10000 ? `A$${Math.round(v / 1000)}k`
+  : Math.abs(v) >= 1000 ? `A$${(v / 1000).toFixed(1)}k` : aud(v);
 const usd  = (v: number) => `US$${Math.round(v).toLocaleString('en-AU')}`;
 const usdk = (v: number) => (Math.abs(v) >= 1000 ? `US$${Math.round(v / 1000)}k` : usd(v));
 const num  = (v: number) => Math.round(v).toLocaleString('en-AU');
@@ -164,7 +164,7 @@ function T({ tip, children }: { tip: string; children: React.ReactNode }) {
 
 // ─── Model ──────────────────────────────────────────────────────────────────
 
-interface Row { i: number; label: string; opening: number; sells: number; arrives: number; closing: number; started: number }
+interface Row { i: number; label: string; opening: number; sells: number; arrives: number; closing: number; started: number; rate: number }
 interface Start { month: number; label: string; qty: number; cost: number; leadM: number }
 interface Plan extends Product {
   leadM: number; rows: Row[]; starts: Start[];
@@ -261,11 +261,36 @@ export function GrowthForecastContent() {
 
   const months = useMemo(() => {
     if (!S || !data) return [];
+    // Month 1 of the plan is the CURRENT month: its budget is still steerable,
+    // stock keeps selling through it, and a production run can start in it.
+    // Only its remaining days consume stock (frac); skipping the month made
+    // every balance one month too optimistic.
+    const now = new Date();
+    const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const restFrac = (daysIn - now.getDate() + 1) / daysIn;
     return budget.map((sp, idx) => ({
-      i: idx + 1, label: monthLabel(idx + 1), spend: sp,
+      i: idx + 1, label: monthLabel(idx), spend: sp,
       rev: data.baseline.revenue * Math.pow(sp / data.baseline.spend, S.bb),
+      frac: idx === 0 ? restFrac : 1,
     }));
   }, [S, data, budget]);
+
+  /** Plan-wide aggregates. The projection cards read THESE, so typing in any
+   *  month of the budget moves them — the end-budget figure alone ignored
+   *  every cell but the last one. */
+  const P = useMemo(() => {
+    if (!S || !data || months.length === 0) return null;
+    const planSpend = months.reduce((a, m) => a + m.spend, 0);
+    const planRev = months.reduce((a, m) => a + m.rev, 0);
+    const n = months.length;
+    const avgSpend = planSpend / n;
+    const avgRev = planRev / n;
+    return {
+      n, planSpend, planRev, avgSpend, avgRev,
+      mer: avgSpend > 0 ? avgRev / avgSpend : 0,
+      contribution: (avgRev - data.baseline.revenue) * S.cm1 - (avgSpend - data.baseline.spend),
+    };
+  }, [S, data, months]);
 
   /** Running balance per product, and the runs that keep it above water.
    *
@@ -279,32 +304,39 @@ export function GrowthForecastContent() {
     return S.list.map((s) => {
       const leadM = Math.max(1, Math.round(s.lead / 30));
       const arriving: Record<number, number> = {};
-      const rows: Row[] = []; const starts: Start[] = [];
+      const rows: Row[] = []; const starts: Start[] = []; const covers: number[] = [];
       let stock = s.stock;
       for (const p of months) {
         const opening = stock;
-        const sells = (p.rev * s.share) / s.price;
+        // The current month consumes only its remaining days (frac), but
+        // start/cover decisions are judged against the FULL monthly rate —
+        // near month end the prorated figure tends to zero and would never
+        // trigger a run.
+        const rate = (p.rev * s.share) / s.price;
+        const sells = rate * p.frac;
         const arrives = arriving[p.i] ?? 0;
         const closing = opening + arrives - sells;
         let inbound = 0;
         for (let j = p.i + 1; j <= p.i + leadM; j++) inbound += arriving[j] ?? 0;
         let started = 0;
-        if (closing + inbound < sells * (leadM + 1)) {
-          started = Math.ceil((sells * 3 - closing - inbound) / 50) * 50;
+        if (closing + inbound < rate * (leadM + 1)) {
+          started = Math.ceil((rate * 3 - closing - inbound) / 50) * 50;
           if (started > 0) {
             arriving[p.i + leadM] = (arriving[p.i + leadM] ?? 0) + started;
             starts.push({ month: p.i, label: p.label, qty: started, cost: started * s.cost, leadM });
           } else started = 0;
         }
-        rows.push({ i: p.i, label: p.label, opening, sells, arrives, closing, started });
+        rows.push({ i: p.i, label: p.label, opening, sells, arrives, closing, started, rate });
+        covers.push(closing / Math.max(rate, 1e-9));
         stock = closing;
       }
       const totalQty = starts.reduce((a, o) => a + o.qty, 0);
+      const avgRev = months.reduce((a, m) => a + m.rev, 0) / months.length;
       const sellsNow   = (data.baseline.revenue * s.share) / s.price;
-      const sellsAfter = (S.revenue * s.share) / s.price;
+      const sellsAfter = (avgRev * s.share) / s.price;
       return {
         ...s, leadM, rows, starts, totalQty, totalCost: totalQty * s.cost,
-        minCover: Math.min(...rows.map((r) => r.closing / Math.max(r.sells, 1e-9))),
+        minCover: Math.min(...covers),
         coverNow: s.stock / Math.max(sellsNow, 1e-9),
         coverAfter: s.stock / Math.max(sellsAfter, 1e-9),
       };
@@ -320,7 +352,7 @@ export function GrowthForecastContent() {
       </Card>
     </div>
   );
-  if (!data || !S) return (
+  if (!data || !S || !P) return (
     <div className="flex h-64 items-center justify-center gap-2 text-muted-foreground">
       <RefreshCw size={16} className="animate-spin" /> Loading forecast…
     </div>
@@ -350,7 +382,7 @@ export function GrowthForecastContent() {
   /** The bar the PROJECTION must clear: recomputed at the revenue the projection
    *  itself produces. Falls back to the benchmark when the workbook row is
    *  missing, so the report degrades instead of showing nothing. */
-  const TG_AT = targetAt(S.revenue) ?? (ue ? TG_TODAY : null);
+  const TG_AT = targetAt(P.avgRev) ?? (ue ? TG_TODAY : null);
   const totalQty  = plans.reduce((a, p) => a + p.totalQty, 0);
   const totalCost = plans.reduce((a, p) => a + p.totalCost, 0);
   const firstStart = plans.flatMap((p) => p.starts.map((o) => ({ ...o, sku: p.sku })))
@@ -582,7 +614,7 @@ export function GrowthForecastContent() {
               <T tip="Ad spend planned for each month of the horizon, in AUD. In 'By month' mode every cell is editable; in the other modes it shows what the rule produces.">Ad spend by month</T>
             </span>
             <span className="font-mono text-[12px] text-foreground/55">
-              total {audk(budget.reduce((a, v) => a + v, 0))} \u00b7 AUD
+              total {audk(budget.reduce((a, v) => a + v, 0))}
             </span>
             {budgetMode === 'manual' && (
               <button onClick={() => setManual([])}
@@ -594,7 +626,7 @@ export function GrowthForecastContent() {
             {budget.map((sp, idx) => (
               <div key={idx} className="min-w-[92px] flex-1 rounded border bg-background px-2 py-1.5">
                 <div className="font-mono text-[11.5px] uppercase tracking-wide text-foreground/60">
-                  {monthLabel(idx + 1)}
+                  {monthLabel(idx)}
                 </div>
                 {budgetMode === 'manual' ? (
                   <input type="number" step={5000} min={0}
@@ -723,21 +755,21 @@ export function GrowthForecastContent() {
             What the new budget returns, and whether the last dollar of it still pays.
           </p>
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-            <Stat label="Revenue / month" value={audk(S.revenue)} tone="accent"
-              sub={`${((S.revenue / data.baseline.revenue - 1) * 100).toFixed(1)}% vs today`}
-              tip="Today's revenue × (new spend ÷ today's spend) ^ elasticity." />
-            <Stat label="MER after" value={`${S.mer.toFixed(2)}×`}
-              tone={TG_AT !== null && S.mer >= TG_AT ? 'ok' : S.mer >= BE ? 'warn' : 'risk'}
+            <Stat label="Revenue / month · plan avg" value={audk(P.avgRev)} tone="accent"
+              sub={`${audk(P.planRev)} over ${P.n} months · ${((P.avgRev / data.baseline.revenue - 1) * 100).toFixed(1)}% vs today`}
+              tip={`Average projected monthly revenue over the ${P.n} months of the plan. Each month is projected from ITS OWN budget cell (today's revenue × (that month's spend ÷ today's spend) ^ elasticity), so editing any month moves this figure. AUD, ex tax.`} />
+            <Stat label="MER after" value={`${P.mer.toFixed(2)}×`}
+              tone={TG_AT !== null && P.mer >= TG_AT ? 'ok' : P.mer >= BE ? 'warn' : 'risk'}
               sub={`${data.baseline.mer.toFixed(2)}× today`}
-              tip="Projected revenue ÷ new spend. Falls as budget rises: that is what an elasticity below 1.00 means. It is judged against the target AT THIS REVENUE, not against today's." />
-            <Stat label="Return on the extra spend" value={`$${S.marginal.toFixed(2)}`}
+              tip="Projected plan revenue ÷ plan spend over the whole horizon. Falls as budget rises: that is what an elasticity below 1.00 means. It is judged against the target AT THIS REVENUE, not against today's." />
+            <Stat label="Return on the extra spend" value={`A$${S.marginal.toFixed(2)}`}
               tone={TG_AT !== null && S.marginal >= TG_AT ? 'ok' : S.marginal >= BE ? 'warn' : 'risk'}
               sub={S.marginal >= BE ? `Clears break-even (${BE.toFixed(2)})` : `BELOW break-even (${BE.toFixed(2)})`}
-              tip="Extra revenue ÷ extra spend — what the last dollar returns, not the average. This is the number that says when to stop." />
+              tip="Extra revenue ÷ extra spend between today's budget and the end budget — what the last dollar returns, not the average. This is the number that says when to stop. AUD per AUD." />
             <Stat label="Extra contribution / month"
-              value={`${S.contribution < 0 ? '−' : ''}${audk(Math.abs(S.contribution))}`}
-              tone={S.contribution >= 0 ? 'ok' : 'risk'} sub="After ad spend and variable cost"
-              tip="Extra revenue × contribution margin − extra ad spend. What reaches the bottom line each month, before fixed costs." />
+              value={`${P.contribution < 0 ? '−' : ''}${audk(Math.abs(P.contribution))}`}
+              tone={P.contribution >= 0 ? 'ok' : 'risk'} sub="After ad spend and variable cost"
+              tip="Extra revenue × contribution margin − extra ad spend, for the AVERAGE month of the plan vs today. What reaches the bottom line each month, before fixed costs. AUD." />
           </div>
 
           <Card className="mb-4 p-4">
@@ -745,12 +777,12 @@ export function GrowthForecastContent() {
               Efficiency against the two thresholds — at this projected revenue
             </div>
             <div className="relative h-7 overflow-hidden rounded border bg-muted/40">
-              <div className="absolute inset-y-0 left-0 bg-amber-500/20" style={{ width: `${Math.min(100, (S.mer / 4) * 100)}%` }} />
+              <div className="absolute inset-y-0 left-0 bg-amber-500/20" style={{ width: `${Math.min(100, (P.mer / 4) * 100)}%` }} />
               <div className="absolute inset-y-0 w-0.5 bg-red-500" style={{ left: `${(BE / 4) * 100}%` }} />
               {TG_AT !== null && (
                 <div className="absolute inset-y-0 w-0.5 bg-amber-500" style={{ left: `${Math.min(99.5, (TG_AT / 4) * 100)}%` }} />
               )}
-              <div className="absolute -inset-y-1 w-1 rounded bg-foreground" style={{ left: `${Math.min(99, (S.mer / 4) * 100)}%` }} />
+              <div className="absolute -inset-y-1 w-1 rounded bg-foreground" style={{ left: `${Math.min(99, (P.mer / 4) * 100)}%` }} />
             </div>
             {/* Labels sit at the SAME percentage as the line each one names.
                 They used to be spread by justify-between over four items, which
@@ -769,8 +801,8 @@ export function GrowthForecastContent() {
               <span className="absolute right-0">4.0</span>
             </div>
             <p className="mt-3 max-w-3xl text-[14px] text-foreground/70">
-              {S.mer < BE ? <><b className="text-red-600 dark:text-red-400">Below break-even.</b> At this budget the store loses money on the marginal sale.</>
-              : TG_AT !== null && S.mer < TG_AT ? <><b className="text-amber-600 dark:text-amber-400">Between the two lines.</b> Each sale contributes, but at this efficiency the business is not covering fixed costs plus the target margin.</>
+              {P.mer < BE ? <><b className="text-red-600 dark:text-red-400">Below break-even.</b> At this budget the store loses money on the marginal sale.</>
+              : TG_AT !== null && P.mer < TG_AT ? <><b className="text-amber-600 dark:text-amber-400">Between the two lines.</b> Each sale contributes, but at this efficiency the business is not covering fixed costs plus the target margin.</>
               : <><b className="text-emerald-600 dark:text-emerald-400">Above target.</b> This budget clears both thresholds.</>}
             </p>
           </Card>
@@ -874,7 +906,7 @@ export function GrowthForecastContent() {
                               <thead><tr className="border-b">
                                 <Th align="left" tip="Each month of the horizon.">Month</Th>
                                 <Th tip="Stock on hand at the start of the month: Main warehouse plus China plus what is on the water.">Opening</Th>
-                                <Th tip="Projected units sold that month: projected store revenue times this product's share of revenue, divided by its average price.">Sells</Th>
+                                <Th tip="Projected units sold that month: projected store revenue times this product's share of revenue, divided by its average price. The current month sells at the measured baseline rate, prorated to its remaining days.">Sells</Th>
                                 <Th tip="Units landing that month from a run started earlier.">Arrives</Th>
                                 <Th tip="Opening minus sells plus arrives. Turns red when it falls inside the lead time, meaning a stockout before anything can land.">Closing</Th>
                                 <Th tip="Units to put into production THIS month so they arrive before stock runs out.">Start now</Th>
@@ -887,7 +919,7 @@ export function GrowthForecastContent() {
                                     <td className="px-2 py-1.5 text-right font-mono tabular-nums text-red-600 dark:text-red-400">−{num(r.sells)}</td>
                                     <td className="px-2 py-1.5 text-right font-mono tabular-nums">{r.arrives ? `+${num(r.arrives)}` : '·'}</td>
                                     <td className={cn('px-2 py-1.5 text-right font-mono font-semibold tabular-nums',
-                                      r.closing < r.sells * p.leadM && 'text-red-600 dark:text-red-400')}>{num(r.closing)}</td>
+                                      r.closing < r.rate * p.leadM && 'text-red-600 dark:text-red-400')}>{num(r.closing)}</td>
                                     <td className="px-2 py-1.5 text-right font-mono tabular-nums">
                                       {r.started ? <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800 dark:bg-amber-950 dark:text-amber-400">{num(r.started)}</span> : '·'}
                                     </td>
@@ -927,7 +959,7 @@ export function GrowthForecastContent() {
           <div className="relative space-y-3 pl-7 before:absolute before:bottom-2 before:left-2 before:top-2 before:w-px before:bg-border">
             {months.map((m) => {
               const due = plans.flatMap((p) => p.starts.filter((o) => o.month === m.i)
-                .map((o) => ({ sku: p.sku, qty: o.qty, cost: o.cost, lead: p.lead, land: monthLabel(m.i + o.leadM) })));
+                .map((o) => ({ sku: p.sku, qty: o.qty, cost: o.cost, lead: p.lead, land: monthLabel(m.i - 1 + o.leadM) })));
               const cost = due.reduce((a, o) => a + o.cost, 0);
               return (
                 <div key={m.i} className="relative">
@@ -1104,11 +1136,12 @@ export function GrowthForecastContent() {
           <p className="mb-3 text-[14px] text-foreground/70">One page, ready to send.</p>
           <Card className="p-6">
             <p className="max-w-3xl text-[16px] leading-relaxed">
-              Raising ad spend from <b>{audk(data.baseline.spend)}</b> to <b>{audk(spend!)}</b> a month
-              projects revenue of <b>{audk(S.revenue)}</b>, up <b>{((S.revenue / data.baseline.revenue - 1) * 100).toFixed(0)}%</b>.
+              Raising ad spend from <b>{audk(data.baseline.spend)}</b> to an average of
+              {' '}<b>{audk(P.avgSpend)}</b> a month over the plan
+              projects revenue of <b>{audk(P.avgRev)}</b> a month, up <b>{((P.avgRev / data.baseline.revenue - 1) * 100).toFixed(0)}%</b>.
               The gap between those two percentages is the point: the return is real but not
-              proportional, and MER falls from {data.baseline.mer.toFixed(2)}× to {S.mer.toFixed(2)}× —
-              {TG_AT !== null && S.mer >= TG_AT ? ' still above' : ' below'} the
+              proportional, and MER falls from {data.baseline.mer.toFixed(2)}× to {P.mer.toFixed(2)}× —
+              {TG_AT !== null && P.mer >= TG_AT ? ' still above' : ' below'} the
               {' '}{TG_AT !== null ? TG_AT.toFixed(2) : TG_TODAY.toFixed(2)}× operating target
               {TG_AT !== null && Math.abs(TG_AT - TG_TODAY) >= 0.05
                 ? <> for a business of that size — the bar falls from {TG_TODAY.toFixed(2)}× because
@@ -1284,7 +1317,7 @@ export function GrowthForecastContent() {
               and revenue is in it. Fixed costs are a smaller share of a bigger business, so the bar
               <b className="text-foreground"> falls as you grow</b>. At today's
               {' '}{ue ? audk(ue.baselineRevenueUsd) : '—'} a month the target is {TG_TODAY.toFixed(2)}×;
-              at the {audk(S.revenue)} this projection produces it is
+              at the {audk(P.avgRev)} this projection produces it is
               {' '}{TG_AT !== null ? `${TG_AT.toFixed(2)}×` : '—'}.
               <b className="text-foreground"> The projection above is judged against that second number</b>,
               because judging a bigger business by a smaller one's bar calls a good budget a failure.
