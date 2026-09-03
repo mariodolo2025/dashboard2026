@@ -772,6 +772,31 @@ export function GrowthForecastContent() {
               tip="Extra revenue × contribution margin − extra ad spend, for the AVERAGE month of the plan vs today. What reaches the bottom line each month, before fixed costs. AUD." />
           </div>
 
+          {/* Month-by-month revenue, mirroring the budget strip above it: each
+              cell answers "what does THAT month's spend buy". */}
+          <Card className="mb-4 p-4">
+            <div className="mb-1.5 flex items-baseline gap-2">
+              <span className="font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
+                <T tip="Projected revenue for each month of the plan, from that month's own budget cell through the fitted curve. AUD, ex tax. The first month shows its full monthly rate.">Projected revenue by month</T>
+              </span>
+              <span className="font-mono text-[12px] text-foreground/55">
+                total {audk(P.planRev)}
+              </span>
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {months.map((m) => (
+                <div key={m.i} className="min-w-[92px] flex-1 rounded border bg-background px-2 py-1.5"
+                  title={`Projected revenue for ${m.label}: today's ${audk(data.baseline.revenue)} × (${audk(m.spend)} ÷ ${audk(data.baseline.spend)}) ^ ${S.bb.toFixed(2)}. MER = that revenue ÷ that month's spend. AUD, ex tax.`}>
+                  <div className="font-mono text-[11.5px] uppercase tracking-wide text-foreground/60">{m.label}</div>
+                  <div className="font-mono text-[14px] font-semibold tabular-nums">{audk(m.rev)}</div>
+                  <div className="font-mono text-[11px] tabular-nums text-foreground/55">
+                    {m.spend > 0 ? `${(m.rev / m.spend).toFixed(2)}× MER` : '—'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
           <Card className="mb-4 p-4">
             <div className="mb-3 font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
               Efficiency against the two thresholds — at this projected revenue
