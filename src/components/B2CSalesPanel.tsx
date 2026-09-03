@@ -176,7 +176,7 @@ function DeltaPill({ value }: { value: number | null }) {
 }
 
 function StatCard({
-  icon, label, value, usd, usdDecimals, sub, delta: d, accent,
+  icon, label, value, usd, usdDecimals, sub, note, noteTooltip, delta: d, accent, tooltip,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -185,11 +185,16 @@ function StatCard({
   usd?: number | null;
   usdDecimals?: boolean;
   sub?: string;
+  /** Extra companion line under the sub — e.g. the ship/tax legend. */
+  note?: string;
+  noteTooltip?: string;
   delta?: number | null;
   accent?: string;
+  /** Hover definition: source, window, universe, currency. */
+  tooltip?: string;
 }) {
   return (
-    <Card className="relative overflow-hidden p-4 border border-border/60">
+    <Card className="relative overflow-hidden p-4 border border-border/60" title={tooltip}>
       {accent && (
         <div
           className="absolute inset-x-0 top-0 h-[2px] opacity-70"
@@ -208,6 +213,11 @@ function StatCard({
         {d !== undefined && <DeltaPill value={d} />}
       </div>
       {sub && <p className="text-[11px] text-muted-foreground/70 leading-tight mt-1.5">{sub}</p>}
+      {note && (
+        <p className="text-[11px] text-muted-foreground leading-tight mt-1 tabular-nums" title={noteTooltip}>
+          {note}
+        </p>
+      )}
     </Card>
   );
 }
@@ -481,6 +491,7 @@ export function B2CSalesPanel({
               icon={<Package size={15} />} label="Units" accent="#3b82f6"
               value={fmtNum(stats.summary.units)}
               sub={`${fmtNum(stats.previous.units)} in the previous period`}
+              tooltip={'Units sold on Shopify in the selected window (returns not deducted from the count). Delta vs the equally long window right before.'}
               delta={unitsDelta}
             />
             <StatCard
@@ -488,12 +499,24 @@ export function B2CSalesPanel({
               value={fmtAud(stats.summary.netAud)}
               usd={stats.summary.netUsd}
               sub={`${fmtAud(stats.previous.netAud)} ${fmtUsd(stats.previous.netUsd)} before`}
+              note={`ship ${fmtAud(stats.summary.shippingExTaxAud)} out · tax ${fmtAud(stats.summary.taxesTotalAud)} out`}
+              noteTooltip={
+                'Neither figure is inside Net sales. Ship = shipping charged on these orders (ex tax); ' +
+                'Net sales + ship equals the E-commerce Net Revenue base. Tax = all tax collected on ' +
+                'goods + shipping in the window. AUD at each order month’s USD→AUD rate.'
+              }
+              tooltip={
+                'Shopify sales lines, selected window, ' +
+                'goods only (no shipping), after discounts & returns, ex tax. ' +
+                'AUD at each order month’s USD→AUD rate. Matches Shopify Analytics “Net sales”.'
+              }
               delta={netDelta}
             />
             <StatCard
               icon={<ShoppingCart size={15} />} label="Orders" accent="#8b5cf6"
               value={fmtNum(stats.summary.orders)}
               sub={`${fmtNum(stats.previous.orders)} before`}
+              tooltip={'Distinct Shopify orders containing the selection in the window. An order with several SKUs counts once.'}
               delta={ordersDelta}
             />
             <StatCard
@@ -502,6 +525,7 @@ export function B2CSalesPanel({
               usd={aovUsd}
               usdDecimals
               sub="net per order, after discounts & returns"
+              tooltip={'Net sales (ex tax, goods only) ÷ distinct orders, over the selected window. AUD with USD alongside.'}
               delta={aovDelta}
             />
             <StatCard
@@ -511,6 +535,7 @@ export function B2CSalesPanel({
               sub={stats.summary.grossAud > 0
                 ? `${((stats.summary.discountsAud / stats.summary.grossAud) * 100).toFixed(1)}% of gross`
                 : undefined}
+              tooltip={'Discounts applied in the window (ex tax), already deducted from Net sales. Percentage is over gross sales.'}
             />
             <StatCard
               icon={<RotateCcw size={15} />} label="Returns" accent="#f97316"
@@ -519,6 +544,7 @@ export function B2CSalesPanel({
               sub={stats.summary.grossAud > 0
                 ? `${((stats.summary.returnsAud / stats.summary.grossAud) * 100).toFixed(1)}% of gross`
                 : undefined}
+              tooltip={'Refunded amounts in the window (ex tax), already deducted from Net sales. Percentage is over gross sales.'}
             />
           </div>
 

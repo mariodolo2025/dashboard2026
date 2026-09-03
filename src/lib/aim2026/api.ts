@@ -1493,6 +1493,11 @@ export interface ShopifySkuStats {
     /** How much sales tax was taken out to reach the figures above. */
     taxExcludedAud: number;
     taxExcludedUsd: number;
+    /** Shipping charged on these orders, ex tax — netAud + this equals the
+     * E-commerce "incl. shipping · excl. tax" Net Revenue base. */
+    shippingExTaxAud: number;
+    /** All tax collected on goods + shipping in the window. */
+    taxesTotalAud: number;
   };
   previous: { units: number; orders: number; netAud: number; netUsd: number };
   series: Array<{ bucket: string; units: number; net_aud: number; net_usd: number; orders: number }>;
