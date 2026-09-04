@@ -17,7 +17,7 @@ import { SkuSalesDialog } from '@/components/SkuSalesDialog';
 interface DateRange { from?: Date; to?: Date; }
 interface WebUpgradeTabProps { dateRange?: DateRange; setDateRange?: (r: DateRange) => void; }
 type Env = 'production' | 'preview' | 'all';
-type View = 'daily' | 'modules' | 'products' | 'blocks';
+type View = 'daily' | 'modules' | 'products' | 'compat' | 'blocks';
 
 interface Dash {
   params: { from: string; to: string; environment: string };
@@ -46,11 +46,43 @@ interface Dash {
   trend: Array<{ d: string; events: number; sessions: number; attributedRevenue?: number; storeRevenue?: number }>;
 }
 
+// Compatibility Guide, generation 2 (P2) — `web_upgrade_p2_performance`. The
+// guide was rebuilt and went live on 2026-09-04; its events carry
+// context = 'compatibility_p2' and a flow_id that is new on every page load, so
+// the funnel counts VISITS (page loads), not browsers. V3 numbers stay in the
+// legacy Module blocks view as history and are never mixed with these.
+interface P2Dash {
+  params: { from: string; to: string; environment: string };
+  generation: { label: string; liveSince: string; funnelSince: string; link: string };
+  funnel: { flows: number; pageViews: number; dataReady: number; dataError: number; brandOpen: number; modelSelect: number; productOpen: number; addClick: number; addSuccess: number; addError: number; addClickAttempts: number; addSuccessAttempts: number; addErrorAttempts: number; buyingFlows: number; orders: number };
+  sales: { orders: number; buyingFlows: number; lines: number; units: number; revenue: number; basketRevenue: number; aov: number | null };
+  kpis: { measuredFrom: string; measuredOrders: number; measuredBuyingFlows: number; measuredRevenue: number; directConversionPct: number | null; revenuePerVisit: number | null; directRevenue: number; dataReadyPct: number | null; dataErrorPct: number | null; brandPct: number | null; modelPct: number | null; productOpenPct: number | null; addClickPct: number | null; addSuccessPct: number | null; clickToAddPct: number | null; errorPerAttemptPct: number | null };
+  module: Dash['modules'][number];
+  byBrand: Array<{ brand: string; flows: number; modelFlows: number; productOpenFlows: number; addClickFlows: number; addSuccessFlows: number; orders: number; revenue: number }>;
+  byModel: Array<{ brand: string; model: string; flows: number; productOpenFlows: number; addClickFlows: number; addSuccessFlows: number; orders: number; revenue: number }>;
+  byProduct: Array<{ product: string; handle: string | null; productId: string | null; productOpenFlows: number; addClickFlows: number; addSuccessFlows: number; addSuccessAttempts: number; addErrorAttempts: number }>;
+  bySku: Array<{ sku: string; title: string | null; orders: number; units: number; revenue: number }>;
+  trend: Array<{ d: string; visits: number; adds: number; orders: number; revenue: number }>;
+  dataQuality: { eventsTotal: number; missingFlowId: number; missingProductOrVariant: number; previewEventsExcluded: number; ordersWithoutFlowId: number; linesWithNullContext: number; readyPlusErrorLeqViews: boolean; addSuccessLeqClick: boolean };
+}
+
+interface P1Dash {
+  params: { from: string; to: string; environment: string };
+  funnel: { views: number; machines: number; types: number; step3: number; addAttempts: number; addSuccess: number; addErrors: number; noResults: number; orders: number; revenue: number };
+  byMachine: Array<{ brand: string; machine: string; selections: number; configured: number; adds: number }>;
+  byWorkflow: Array<{ workflow: string; selections: number; adds: number }>;
+  byConfiguration: Array<{ brand: string; machine: string; workflow: string; handleStyle: string; body: string; end: string; adds: number }>;
+  details: Array<{ panel: string; views: number }>;
+  parts: { views: number; clicks: number };
+}
+
 const HELP: Record<string, string> = {
   module: 'Each module end to end: sessions exposed → views → clicks → adds (into the cart) → ORDERS (actually paid for) and the revenue behind them. The funnel columns are real-time from the pixel; the Orders/Revenue columns come from the Shopify sales sync — refreshed every few minutes by the fast sales sync (default 5 min — interval configurable in Config → Connections), with a full reconciliation 3×/day — so they can lag a few minutes. Adding to a cart is not a purchase — Orders is the real bottom line.',
   rewards: 'Reward tiers shoppers crossed IN THEIR CART, listed lowest tier first (free shipping $100 → 10% off $200 → 15% off $300). "carts" = distinct sessions whose basket reached that threshold; "bought" = how many of those sessions actually completed a purchase. Crossing a tier is intent, not a sale — expect far more unlocks than orders, because most carts are abandoned.',
   impact: 'A simple question: do people who use an upgrade module end up buying MORE per order than everyone else? It takes every paid order in the window, splits them into "used an upgrade module" vs "did not", and compares the average order value (AOV) and the average number of items. It is an observed gap between two groups of shoppers, not a controlled test.',
-  compat: 'Activity on the standalone Compatibility Guide page (/pages/compatibility-guide) — where a shopper browses by machine brand → model to find compatible parts. This is that page\'s funnel, end to end: landed on the page → picked their machine → clicked add → add confirmed. It stays empty until someone uses that page (adds made on a normal product page show up under the other sections, not here).',
+  compat: 'The OLD Compatibility Guide (V3), kept as history only. It was replaced by P2 on Sep 4, 2026 and stopped emitting that day, so any window after Sep 3 shows nothing here — look at View: Compatibility guide instead. Counted by attribution id (a browser, not a visit), the way V3 was measured.',
+  compatP2: 'The live Compatibility Guide page (P2, since Sep 4, 2026): the shopper picks machine brand → model and adds the matching parts straight from the guide. Every page load gets its own flow id, so a "visit" here is one load of the page — the same browser coming back twice counts twice. Visits are measured since Sep 5, 2026 08:18 AEST (when the pixel started forwarding the flow id); orders are attributed since Sep 4 through the line properties the guide writes on the cart. V3 history is never mixed in.',
+  p1: 'The dedicated Portafilters collection journey, measured separately from Compatibility Guide: page view → machine → portafilter type → finish → cart. Each page load receives its own flow id, so abandonment and popular machines are not distorted by repeat visits in the same browser.',
   brand: 'Which machine brand visitors picked in the guide, with each specific model listed underneath it. A brand (or model) with many picks but few adds means the guide finds their machine but the offer does not land.',
   screen: 'Only products a customer added THROUGH an upgrade module (machine finder or a recommendation). A product added with the normal Add-to-cart button is the base product, not a module add, so it will not appear here. Shows module clicks/adds plus sales now vs the frozen pre-launch run rate — the delta is a before/after observation (ad spend and seasonality move it too), not proof the modules caused it.',
   conv: 'Conversion rate: paid orders ÷ exposed sessions. The share of people who saw the module and ended up buying something it added.',
@@ -99,6 +131,21 @@ const DEFS = {
   counterfactual: 'What the module orders are worth against the store BEFORE the upgrades existed: the same orders repriced at the pre-launch store AOV (the frozen 84-day window ending Jul 21, every order in the shop). It is arithmetic, not a controlled test — product mix, ad spend and seasonality also move AOV.',
   preLaunchAov: 'The average value of EVERY paid store order in the 84 days before the new theme went live (Apr 29 → Jul 21, 2026) — the same frozen window the Products baseline uses. It does not change with the date range you pick.',
   dayByDay: 'Total store revenue per day, with the module-attributed part shaded underneath.',
+  // Compatibility Guide P2 — source web_upgrade_p2_events + upgrade_order_attribution, AUD net (ship-in / tax-out basis of shopify_sales_lines), production only unless "All".
+  p2Visits: 'Loads of the P2 guide page in the window — one per flow id, so the same browser coming back twice counts twice. Source: web_upgrade_p2_events (UTC days). Measured since Sep 5, 2026 08:18 AEST; earlier days have orders but no visits.',
+  p2Conv: 'Visits that ended in a paid order containing a line the guide placed, ÷ visits × 100. Counted per visit (flow id), not per order, so a repeat buyer from one visit does not inflate it. Only orders from the measured window (Sep 5 on) enter the ratio.',
+  p2Rpv: 'Direct P2 revenue (AUD net, lines the guide placed) ÷ visits. Only orders from the measured window (Sep 5 on) enter the ratio; the total underneath is the whole window.',
+  p2Revenue: 'AUD net revenue of PAID order lines the P2 guide placed in the cart (private line properties: source compatibility_guide, parent compatibility-guide-p2). Prorated by quantity against the Shopify line, so a SKU never counts twice. Since Sep 4, 2026. The rest of those baskets is not included.',
+  p2Orders: 'Paid orders with at least one line the P2 guide placed. Counted once per order, whatever the number of lines.',
+  p2Aov: 'Average value of the WHOLE baskets of the orders P2 contributed to — not just the guide’s line. AUD net.',
+  p2Funnel: 'Each stage counts DISTINCT visits (flow ids) that reached it, so repeating a step inside the same visit never inflates it. The percentage is against the previous stage. Bought = visits whose flow id is on a paid line.',
+  p2Attempts: 'Add-to-cart attempts are counted one by one (not per visit): a click that Shopify confirmed is a success, a rejected or failed request is an error. A later cart refresh failure does not turn a success into an error.',
+  p2Brand: 'Brand → model the shopper picked in P2. Visits = distinct page loads that selected it; Orders and Revenue come from the machine written on the paid line ("Brand / Model"), AUD net, prorated.',
+  p2Products: 'Products as the guide showed them: distinct visits that opened the detail, clicked add and got the add confirmed, plus the raw count of confirmed adds and errors. Keyed by product handle from the events.',
+  p2Skus: 'Paid P2 lines by SKU — units and AUD net revenue prorated against the Shopify line. Sales, not carts: a product with adds but no row here was added and then abandoned.',
+  p2Trend: 'Visits and confirmed adds fall on the UTC day of the event; orders and revenue on the Shopify order day (Brisbane). Two calendars, on purpose — the rest of the tab uses the same ones.',
+  p2Quality: 'The checks the P2 contract promises. Anything non-zero or false here means a number above is being under- or over-counted — read it before trusting the KPIs.',
+  p2LegacyGuide: 'The old guide (V3) as it was measured: attribution ids, not visits. Frozen history up to Sep 3, 2026. Not comparable with the P2 figures.',
 };
 
 // Dashed-underline definition term. The definition itself is shown by the
@@ -121,7 +168,7 @@ const MODULE_IMG: Record<string, string> = {
 // Plain-language explanation of each on-site module, keyed by the exact label the
 // RPC emits. Shown on hover of the module name.
 const MODULE_HELP: Record<string, string> = {
-  'Compatibility Guide': 'The dedicated Compatibility Guide page. The shopper browses by machine brand → model to find the parts that fit their machine, and can add them straight from the guide.',
+  'Compatibility Guide': 'The dedicated Compatibility Guide page, generation 2 (P2, live since Sep 4, 2026). The shopper browses by machine brand → model to find the parts that fit their machine, and can add them straight from the guide. Its "exposed sessions" are VISITS — one per page load — unlike the other modules, which count browsers. Detail in View: Compatibility guide.',
   'Machine finder (product page)': 'The "Find your machine" tool built into a product page: the shopper picks their espresso machine and it shows — and adds — the exact shower screen that fits it. Screens added here appear under the Products view.',
   'Compatible Additions (product page)': 'The "Complete your setup" recommendations rendered ON the product page itself, while the shopper is still looking at the product (before opening the cart). Same look as the cart one — different place and different code, so we count them apart to see which surface actually converts.',
   'Compatible Additions (cart)': 'The "Complete your setup" recommendations that appear INSIDE the cart / mini-cart drawer, as the shopper reviews the basket right before checkout.',
@@ -147,6 +194,10 @@ const variantOrigin = (label: string): string =>
 
 // First real production event (theme published): 2026-07-23 10:21 Brisbane.
 const LAUNCH = new Date('2026-07-23T00:21:48Z');
+// Compatibility Guide P2 replaced V3 as the live page on this store day (Brisbane).
+// Orders are attributed from here; visits only from Sep 5 08:18 AEST (pixel).
+const P2_LIVE_YMD = '2026-09-04';
+const P2_LINK = 'https://pesado585.com/pages/compatibility-guide?view=compatibility-p2';
 
 const REWARD_LABEL: Record<string, string> = { free_shipping: 'Free shipping', discount_10: '10% off', discount_15: '15% off' };
 const REWARD_TIER: Record<string, string> = { free_shipping: '$100', discount_10: '$200', discount_15: '$300' };
@@ -230,11 +281,16 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     try {
       const LEGACY: Record<string, View> = { current: 'modules', zones: 'products', summary: 'modules' };
       const s = localStorage.getItem('wu-view') ?? '';
-      if (['daily', 'modules', 'products', 'blocks'].includes(s)) return s as View;
+      if (['daily', 'modules', 'products', 'compat', 'blocks'].includes(s)) return s as View;
       return LEGACY[s] ?? 'daily';
     } catch { return 'daily'; }
   });
   const [data, setData] = useState<Dash | null>(null);
+  const [p1Data, setP1Data] = useState<P1Dash | null>(null);
+  const [p2Data, setP2Data] = useState<P2Dash | null>(null);
+  // Set when the P2 RPC is absent (deploy order) — the tab then says so
+  // explicitly instead of showing V3 numbers under the P2 label.
+  const [p2Err, setP2Err] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [storeOpen, setStoreOpen] = useState(false);
@@ -311,11 +367,18 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const fetchData = useCallback(async (fresh = false) => {
     if (!range.from || !range.to) return;
     setLoading(true); setError(null);
-    const { data: res, error: err } = await supabase.rpc('web_upgrade_performance', {
-      p_from: toYMD(range.from), p_to: toYMD(range.to), p_environment: env, p_fresh: fresh,
-    });
+    const params = { p_from: toYMD(range.from), p_to: toYMD(range.to), p_environment: env };
+    const [{ data: res, error: err }, { data: p1Res, error: p1Err }, { data: p2Res, error: p2E }] = await Promise.all([
+      supabase.rpc('web_upgrade_performance', { ...params, p_fresh: fresh }),
+      supabase.rpc('web_upgrade_p1_performance', params),
+      supabase.rpc('web_upgrade_p2_performance', params),
+    ]);
     if (err) { setError(err.message); setLoading(false); return; }
-    setData(res as Dash); setLoading(false);
+    setData(res as Dash);
+    setP1Data(p1Err ? null : p1Res as P1Dash);
+    setP2Data(p2E ? null : p2Res as P2Dash);
+    setP2Err(p2E ? p2E.message : null);
+    setLoading(false);
   }, [range.from, range.to, env]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -357,7 +420,23 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   // Module maths shared by Daily brief + Modules view.
   const rpsOf = (m: Dash['modules'][number]) => (m.sessions > 0 ? m.revenue / m.sessions : 0);
   const convOf = (m: Dash['modules'][number]) => (m.sessions > 0 ? (100 * m.orders) / m.sessions : 0);
-  const mods = useMemo(() => (data?.modules ?? []).filter((m) => m.module !== 'Other'), [data]);
+  // Does the picked window reach the P2 era at all? Before Sep 4 the guide was
+  // V3, which lives in Module blocks (legacy) and is not ranked against P2.
+  const p2InWindow = !!range.to && toYMD(range.to) >= P2_LIVE_YMD;
+  // The module list every ranking uses. The Compatibility Guide entry of the
+  // main RPC is V3 (attribution-id sessions, events that stopped on Sep 4);
+  // it is swapped for the P2 module (visits = page loads) whenever the window
+  // reaches the P2 era. If the P2 RPC is missing the guide is left OUT rather
+  // than shown under a label it no longer matches.
+  const modulesLive = useMemo<Dash['modules']>(() => {
+    const base = data?.modules ?? [];
+    if (!p2InWindow) return base;
+    const rest = base.filter((m) => m.module !== 'Compatibility Guide');
+    return p2Data ? [...rest, p2Data.module] : rest;
+  }, [data, p2Data, p2InWindow]);
+  const mods = useMemo(() => modulesLive.filter((m) => m.module !== 'Other'), [modulesLive]);
+  // Same swap for the narrative pieces that read data.modules directly.
+  const dataLive = useMemo<Dash | null>(() => (data ? { ...data, modules: modulesLive } : null), [data, modulesLive]);
   const bestRps = Math.max(...mods.map(rpsOf), 0.01);
   const bestConv = Math.max(...mods.map(convOf), 0.01);
   const bestAov = Math.max(...mods.map((m) => m.aov ?? 0), 1);
@@ -410,12 +489,12 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const secGuide = t ? (
     <>
             {/* Compatibility guide — full funnel + brand split */}
-            <SectionH eyebrow="Compatibility Guide page" title="Guide page funnel" help="compat" note="stats for /pages/compatibility-guide · landed → picked machine → clicked → added → purchased" href="https://pesado585.com/pages/compatibility-guide?view=compatibility-v3" linkLabel="Open the guide page" />
+            <SectionH eyebrow="Compatibility Guide · V3 (legacy)" title="Old guide funnel, until Sep 3, 2026" help="compat" note="history only — replaced by P2 on Sep 4 · counted by attribution id, not by visit · see View: Compatibility guide" />
             <div className="wu-two">
               <div className="wu-card">
                 <div className="wu-klabel wu-clickhead" onClick={headToggle('guidef')}><HelpTitle k="compat">Guide funnel</HelpTitle>{!openS('guidef') && data!.compatFunnel && <span className="wu-coll-sum tnum">{int(data!.compatFunnel.pageViews)} landed → {int(data!.compatFunnel.addSuccess)} added → {int(data!.compatFunnel.orders ?? 0)} bought</span>}<CollBtn id="guidef" /></div>
                 {openS('guidef') && (!data!.compatFunnel || data!.compatFunnel.pageViews === 0 ? (
-                  <div className="wu-muted">No activity on the Compatibility Guide page in this window. This fills in when someone uses <b>/pages/compatibility-guide</b> — adds made on a normal product page count elsewhere, not here.</div>
+                  <div className="wu-muted">No V3 activity in this window. V3 stopped on Sep 3, 2026 — the live guide (P2) is measured in <b>View: Compatibility guide</b>.</div>
                 ) : (
                   <div>
                     {(() => {
@@ -444,7 +523,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       });
                     })()}
                     <div className="wu-muted" style={{ marginTop: 10 }}>
-                      {int(data!.compatFunnel!.sessions)} sessions · {int(data!.compatFunnel!.completeKit)} complete-kit adds
+                      {int(data!.compatFunnel!.sessions)} attribution ids · {int(data!.compatFunnel!.completeKit)} complete-kit adds
                     </div>
                   </div>
                 ))}
@@ -486,6 +565,72 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               </div>
             </div>
 
+    </>
+  ) : null;
+
+  // Rendered only once web_upgrade_p1_performance exists — its migration is not
+  // applied yet, and a "not deployed" placeholder has no place on the live tab.
+  const secP1 = t && p1Data ? (
+    <>
+      <SectionH eyebrow="Portafilters P1" title="Portafilter journey" help="p1" note="collection page · machine → type → finish → cart" href="https://pesado585.com/collections/portafilter" linkLabel="Open Portafilters" />
+      <div className="wu-two">
+        <div className="wu-card">
+          <div className="wu-klabel wu-clickhead" onClick={headToggle('p1funnel')}>
+            <HelpTitle k="p1">P1 funnel</HelpTitle>
+            {!openS('p1funnel') && p1Data && <span className="wu-coll-sum tnum">{int(p1Data.funnel.views)} landed → {int(p1Data.funnel.addSuccess)} added</span>}
+            <CollBtn id="p1funnel" />
+          </div>
+          {openS('p1funnel') && (!p1Data ? (
+            <div className="wu-muted">P1 reporting is not deployed yet. Existing dashboard data remains available.</div>
+          ) : p1Data.funnel.views === 0 ? (
+            <div className="wu-muted">No Portafilters P1 activity in this window.</div>
+          ) : (() => {
+            const f = p1Data.funnel;
+            const steps: Array<[string, number]> = [
+              ['Landed on Portafilters', f.views],
+              ['Selected a machine', f.machines],
+              ['Selected PF type', f.types],
+              ['Reached finish builder', f.step3],
+              ['Clicked add', f.addAttempts],
+              ['Added to cart', f.addSuccess],
+              ['Purchased', f.orders],
+            ];
+            const top = Math.max(f.views, 1);
+            return <div>{steps.map(([label, n], i) => {
+              const prev = i === 0 ? null : steps[i - 1][1];
+              return <div key={label} className="wu-step">
+                <div className="wu-step-h"><span>{label}</span><b className="tnum">{int(n)}{prev != null && prev > 0 && <span className="wu-faint" style={{ fontWeight: 400 }}> · {Math.round((100 * n) / prev)}%</span>}</b></div>
+                <div className="wu-bar"><span style={{ width: `${(100 * n) / top}%` }} /></div>
+              </div>;
+            })}<div className="wu-muted" style={{ marginTop: 10 }}>{int(f.noResults)} searches without a match · {int(f.addErrors)} add errors · {money(f.revenue)} attributed revenue</div></div>;
+          })())}
+        </div>
+
+        <div className="wu-card">
+          <div className="wu-klabel wu-clickhead" onClick={headToggle('p1machines')}>
+            <HelpTitle k="p1">Most selected machines</HelpTitle>
+            {!openS('p1machines') && p1Data?.byMachine?.[0] && <span className="wu-coll-sum tnum">top {p1Data.byMachine[0].brand} {p1Data.byMachine[0].machine}</span>}
+            <CollBtn id="p1machines" />
+          </div>
+          {openS('p1machines') && (!p1Data || p1Data.byMachine.length === 0 ? (
+            <div className="wu-muted">No machine selections yet.</div>
+          ) : <div className="wu-scrollbody"><table className="wu-table">
+            <thead><tr><Th tip="Machine selected in the Portafilters P1 flow.">Machine</Th><Th right tip="Times this exact machine was selected.">Picked</Th><Th right tip="Flows that selected a portafilter type.">Configured</Th><Th right tip="Confirmed adds to cart.">Added</Th></tr></thead>
+            <tbody>{p1Data.byMachine.map((m) => <tr key={`${m.brand}·${m.machine}`}><td className="wu-mod">{m.brand} <span className="wu-faint">{m.machine}</span></td><td className="r tnum">{int(m.selections)}</td><td className="r tnum">{int(m.configured)}</td><td className="r tnum">{int(m.adds)}</td></tr>)}</tbody>
+          </table></div>)}
+        </div>
+      </div>
+
+      {p1Data && (p1Data.byWorkflow.length > 0 || p1Data.byConfiguration.length > 0) && <div className="wu-two" style={{ marginTop: 14 }}>
+        <div className="wu-card">
+          <div className="wu-klabel">Portafilter type selected</div>
+          {p1Data.byWorkflow.map((w) => <div className="wu-row" key={w.workflow}><span>{w.workflow}</span><b className="tnum">{int(w.selections)} <span className="wu-faint" style={{ fontWeight: 400 }}>picked · {int(w.adds)} added</span></b></div>)}
+        </div>
+        <div className="wu-card">
+          <div className="wu-klabel">Configurations added</div>
+          {p1Data.byConfiguration.slice(0, 8).map((c) => <div className="wu-row" key={`${c.brand}·${c.machine}·${c.workflow}·${c.handleStyle}·${c.body}·${c.end}`}><span>{c.brand} {c.machine}<small className="wu-faint" style={{ display: 'block' }}>{c.workflow} · {c.handleStyle} · {c.body} / {c.end}</small></span><b className="tnum">{int(c.adds)}</b></div>)}
+        </div>
+      </div>}
     </>
   ) : null;
 
@@ -670,7 +815,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     let famCards = byAbs.slice(0, 4);
     if (worst && !famCards.some((f) => f.family === worst.family)) famCards = [...famCards.slice(0, 3), worst];
 
-    const notes = signalNotes(data).slice(0, 3);
+    const notes = signalNotes(dataLive ?? data).slice(0, 3);
     const oi = data.orderImpact;
 
     return (
@@ -850,6 +995,263 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     );
   })();
 
+  // ——— Compatibility guide (P2) view ———
+  // Everything here comes from web_upgrade_p2_performance: visits are page
+  // loads (flow ids), orders are the lines the guide wrote on the cart. V3 is
+  // never read on this surface.
+  const compatView = (() => {
+    if (!t) return null;
+    const g = p2Data;
+    const fmtDay = (ymd: string) => format(new Date(ymd + 'T00:00:00'), 'MMM d');
+    const fromYmd = range.from ? toYMD(range.from) : '';
+    const pct = (v: number | null | undefined, dp = 1) => (v == null ? '—' : `${Number(v).toFixed(dp)}%`);
+    const rateOf = (n: number, prev: number | null) => (prev != null && prev > 0 ? `${Math.round((100 * n) / prev)}%` : null);
+    return (
+      <>
+        <SectionH eyebrow="Compatibility Guide · P2" title="The live guide, visit by visit" help="compatP2" note="live since Sep 4, 2026 · visits measured since Sep 5 08:18 AEST · V3 history stays in Module blocks" href={P2_LINK} linkLabel="Open the P2 guide" />
+        {!p2InWindow && (
+          <div className="wu-empty">This window ends before Sep 4, 2026 — the guide was still V3 then. Its history is in <b>View: Module blocks</b>; nothing V3 is shown here.</div>
+        )}
+        {p2InWindow && !g && (
+          <div className="wu-err"><AlertTriangle className="h-4 w-4 shrink-0" /><span><b>P2 Analytics not deployed</b> — <code>web_upgrade_p2_performance</code> is not answering{p2Err ? ` (${p2Err})` : ''}. Nothing V3 is shown under this label.</span></div>
+        )}
+        {p2InWindow && g && (() => {
+          const f = g.funnel; const k = g.kpis; const s = g.sales; const q = g.dataQuality;
+          const ratioNote = k.measuredFrom > fromYmd ? `ratios use orders from ${fmtDay(k.measuredFrom)}` : null;
+          const steps: Array<[string, number]> = [
+            ['Landed on the guide', f.pageViews],
+            ['Guide data loaded', f.dataReady],
+            ['Picked a brand', f.brandOpen],
+            ['Picked a model', f.modelSelect],
+            ['Opened a product', f.productOpen],
+            ['Clicked add', f.addClick],
+            ['Added to cart', f.addSuccess],
+            ['Bought (paid order)', f.buyingFlows],
+          ];
+          const top = Math.max(f.pageViews, 1);
+          const flag = (bad: boolean) => ({ color: bad ? 'var(--wu-neg)' : 'var(--wu-pos)', fontWeight: 600 } as const);
+          const qualityRows: Array<[string, string, boolean, string]> = [
+            ['Events in the window', int(q.eventsTotal), false, 'Every P2 event stored for the window and environment, whatever its action.'],
+            ['Events without a flow id', int(q.missingFlowId), q.missingFlowId > 0, 'Cannot be tied to a visit, so they are outside the funnel. Expected only for Sep 5 before 08:18 AEST (the pixel did not forward flow_id yet).'],
+            ['Add events without product or variant', int(q.missingProductOrVariant), q.missingProductOrVariant > 0, 'An add that names no product cannot be matched to a sale. Must be 0.'],
+            ['Preview events kept out', int(q.previewEventsExcluded), false, 'Test-theme events in the same window, excluded from every commercial figure while Production is selected.'],
+            ['Paid P2 orders without a flow id', int(q.ordersWithoutFlowId), q.ordersWithoutFlowId > 0, 'Counted in orders and revenue, but not in conversion per visit. Expected for orders before the sales sync learned _pesado_flow_id (Sep 5).'],
+            ['Orders with no context on the line', int(q.linesWithNullContext), q.linesWithNullContext > 0, 'Accepted as P2 only because the parent product says compatibility-guide-p2. Should fade to 0 as the first live days age out of the window.'],
+            ['Data loaded + data error ≤ visits', q.readyPlusErrorLeqViews ? 'OK' : 'FAIL', !q.readyPlusErrorLeqViews, 'A visit reports its data state at most once.'],
+            ['Adds confirmed ≤ add clicks', q.addSuccessLeqClick ? 'OK' : 'FAIL', !q.addSuccessLeqClick, 'A confirmed add always follows a click.'],
+          ];
+          return (
+            <>
+              <div className="wu-kpis" style={{ marginTop: 14 }}>
+                <Kpi label="P2 visits" def={DEFS.p2Visits} val={int(f.pageViews)} sub={`${int(f.addSuccess)} added to cart · ${int(f.dataError)} with a data error`} accent />
+                <Kpi label="Direct conversion" def={DEFS.p2Conv} val={pct(k.directConversionPct, 2)} sub={`${int(k.measuredBuyingFlows)} buying visits${ratioNote ? ` · ${ratioNote}` : ''}`} accent />
+                <Kpi label="Revenue per visit" def={DEFS.p2Rpv} val={k.revenuePerVisit == null ? '—' : `$${Number(k.revenuePerVisit).toFixed(2)}`} sub={`${money1(k.measuredRevenue)} in the measured days · AUD net`} />
+                <Kpi label="Direct revenue" def={DEFS.p2Revenue} val={money(s.revenue)} sub={<><D d={DEFS.p2Orders}>{int(s.orders)} orders</D> · {int(s.units)} units · <D d={DEFS.p2Aov}>AOV {money(s.aov)}</D></>} />
+              </div>
+
+              <div className="wu-two" style={{ marginTop: 14 }}>
+                <div className="wu-card">
+                  <div className="wu-klabel wu-clickhead" onClick={headToggle('p2funnel')}>
+                    <D d={DEFS.p2Funnel}>P2 funnel, by visit</D>
+                    {!openS('p2funnel') && <span className="wu-coll-sum tnum">{int(f.pageViews)} landed → {int(f.addSuccess)} added → {int(f.buyingFlows)} bought</span>}
+                    <CollBtn id="p2funnel" />
+                  </div>
+                  {openS('p2funnel') && (f.pageViews === 0 ? (
+                    <div className="wu-muted">No P2 visits in this window yet. Visits exist since Sep 5, 2026 08:18 AEST.</div>
+                  ) : (
+                    <div>
+                      {steps.map(([label, n], i) => {
+                        const prev = i === 0 ? null : steps[i - 1][1];
+                        const r = rateOf(n, prev);
+                        return (
+                          <div key={label} className="wu-step">
+                            <div className="wu-step-h">
+                              <span>{label}</span>
+                              <b className="tnum">{int(n)}{r && <span className="wu-faint" style={{ fontWeight: 400 }}> · {r}</span>}</b>
+                            </div>
+                            <div className="wu-bar"><span style={{ width: `${(100 * n) / top}%` }} /></div>
+                          </div>
+                        );
+                      })}
+                      <div className="wu-muted" style={{ marginTop: 10 }}>
+                        <D d={DEFS.p2Attempts}>Add attempts</D>: {int(f.addClickAttempts)} clicked · {int(f.addSuccessAttempts)} confirmed · <span style={f.addErrorAttempts > 0 ? { color: 'var(--wu-neg)' } : undefined}>{int(f.addErrorAttempts)} errors ({pct(k.errorPerAttemptPct)})</span> · click → add {pct(k.clickToAddPct)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="wu-card">
+                  <div className="wu-klabel wu-clickhead" onClick={headToggle('p2brand')}>
+                    <D d={DEFS.p2Brand}>Machine picked · brand → model</D>
+                    {!openS('p2brand') && g.byBrand[0] && <span className="wu-coll-sum tnum">{int(g.byBrand.reduce((a, b) => a + b.flows, 0))} visits picked a brand · top {g.byBrand[0].brand}</span>}
+                    <CollBtn id="p2brand" />
+                  </div>
+                  {openS('p2brand') && (g.byBrand.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No brand picked yet.</div> : (
+                    <div className="wu-scrollbody">
+                      <table className="wu-table">
+                        <thead><tr>
+                          <Th tip="Brand, with each model picked underneath it. From the P2 selection events.">Brand / model</Th>
+                          <Th right tip="Distinct visits (page loads) that picked this brand or model.">Visits</Th>
+                          <Th right tip="Of those visits, how many opened a recommended product’s detail.">Opened</Th>
+                          <Th right tip="Of those visits, how many clicked add on a recommended product.">Clicked</Th>
+                          <Th right tip="Of those visits, how many got an add confirmed by Shopify.">Added</Th>
+                          <Th right tip="Paid orders whose P2 line names this machine (Brand / Model on the line). Since Sep 4.">Orders</Th>
+                          <Th right tip="AUD net revenue of those P2 lines, prorated against the Shopify line.">Revenue</Th>
+                        </tr></thead>
+                        <tbody>
+                          {g.byBrand.map((b) => (
+                            <Fragment key={b.brand}>
+                              <tr className="wu-brand-row">
+                                <td className="wu-mod">{b.brand}</td>
+                                <td className="r tnum">{int(b.flows)}</td>
+                                <td className="r tnum wu-dim">{int(b.productOpenFlows)}</td>
+                                <td className="r tnum wu-dim">{int(b.addClickFlows)}</td>
+                                <td className="r tnum" style={{ color: b.flows > 0 && b.addSuccessFlows === 0 ? 'var(--wu-neg)' : 'var(--wu-crema)', fontWeight: 600 }}>{int(b.addSuccessFlows)}</td>
+                                <td className="r tnum">{int(b.orders)}</td>
+                                <td className="r tnum">{money1(b.revenue)}</td>
+                              </tr>
+                              {g.byModel.filter((m) => m.brand === b.brand).map((m) => (
+                                <tr key={b.brand + '·' + m.model} className="wu-model-row">
+                                  <td className="wu-model-name">{m.model}</td>
+                                  <td className="r tnum">{int(m.flows)}</td>
+                                  <td className="r tnum wu-dim">{int(m.productOpenFlows)}</td>
+                                  <td className="r tnum wu-dim">{int(m.addClickFlows)}</td>
+                                  <td className="r tnum" style={{ color: m.flows > 0 && m.addSuccessFlows === 0 ? 'var(--wu-neg)' : 'var(--wu-crema)', fontWeight: 600 }}>{int(m.addSuccessFlows)}</td>
+                                  <td className="r tnum">{int(m.orders)}</td>
+                                  <td className="r tnum">{money1(m.revenue)}</td>
+                                </tr>
+                              ))}
+                            </Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="wu-two" style={{ marginTop: 14 }}>
+                <div className="wu-card">
+                  <div className="wu-klabel wu-clickhead" onClick={headToggle('p2products')}>
+                    <D d={DEFS.p2Products}>Products in the guide</D>
+                    {!openS('p2products') && <span className="wu-coll-sum tnum">{int(g.byProduct.length)} products · {int(f.addSuccessAttempts)} adds</span>}
+                    <CollBtn id="p2products" />
+                  </div>
+                  {openS('p2products') && (g.byProduct.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No product opened or added yet.</div> : (
+                    <div className="wu-scrollbody">
+                      <table className="wu-table">
+                        <thead><tr>
+                          <Th tip="Product handle as the guide reported it in the event.">Product</Th>
+                          <Th right tip="Distinct visits that opened this product’s detail in the guide.">Opened</Th>
+                          <Th right tip="Distinct visits that clicked add on it.">Clicked</Th>
+                          <Th right tip="Distinct visits with a confirmed add of it.">Added</Th>
+                          <Th right tip="Confirmed adds, counted one by one (a visit can add twice).">Adds</Th>
+                          <Th right tip="Failed add attempts (Shopify rejected or the request failed).">Errors</Th>
+                        </tr></thead>
+                        <tbody>
+                          {g.byProduct.map((p) => (
+                            <tr key={p.product}>
+                              <td className="wu-mod">{p.handle ?? p.product}</td>
+                              <td className="r tnum wu-dim">{int(p.productOpenFlows)}</td>
+                              <td className="r tnum wu-dim">{int(p.addClickFlows)}</td>
+                              <td className="r tnum" style={{ fontWeight: 600 }}>{int(p.addSuccessFlows)}</td>
+                              <td className="r tnum">{int(p.addSuccessAttempts)}</td>
+                              <td className="r tnum" style={p.addErrorAttempts > 0 ? { color: 'var(--wu-neg)' } : undefined}>{int(p.addErrorAttempts)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="wu-card">
+                  <div className="wu-klabel wu-clickhead" onClick={headToggle('p2skus')}>
+                    <D d={DEFS.p2Skus}>Paid P2 lines, by SKU</D>
+                    {!openS('p2skus') && <span className="wu-coll-sum tnum">{int(s.orders)} orders · {money1(s.revenue)}</span>}
+                    <CollBtn id="p2skus" />
+                  </div>
+                  {openS('p2skus') && (g.bySku.length === 0 ? <div className="wu-muted" style={{ marginTop: 10 }}>No paid P2 line in this window.</div> : (
+                    <div className="wu-scrollbody">
+                      <table className="wu-table">
+                        <thead><tr>
+                          <Th tip="SKU on the paid line the guide placed, with the Shopify product title.">SKU</Th>
+                          <Th right tip="Paid orders containing this SKU as a P2 line.">Orders</Th>
+                          <Th right tip="Units of this SKU on P2 lines.">Units</Th>
+                          <Th right tip="AUD net revenue of those lines, prorated against the Shopify line so a repeated SKU is never counted twice.">Revenue</Th>
+                        </tr></thead>
+                        <tbody>
+                          {g.bySku.map((r) => (
+                            <tr key={r.sku}>
+                              <td className="wu-mod">{r.sku}<small className="wu-faint" style={{ display: 'block' }}>{r.title ?? '—'}</small></td>
+                              <td className="r tnum">{int(r.orders)}</td>
+                              <td className="r tnum">{int(r.units)}</td>
+                              <td className="r tnum" style={{ fontWeight: 600 }}>{money1(r.revenue)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="wu-two" style={{ marginTop: 14 }}>
+                <div className="wu-card">
+                  <div className="wu-klabel wu-clickhead" onClick={headToggle('p2trend')}>
+                    <D d={DEFS.p2Trend}>Day by day</D>
+                    {!openS('p2trend') && <span className="wu-coll-sum tnum">{g.trend.length} days</span>}
+                    <CollBtn id="p2trend" />
+                  </div>
+                  {openS('p2trend') && (
+                    <div className="wu-scrollbody">
+                      <table className="wu-table">
+                        <thead><tr>
+                          <Th tip="Calendar day. Visits and adds on the UTC day of the event; orders and revenue on the Shopify order day (Brisbane).">Day</Th>
+                          <Th right tip="Distinct P2 page loads that day (UTC). Blank before Sep 5, 2026 — not measured yet.">Visits</Th>
+                          <Th right tip="Distinct visits with a confirmed add that day (UTC).">Adds</Th>
+                          <Th right tip="Paid orders with a P2 line, by Shopify order day (Brisbane).">Orders</Th>
+                          <Th right tip="AUD net revenue of the P2 lines of those orders.">Revenue</Th>
+                        </tr></thead>
+                        <tbody>
+                          {g.trend.map((d) => (
+                            <tr key={d.d}>
+                              <td className="wu-mod">{fmtDay(d.d)}</td>
+                              <td className="r tnum">{d.d < '2026-09-04' ? '—' : int(d.visits)}</td>
+                              <td className="r tnum">{d.d < '2026-09-04' ? '—' : int(d.adds)}</td>
+                              <td className="r tnum">{int(d.orders)}</td>
+                              <td className="r tnum" style={{ fontWeight: 600 }}>{money1(d.revenue)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                <div className="wu-card">
+                  <div className="wu-klabel wu-clickhead" onClick={headToggle('p2quality')}>
+                    <D d={DEFS.p2Quality}>Data quality</D>
+                    {!openS('p2quality') && <span className="wu-coll-sum tnum">{qualityRows.filter((r) => r[2]).length === 0 ? 'all checks pass' : `${qualityRows.filter((r) => r[2]).length} to read`}</span>}
+                    <CollBtn id="p2quality" />
+                  </div>
+                  {openS('p2quality') && (
+                    <div style={{ marginTop: 10 }}>
+                      {qualityRows.map(([label, val, bad, tip]) => (
+                        <div className="wu-row" key={label} title={tip}><span>{label}</span><b className="tnum" style={flag(bad)}>{val}</b></div>
+                      ))}
+                      <div className="wu-muted" style={{ marginTop: 10 }}>Source: web_upgrade_p2_events + upgrade_order_attribution · {g.params.environment} · {fmtDay(g.params.from)} → {fmtDay(g.params.to)}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          );
+        })()}
+      </>
+    );
+  })();
+
   // ——— Modules view: the three-band module card ———
   const modulesView = (() => {
     if (!t || !data) return null;
@@ -904,7 +1306,11 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                       <span className="wu-rankchip" style={{ background: rank === sorted.length - 1 ? 'var(--wu-faint)' : 'var(--wu-crema)', color: '#fff', flex: 'none' }}>{rank + 1}</span>
                       <span style={{ fontFamily: "'Fraunces',Georgia,serif", fontWeight: 600, fontSize: 16, lineHeight: 1.15 }}><ModuleTip module={m.module}>{m.module}</ModuleTip></span>
                     </div>
-                    <div style={{ fontSize: 11.5, color: 'var(--wu-faint)', marginTop: 6 }}>{MODULE_SURFACE[m.module] ?? '—'} · {int(m.sessions)} exposed sessions · {t.exposedSessions > 0 ? Math.round((100 * m.sessions) / t.exposedSessions) : 0}% of traffic</div>
+                    {m.module === 'Compatibility Guide' && p2Data ? (
+                      <div style={{ fontSize: 11.5, color: 'var(--wu-faint)', marginTop: 6 }}><D d={DEFS.p2Visits}>Own page · P2 · measured since Sep 5</D> · {int(m.sessions)} visits (page loads, not browsers) · orders and revenue from Sep 5 only ·<span role="link" tabIndex={0} style={{ textDecoration: 'underline', cursor: 'pointer' }} onClick={() => pickView('compat')}>View: Compatibility guide</span></div>
+                    ) : (
+                      <div style={{ fontSize: 11.5, color: 'var(--wu-faint)', marginTop: 6 }}>{MODULE_SURFACE[m.module] ?? '—'} · {int(m.sessions)} exposed sessions · {t.exposedSessions > 0 ? Math.round((100 * m.sessions) / t.exposedSessions) : 0}% of traffic</div>
+                    )}
                   </div>
                   <div style={{ textAlign: 'right', flex: 'none' }}>
                     <div className="tnum" style={{ fontFamily: "'Fraunces',Georgia,serif", fontWeight: 600, fontSize: 26, color: 'var(--wu-crema)', lineHeight: 1 }}>{money(m.revenue)}</div>
@@ -990,7 +1396,10 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             </p>
           </div>
         )}
-        {secGuide}
+        {p2InWindow && !p2Data && (
+          <div className="wu-err" style={{ marginTop: 14 }}><AlertTriangle className="h-4 w-4 shrink-0" /><span><b>P2 Analytics not deployed</b> — the Compatibility Guide is left out of this ranking rather than shown with V3 numbers.{p2Err ? ` (${p2Err})` : ''}</span></div>
+        )}
+        {secP1}
       </>
     );
   })();
@@ -1320,7 +1729,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
               </DialogTrigger>
               <DialogContent className="max-w-xl max-h-[80vh] overflow-y-auto">
                 <DialogHeader><DialogTitle>What stands out</DialogTitle></DialogHeader>
-                {data ? <Signals data={data} windowLabel={`${rangeLabel} · ${env}`} /> : <div className="wu-muted">Loading…</div>}
+                {dataLive ? <Signals data={dataLive} windowLabel={`${rangeLabel} · ${env}`} /> : <div className="wu-muted">Loading…</div>}
               </DialogContent>
             </Dialog>
             <Dialog>
@@ -1391,6 +1800,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             <option value="daily">View: Daily brief</option>
             <option value="modules">View: Modules</option>
             <option value="products">View: Products</option>
+            <option value="compat">View: Compatibility guide</option>
             <option value="blocks">View: Module blocks</option>
           </select>
           {/* Manual calendar — same picker as the rest of the dashboard */}
@@ -1454,6 +1864,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             {view === 'daily' && daily}
             {view === 'modules' && modulesView}
             {view === 'products' && productsView}
+            {view === 'compat' && compatView}
 
             {view === 'blocks' && (
               <>
@@ -1535,6 +1946,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 </div>
 
                 {secGuide}
+                {secP1}
 
                 {/* Per product: module engagement + sales vs the pre-launch baseline */}
                 <SectionH eyebrow="Products" title="By screen &amp; product" help="screen" note="engagement + sales vs pre-launch run rate" />
@@ -1809,6 +2221,7 @@ function Signals({ data, windowLabel }: { data: Dash; windowLabel: string }) {
 function Glossary() {
   const G: Array<[string, string, string]> = [
     ['Exposed session', '—', 'A distinct anonymous visitor (attribution_id, persisted in their browser) that fired at least one upgrade-module event in the window.'],
+    ['P2 visit', '—', 'One load of the Compatibility Guide page (P2): a flow id minted on every load. Not a browser — the same person reloading counts twice. Only the guide is counted this way, since Sep 5, 2026.'],
     ['View', '—', 'The module was shown on screen (its panel or nudge rendered).'],
     ['Pick', '—', 'The shopper engaged the middle step — selected their machine, or opened a recommendation.'],
     ['Click', '—', "Clicked 'add' on something the module offered."],
