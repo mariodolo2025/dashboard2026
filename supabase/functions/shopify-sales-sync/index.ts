@@ -175,6 +175,10 @@ Deno.serve(async (req: Request) => {
             pesado_gap_before: pp['_pesado_gap_before'] || null,
             pesado_parent_product: pp['_pesado_parent_product'] || null,
             pesado_environment: pp['_pesado_environment'] ?? null,
+            // Compatibility P2 (2026-09): the page load that placed the line, and
+            // the context that separates P2 from V3 / PDP lines of the same source.
+            pesado_flow_id: pp['_pesado_flow_id'] || null,
+            pesado_context: pp['_pesado_context'] || null,
             order_attribution_id: na['__pesado_attribution_id'] ?? null,
             order_environment: na['__pesado_environment'] ?? null,
           });
