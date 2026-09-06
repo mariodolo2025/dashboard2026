@@ -1002,6 +1002,14 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
   const compatView = (() => {
     if (!t) return null;
     const g = p2Data;
+    // Mario, 2026-09-07: "el dia mas nuevo arriba, ademas es al pedo todos los
+    // dias anteriores al 4 de septiembre si nunca van a tener info."
+    // Both true. The guide did not exist before it went live, so every earlier
+    // day is a row of zeros BY CONSTRUCTION - checked over the whole window:
+    // 43 such days, not one of them carrying a visit, an add, an order or a
+    // cent. They sat between the header and the first real number, and the
+    // ascending order put the only day worth reading at the bottom of them.
+    const p2Trend = (g?.trend ?? []).filter((d) => d.d >= P2_LIVE_YMD).slice().reverse();
     const fmtDay = (ymd: string) => format(new Date(ymd + 'T00:00:00'), 'MMM d');
     const fromYmd = range.from ? toYMD(range.from) : '';
     const pct = (v: number | null | undefined, dp = 1) => (v == null ? '—' : `${Number(v).toFixed(dp)}%`);
@@ -1200,25 +1208,25 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 <div className="wu-card">
                   <div className="wu-klabel wu-clickhead" onClick={headToggle('p2trend')}>
                     <D d={DEFS.p2Trend}>Day by day</D>
-                    {!openS('p2trend') && <span className="wu-coll-sum tnum">{g.trend.length} days</span>}
+                    {!openS('p2trend') && <span className="wu-coll-sum tnum">{p2Trend.length} days</span>}
                     <CollBtn id="p2trend" />
                   </div>
                   {openS('p2trend') && (
                     <div className="wu-scrollbody">
                       <table className="wu-table">
                         <thead><tr>
-                          <Th tip="Calendar day. Visits and adds on the UTC day of the event; orders and revenue on the Shopify order day (Brisbane).">Day</Th>
+                          <Th tip="Calendar day, newest first. Visits and adds on the UTC day of the event; orders and revenue on the Shopify order day (Brisbane). The list starts the day the guide went live - there is nothing to show before it existed.">Day</Th>
                           <Th right tip="Distinct P2 page loads that day (UTC). Blank before Sep 5, 2026 — not measured yet.">Visits</Th>
                           <Th right tip="Distinct visits with a confirmed add that day (UTC).">Adds</Th>
                           <Th right tip="Paid orders with a P2 line, by Shopify order day (Brisbane).">Orders</Th>
                           <Th right tip="AUD net revenue of the P2 lines of those orders.">Revenue</Th>
                         </tr></thead>
                         <tbody>
-                          {g.trend.map((d) => (
+                          {p2Trend.map((d) => (
                             <tr key={d.d}>
                               <td className="wu-mod">{fmtDay(d.d)}</td>
-                              <td className="r tnum">{d.d < '2026-09-04' ? '—' : int(d.visits)}</td>
-                              <td className="r tnum">{d.d < '2026-09-04' ? '—' : int(d.adds)}</td>
+                              <td className="r tnum">{d.d < P2_LIVE_YMD ? '—' : int(d.visits)}</td>
+                              <td className="r tnum">{d.d < P2_LIVE_YMD ? '—' : int(d.adds)}</td>
                               <td className="r tnum">{int(d.orders)}</td>
                               <td className="r tnum" style={{ fontWeight: 600 }}>{money1(d.revenue)}</td>
                             </tr>
