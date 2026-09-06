@@ -135,6 +135,7 @@ const T = {
   compFees: 'ZONOS per-order service fees. Never charged to the customer — a structural cost of selling DDP.',
   weekly: 'Charged vs paid per week (matched orders, store weeks starting Monday; the first and last week are clipped to the selected range). The vertical gap is what Dolo absorbs that week.',
   ledger: 'One row per order, three sources side by side. Net only appears when the order is fully matched.',
+  colOrder: 'The Shopify order name, and in brackets the tracking number the parcel shipped under (Starshipit / Australia Post). ZONOS is searchable ONLY by tracking — it does not know the Shopify order name — so this is the handle to copy across. One click selects the whole number. "no tracking" means the label has not been created yet, or the order shipped outside Starshipit.',
   colShip: 'Shipping charged at checkout (AUD, monthly FX). Source: Shopify total_shipping_price_set.',
   colDuties: 'Duties charged at checkout. Source: Shopify current_total_duties_set.',
   colTaxes: 'Taxes charged at checkout. Source: Shopify total_tax_set.',
@@ -517,7 +518,7 @@ export default function DDPMarketsTab() {
                   <th className="border-l pb-1 text-center" title={T.colNet}>Net</th>
                 </tr>
                 <tr className="border-b text-left">
-                  <th className="py-1.5 pr-2 font-semibold">Order</th>
+                  <th className="cursor-help py-1.5 pr-2 font-semibold" title={T.colOrder}>Order (tracking)</th>
                   <th className="py-1.5 pr-2 font-semibold">Date</th>
                   <th className="py-1.5 pr-2 font-semibold">Mkt</th>
                   <th className="cursor-help border-l py-1.5 pl-2 text-right font-semibold" title={T.colShip}>Ship</th>
@@ -535,7 +536,16 @@ export default function DDPMarketsTab() {
                 {(data?.ledger ?? []).map((r) => (
                   <tr key={r.order} className={cn('border-b border-border/60', !r.matched && 'text-muted-foreground')}
                     title={r.tracking ? `${r.tracking}${r.carrier ? ` · ${r.carrier}` : ''}` : 'no tracking yet'}>
-                    <td className="py-1.5 pr-2 font-semibold text-foreground">{r.order}</td>
+                    {/* The tracking number is the ONLY handle ZONOS accepts — its
+                        portal has no notion of a Shopify order name — so it is
+                        printed, not left in a tooltip, and select-all so one
+                        click grabs it whole for pasting over there. */}
+                    <td className="py-1.5 pr-2 whitespace-nowrap">
+                      <span className="font-semibold text-foreground">{r.order}</span>
+                      {r.tracking
+                        ? <span className="ml-1 select-all font-normal text-muted-foreground">({r.tracking})</span>
+                        : <span className="ml-1 font-normal italic text-muted-foreground/70">(no tracking)</span>}
+                    </td>
                     <td className="py-1.5 pr-2 whitespace-nowrap">{new Date(`${r.date}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}</td>
                     <td className="py-1.5 pr-2 whitespace-nowrap"><span className="flex items-center gap-1.5"><Flag cc={r.country} /> {countryName(r.country)}</span></td>
                     <td className="border-l py-1.5 pl-2 text-right">{n2(r.chargedShipping)}</td>
