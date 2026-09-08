@@ -7,9 +7,9 @@
 // as entries in REPORTS.
 // =============================================================================
 
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, CalendarRange, Truck, Globe, Gauge, Printer, ShoppingBag, TrendingUp } from 'lucide-react';
+import { X, CalendarRange, Truck, Globe, Gauge, Printer, ShoppingBag, TrendingUp, Landmark, LockKeyhole, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { FYReportContent } from '@/components/fyreport/FYReportOverlay';
 import { FreightReportContent } from '@/components/fyreport/FreightReportContent';
@@ -17,6 +17,12 @@ import { FreightMarketContent } from '@/components/fyreport/FreightMarketContent
 import { ShippingPerformanceContent } from '@/components/fyreport/ShippingPerformanceContent';
 import { EcommerceReportContent } from '@/components/fyreport/EcommerceReportContent';
 import { GrowthForecastContent } from '@/components/fyreport/GrowthForecastContent';
+import { DoloBalanceBoundary } from '@/components/dolo-balance/DoloBalanceBoundary';
+import { fetchBalanceAccess } from '@/lib/doloBalanceApi';
+import type { DoloBalanceAccess } from '@/lib/doloBalance';
+import { supabase } from '@/lib/supabase';
+
+const DoloBalanceContent = lazy(() => import('@/components/dolo-balance/DoloBalanceContent').then(m => ({ default: m.DoloBalanceContent })));
 
 interface ReportsOverlayProps {
   open: boolean;
@@ -24,12 +30,13 @@ interface ReportsOverlayProps {
   initialReport?: ReportId;
 }
 
-type ReportId = 'growth' | 'fy' | 'ecommerce' | 'freight' | 'market' | 'performance';
+type ReportId = 'growth' | 'fy' | 'ecommerce' | 'freight' | 'market' | 'performance' | 'dolo-balance';
 
 // Fiscal year the current reports cover (Jul–Jun).
 const FY = 'FY25-26';
 
-const REPORTS: { id: ReportId; label: string; icon: any; render: () => JSX.Element }[] = [
+const REPORTS: { id: ReportId; label: string; icon: LucideIcon; render: () => JSX.Element }[] = [
+  { id: 'dolo-balance', label: 'DOLO Balance', icon: Landmark, render: () => <></> },
   // Forward-looking, so it sits above the FY reports: those close a year, this
   // one plans the next spend. It carries no FY suffix for the same reason.
   { id: 'growth', label: 'Spend to Stock', icon: TrendingUp, render: () => <GrowthForecastContent /> },
@@ -42,13 +49,57 @@ const REPORTS: { id: ReportId; label: string; icon: any; render: () => JSX.Eleme
 
 export function ReportsOverlay({ open, onClose, initialReport = 'fy' }: ReportsOverlayProps) {
   const [active, setActive] = useState<ReportId>(initialReport);
+  const [balanceAccess, setBalanceAccess] = useState<DoloBalanceAccess | null>(null);
+  const [balanceAccessError, setBalanceAccessError] = useState('');
+  const [balancePrintMetadata, setBalancePrintMetadata] = useState('No monthly snapshot selected');
 
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    let cancelled = false;
+    let request = 0;
+    let identity: string | null | undefined;
+    const refresh = async () => {
+      const currentRequest = ++request;
+      try {
+        const next = await fetchBalanceAccess();
+        if (!cancelled && currentRequest === request) { setBalanceAccess(next); setBalanceAccessError(''); }
+      } catch (error) {
+        if (!cancelled && currentRequest === request) {
+          setBalanceAccess(null);
+          setBalanceAccessError(error instanceof Error ? error.message : 'Unable to verify access.');
+        }
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 30_000);
+    const focus = () => { void refresh(); };
+    window.addEventListener('focus', focus);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const nextIdentity = session?.user.id ?? null;
+      // Clear on identity changes, but do not discard an editor's unsaved form
+      // during an ordinary token refresh for the same signed-in user.
+      if (identity !== nextIdentity || event === 'SIGNED_OUT') {
+        request++;
+        setBalanceAccess(null);
+      }
+      identity = nextIdentity;
+      queueMicrotask(() => { if (!cancelled) void refresh(); });
+    });
+    return () => { cancelled = true; request++; window.clearInterval(timer); window.removeEventListener('focus', focus); subscription.unsubscribe(); };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // A child drawer/help bubble handles its own Escape before Reports closes.
+      // Leave the existing Escape behavior of every other report unchanged.
+      if (active === 'dolo-balance' && (e.defaultPrevented || document.querySelector('[data-dolo-layer]'))) return;
+      onClose();
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, active]);
 
   useEffect(() => {
     if (!open) return;
@@ -60,6 +111,9 @@ export function ReportsOverlay({ open, onClose, initialReport = 'fy' }: ReportsO
   if (!open) return null;
 
   const current = REPORTS.find((r) => r.id === active) ?? REPORTS[0];
+  const canViewBalance = balanceAccess?.can_view === true;
+  const visibleReports = REPORTS.filter(report => report.id !== 'dolo-balance' || canViewBalance);
+  const balanceSelected = current.id === 'dolo-balance';
 
   return createPortal(
     <div
@@ -144,6 +198,7 @@ export function ReportsOverlay({ open, onClose, initialReport = 'fy' }: ReportsO
           <button
             type="button"
             onClick={() => window.print()}
+            disabled={balanceSelected && !canViewBalance}
             className="flex items-center gap-1.5 rounded-md border border-[#e8e8e3] px-2.5 py-1.5 text-xs font-medium text-[#2a2f38] hover:bg-[#faf9f7]"
           >
             <Printer size={14} /> Print / PDF
@@ -161,21 +216,25 @@ export function ReportsOverlay({ open, onClose, initialReport = 'fy' }: ReportsO
 
       {/* Sidebar + content */}
       <div className="flex min-h-0 flex-1">
-        <nav className="reports-no-print w-52 shrink-0 border-r border-[#e8e8e3] bg-white p-2">
-          {REPORTS.map((r) => {
+        <nav aria-label="Report selection" className={cn('reports-no-print shrink-0 border-r border-[#e8e8e3] bg-white', balanceSelected ? 'w-14 p-1 sm:w-52 sm:p-2' : 'w-52 p-2')}>
+          {visibleReports.map((r) => {
             const Icon = r.icon;
             return (
               <button
                 key={r.id}
                 type="button"
+                aria-label={r.label}
+                aria-current={active === r.id ? 'page' : undefined}
+                title={r.label}
                 onClick={() => setActive(r.id)}
                 className={cn(
-                  'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium',
+                  'flex w-full items-center gap-2 rounded-lg py-2 text-left text-sm font-medium',
+                  balanceSelected ? 'justify-center px-2 sm:justify-start sm:px-3' : 'px-3',
                   active === r.id ? 'bg-[#f1f1ee] text-foreground' : 'text-muted-foreground hover:bg-[#faf9f7]',
                 )}
               >
                 <Icon className="h-4 w-4" />
-                {r.label}
+                {balanceSelected ? <span className="hidden sm:inline">{r.label}</span> : r.label}
               </button>
             );
           })}
@@ -183,13 +242,27 @@ export function ReportsOverlay({ open, onClose, initialReport = 'fy' }: ReportsO
 
         {/* Keep each report mounted only when active so it loads on demand.
             key forces a fresh mount when switching. */}
-        <div className="min-h-0 flex-1" id="reports-print-root" key={current.id}>
+        <div className={cn('min-h-0 flex-1', balanceSelected && 'min-w-0')} id="reports-print-root" key={current.id} data-report={current.id}>
           {/* Print-only masthead so every printout is labelled. */}
           <div className="reports-print-only hidden px-6 pt-5">
             <h1 className="text-xl font-bold text-[#0f1115]">Dolo Ent PTY Ltd — {current.label}</h1>
-            <p className="text-xs text-[#828a98]">Frozen snapshot · fiscal year Jul 2025 – Jun 2026</p>
+            <p className="text-xs text-[#828a98]">{balanceSelected ? (canViewBalance ? balancePrintMetadata : 'Access restricted') : 'Frozen snapshot · fiscal year Jul 2025 – Jun 2026'}</p>
           </div>
-          {current.render()}
+          {balanceSelected ? (
+            canViewBalance && balanceAccess ? (
+              <DoloBalanceBoundary onLeaveBalance={() => setActive('fy')}>
+                <Suspense fallback={<div role="status" className="p-8 text-sm text-muted-foreground">Loading DOLO Balance…</div>}>
+                  <DoloBalanceContent access={balanceAccess} onPrintMetadata={setBalancePrintMetadata} />
+                </Suspense>
+              </DoloBalanceBoundary>
+            ) : (
+              <div role="status" className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+                <LockKeyhole className="h-6 w-6 text-muted-foreground" />
+                <h3 className="text-lg font-semibold">DOLO Balance is restricted</h3>
+                <p className="max-w-md text-sm text-muted-foreground">{balanceAccessError || 'Access must be granted by your administrator. Your other reports are unchanged.'}</p>
+              </div>
+            )
+          ) : current.render()}
         </div>
       </div>
     </div>,
