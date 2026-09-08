@@ -24,6 +24,14 @@
 .dolo-balance button:focus-visible, .dolo-drawer button:focus-visible, .dolo-confirm button:focus-visible, .dolo-help-button:focus-visible { outline: 2px solid #4a937c; outline-offset: 3px; }
 .dolo-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 30px; background: #f3eddd; color: #7e5d21; font-size: 11px; font-weight: 550; }
 .dolo-status-closed { background: #e6f0e9; color: var(--dolo-green); }
+.dolo-source-strip { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px 20px; padding: 14px 16px; border: 1px solid var(--dolo-border); border-radius: 9px; background: #f0f5ef; font-size: 11px; color: var(--dolo-muted); line-height: 1.6; }
+.dolo-source-strip strong { display: block; color: var(--dolo-ink); font-size: 12px; font-weight: 600; }
+.dolo-source-unavailable, .dolo-source-needs_review { color: #926728; }
+.dolo-source-ready { color: #4d7761; }
+.dolo-source-proof { margin-top: 18px; }
+.dolo-source-proof summary { color: var(--dolo-green); font-size: 12px; cursor: pointer; padding: 8px 0; }
+.dolo-source-proof pre { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 ui-monospace, monospace; border: 1px solid var(--dolo-border); border-radius: 7px; background: white; padding: 12px; margin: 10px 0; }
+.dolo-source-proof > button { margin-top: 8px; }
 .dolo-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--dolo-border); background: white; border-radius: 14px; overflow: visible; margin: 22px 0 28px; box-shadow: 0 3px 10px #18282103; }
 .dolo-kpi { padding: 25px 23px; min-width: 0; position: relative; }
 .dolo-kpi + .dolo-kpi:before { content: ''; position: absolute; width: 1px; top: 25px; bottom: 25px; left: 0; background: var(--dolo-border); }

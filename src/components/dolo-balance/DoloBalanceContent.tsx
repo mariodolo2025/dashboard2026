@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowRight, ChevronRight, FileClock, LockKeyhole, Plus, RefreshCw, ShieldCheck } from 'lucide-react';
 import {
   BALANCE_HELP, type BalanceBundle, type BalanceLine, type BalanceSnapshot, type DoloBalanceAccess,
-  changeInCents, decimalToCents, defaultAsAtDate, formatAsAt, formatMoney, snapshotCutoffDate, summarizeBalance,
+  balanceSourceLabel, changeInCents, decimalToCents, defaultAsAtDate, formatAsAt, formatCollectedAt, formatMoney, snapshotCutoffDate, summarizeBalance,
 } from '@/lib/doloBalance';
-import { closeBalanceSnapshot, createBalanceSnapshot, listBalanceSnapshots, loadBalanceSnapshot, restateBalanceSnapshot } from '@/lib/doloBalanceApi';
+import { closeBalanceSnapshot, collectBalanceSources, connectBalanceXero, createBalanceSnapshot, listBalanceSnapshots, loadBalanceSnapshot, restateBalanceSnapshot } from '@/lib/doloBalanceApi';
 import { BalanceLineDetails } from './BalanceLineDetails';
 import { BalanceAccessPanel } from './BalanceAccessPanel';
 import { DoloConfirm, DoloDrawer, DoloHelp } from './DoloPrimitives';
@@ -37,8 +37,8 @@ function BalanceSection({ title, help, lines, comparison, total, kind, onSelect 
       const change = previous && previous.classification === line.classification && previous.is_included === line.is_included ? changeInCents(line.amount_aud, previous.amount_aud) : null;
       const longAmount = formatMoney(decimalToCents(line.amount_aud), false).length > 12 || signedMoney(change).length > 12;
       return <button key={line.id} type="button" onClick={() => onSelect(line.key)} className={`dolo-line ${reference ? 'dolo-line-reference' : ''} ${longAmount ? 'dolo-line-wide' : ''}`} aria-label={`View ${line.label} details`}>
-        <span className="dolo-line-label">{line.label}{reference && <span className="dolo-line-subtitle">{line.key === 'meta_usd' ? 'Included in Meta' : 'Reference only · excluded'}</span>}{!reference && line.status !== 'reviewed' && line.amount_aud !== null && <span className="dolo-line-subtitle">Pending review</span>}</span>
-        <span className={`dolo-line-amount ${line.amount_aud === null && !reference ? 'dolo-line-missing' : ''}`}>{reference ? '—' : line.amount_aud === null ? 'Not entered' : formatMoney(decimalToCents(line.amount_aud), false)}</span>
+        <span className="dolo-line-label">{line.label}{reference && <span className="dolo-line-subtitle">{line.key === 'meta_usd' ? 'Included in Meta' : 'Reference only · excluded'}</span>}{!reference && (line.source_kind !== 'manual' || line.manual_override) ? <span className={`dolo-line-subtitle dolo-source-${line.manual_override ? 'manual' : line.source_status || 'pending'}`}>{balanceSourceLabel(line)}{line.status !== 'reviewed' && line.source_status === 'ready' ? ' · Pending review' : ''}</span> : !reference && line.status !== 'reviewed' && line.amount_aud !== null && <span className="dolo-line-subtitle">Pending review</span>}</span>
+        <span className={`dolo-line-amount ${line.amount_aud === null && !reference ? 'dolo-line-missing' : ''}`}>{reference ? '—' : line.amount_aud === null ? line.source_status === 'unavailable' ? 'Source blocked' : 'Not entered' : formatMoney(decimalToCents(line.amount_aud), false)}</span>
         <span className="dolo-line-change">{reference ? '—' : signedMoney(change)}</span><ChevronRight size={13} aria-hidden="true" />
       </button>;
     })}
@@ -65,6 +65,12 @@ export function DoloBalanceContent({ access, onPrintMetadata }: DoloBalanceConte
   const [busy, setBusy] = useState(false);
   const [lineSaving, setLineSaving] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [collecting, setCollecting] = useState(false);
+  const [connectingXero, setConnectingXero] = useState(false);
+  const [collectionError, setCollectionError] = useState('');
+  const [collectionMessage, setCollectionMessage] = useState('');
+  const collectionLock = useRef(false);
+  const attemptedCollections = useRef(new Set<string>());
   const requestId = useRef(0);
 
   const reloadList = useCallback(async (preferredId?: string) => {
@@ -89,7 +95,7 @@ export function DoloBalanceContent({ access, onPrintMetadata }: DoloBalanceConte
   useEffect(() => {
     const version = ++requestId.current;
     let cancelled = false;
-    setBundle(null); setSelectedLineKey(null); setComparison(null); setComparisonId('');
+    setBundle(null); setSelectedLineKey(null); setComparison(null); setComparisonId(''); setCollectionError(''); setCollectionMessage('');
     if (!selectedId || !access.can_view) return;
     setLoadingSnapshot(true); setError('');
     loadBalanceSnapshot(selectedId).then((result) => {
@@ -120,6 +126,11 @@ export function DoloBalanceContent({ access, onPrintMetadata }: DoloBalanceConte
   const liabilities = sortedLines.filter((line) => line.classification === 'liability' || (line.key === 'meta_usd' && line.classification === 'reference'));
   const unclassified = sortedLines.filter((line) => line.classification === 'unclassified' || (line.classification === 'reference' && line.key !== 'meta_usd'));
   const selectedSnapshot = bundle?.snapshot;
+  const automaticLines = sortedLines.filter((line) => line.source_kind !== 'manual' && !line.manual_override);
+  const blockedSources = automaticLines.filter((line) => line.source_status === 'unavailable').length;
+  const sourceReviewCount = automaticLines.filter((line) => line.source_status === 'needs_review').length;
+  const importedSources = automaticLines.filter((line) => line.source_status === 'ready').length;
+  const latestCollection = sortedLines.map((line) => line.source_collected_at).filter((value): value is string => !!value).sort().at(-1);
   const metadata = selectedSnapshot ? `As at ${formatAsAt(selectedSnapshot.as_at_date)} · Cut-off ${formatAsAt(snapshotCutoffDate(selectedSnapshot.as_at_date))}, end of day Brisbane · Version ${selectedSnapshot.version} · ${selectedSnapshot.status === 'closed' ? 'Closed snapshot' : 'Draft — pending review'}` : 'DOLO Balance · No snapshot loaded';
 
   useEffect(() => { onPrintMetadata?.(metadata); }, [metadata, onPrintMetadata]);
@@ -131,6 +142,49 @@ export function DoloBalanceContent({ access, onPrintMetadata }: DoloBalanceConte
     if (generation !== requestId.current) return;
     setBundle(result);
     await reloadList();
+  }
+
+  const collectSources = useCallback(async (target: BalanceBundle) => {
+    if (collectionLock.current || !access.can_edit || target.snapshot.status !== 'draft') return;
+    collectionLock.current = true;
+    attemptedCollections.current.add(target.snapshot.id);
+    const generation = requestId.current;
+    setCollecting(true); setCollectionError(''); setCollectionMessage('');
+    try {
+      const result = await collectBalanceSources(target.snapshot.id, target.snapshot.revision);
+      const refreshed = await loadBalanceSnapshot(target.snapshot.id);
+      if (generation !== requestId.current) return;
+      setBundle(refreshed);
+      setSnapshots((current) => current.map((snapshot) => snapshot.id === refreshed.snapshot.id ? refreshed.snapshot : snapshot));
+      setCollectionMessage(`${result.imported} source result${result.imported === 1 ? '' : 's'} saved. ${result.preserved} manual entr${result.preserved === 1 ? 'y' : 'ies'} preserved.`);
+      if (result.errors?.length) setCollectionError(result.errors.join(' '));
+    } catch (failure) {
+      if (generation === requestId.current) {
+        setCollectionError(failureText(failure));
+        // A response can be interrupted after import; fetch persisted state, never assume rollback.
+        try { const refreshed = await loadBalanceSnapshot(target.snapshot.id); if (generation === requestId.current) setBundle(refreshed); } catch { /* Keep the last explicitly saved state visible. */ }
+      }
+    } finally { collectionLock.current = false; setCollecting(false); }
+  }, [access.can_edit]);
+
+  useEffect(() => {
+    if (!bundle || busy || lineSaving || !access.can_edit || bundle.snapshot.status !== 'draft'
+      || bundle.lines.some((line) => line.source_collected_at) || attemptedCollections.current.has(bundle.snapshot.id)) return;
+    void collectSources(bundle);
+  }, [bundle, busy, lineSaving, access.can_edit, collectSources]);
+
+  async function connectXero() {
+    if (!access.can_manage_access || connectingXero) return;
+    const authWindow = window.open('about:blank', '_blank');
+    if (!authWindow) { setCollectionError('Allow pop-ups for this dashboard, then select Connect Xero again.'); return; }
+    authWindow.opener = null;
+    setConnectingXero(true); setCollectionError('');
+    try {
+      const url = await connectBalanceXero(import.meta.env.VITE_SUPABASE_URL);
+      authWindow.location.replace(url);
+      setCollectionMessage('Complete read-only access authorisation in Xero, then select Refresh sources here.');
+    } catch (failure) { authWindow.close(); setCollectionError(failureText(failure)); }
+    finally { setConnectingXero(false); }
   }
 
   async function retry() {
@@ -174,24 +228,29 @@ export function DoloBalanceContent({ access, onPrintMetadata }: DoloBalanceConte
     <header className="dolo-heading">
       <div><p className="dolo-eyebrow" style={{ marginBottom: 8 }}>Reports / Monthly position</p><h1>DOLO Balance</h1><p>What we have, what we owe and what's left.</p></div>
       {snapshots.length > 0 && <div className="dolo-controls reports-no-print">
-        <label className="dolo-field"><span>Snapshot</span><select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} disabled={busy}>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshotLabel(snapshot)}</option>)}</select></label>
+        <label className="dolo-field"><span>Snapshot</span><select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} disabled={busy || collecting}>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshotLabel(snapshot)}</option>)}</select></label>
         <label className="dolo-field"><span>Compare with</span><select value={comparisonId} onChange={(event) => setComparisonId(event.target.value)} disabled={busy || loadingSnapshot}><option value="">No comparison</option>{snapshots.filter((snapshot) => snapshot.id !== selectedId && snapshot.status === 'closed').map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshotLabel(snapshot)}</option>)}</select></label>
       </div>}
     </header>
     <div className="dolo-toolbar">
       <div>{selectedSnapshot ? <><span className={`dolo-status ${selectedSnapshot.status === 'closed' ? 'dolo-status-closed' : ''}`}>{selectedSnapshot.status === 'closed' ? <LockKeyhole size={12} /> : <FileClock size={12} />}{selectedSnapshot.status === 'closed' ? 'Closed' : 'Pending review'} · v{selectedSnapshot.version}</span>{selectedSnapshot.status !== 'closed' && <span className="dolo-progress" style={{ marginLeft: 10 }}>{bundle!.lines.length - summary.pendingCount} / {bundle!.lines.length} lines ready</span>}</> : <span className="dolo-muted">Monthly snapshots · AUD</span>}</div>
       <div className="dolo-toolbar-actions reports-no-print">
-        {selectedSnapshot && <button className="dolo-button" type="button" onClick={retry} disabled={busy || loading || loadingSnapshot}><RefreshCw size={13} /> Reload</button>}
+        {selectedSnapshot && <button className="dolo-button" type="button" onClick={retry} disabled={busy || collecting || loading || loadingSnapshot}><RefreshCw size={13} /> Reload</button>}
+        {selectedSnapshot?.status === 'draft' && access.can_edit && <button className="dolo-button dolo-button-primary" type="button" onClick={() => bundle && void collectSources(bundle)} disabled={busy || collecting || lineSaving || loadingSnapshot}><RefreshCw size={13} className={collecting ? 'animate-spin' : ''} />{collecting ? 'Collecting sources…' : 'Refresh sources'}</button>}
+        {selectedSnapshot?.status === 'draft' && access.can_manage_access && <button className="dolo-button" type="button" onClick={() => void connectXero()} disabled={busy || collecting || connectingXero}>{connectingXero ? 'Opening Xero…' : 'Connect Xero'}</button>}
         {access.can_manage_access && <button className="dolo-button" type="button" onClick={() => setAccessOpen(true)}><ShieldCheck size={14} /> Access</button>}
-        {access.can_edit && !error && <button className="dolo-button" type="button" onClick={() => openConfirmation('create')} disabled={loading || loadingSnapshot}><Plus size={14} /> New snapshot</button>}
-        {selectedSnapshot?.status === 'draft' && access.can_close && <button className="dolo-button dolo-button-primary" type="button" onClick={() => openConfirmation('close')} disabled={busy || !summary.readyToClose}><LockKeyhole size={13} /> Close snapshot</button>}
+        {access.can_edit && !error && <button className="dolo-button" type="button" onClick={() => openConfirmation('create')} disabled={busy || collecting || loading || loadingSnapshot}><Plus size={14} /> New snapshot</button>}
+        {selectedSnapshot?.status === 'draft' && access.can_close && <button className="dolo-button dolo-button-primary" type="button" onClick={() => openConfirmation('close')} disabled={busy || collecting || !summary.readyToClose}><LockKeyhole size={13} /> Close snapshot</button>}
         {selectedSnapshot?.status === 'closed' && access.can_close && access.can_edit && <button className="dolo-button" type="button" onClick={() => openConfirmation('restate')} disabled={busy}>Create correction</button>}
       </div>
     </div>
     {(loading || loadingSnapshot) && <div className="dolo-empty" role="status"><RefreshCw size={27} className="animate-spin" /><h2>Loading snapshot</h2><p>Fetching the saved balances and review status.</p></div>}
     {!loading && !loadingSnapshot && error && <div className="dolo-empty"><AlertCircle size={30} /><h2>DOLO Balance is unavailable</h2><p role="alert">{error}</p><p>No substitute or example balances are shown.</p><button className="dolo-button" type="button" onClick={retry}><RefreshCw size={14} /> Retry</button></div>}
-    {!loading && !loadingSnapshot && !error && !bundle && <div className="dolo-empty"><FileClock size={34} /><h2>No snapshots yet</h2><p>The first snapshot starts with Andrea's original balance lines and no amounts. Enter source-backed values, confirm the classifications and review before closing.</p>{access.can_edit ? <button className="dolo-button dolo-button-primary" type="button" onClick={() => openConfirmation('create')}>Create first snapshot <ArrowRight size={14} /></button> : <p>An authorised editor needs to create the first monthly snapshot.</p>}</div>}
+    {!loading && !loadingSnapshot && !error && !bundle && <div className="dolo-empty"><FileClock size={34} /><h2>No snapshots yet</h2><p>The first snapshot keeps Andrea's original balance lines and collects available source data for the previous month-end. Missing sources stay clearly marked; manual exceptions can be completed before closing.</p>{access.can_edit ? <button className="dolo-button dolo-button-primary" type="button" onClick={() => openConfirmation('create')}>Create first snapshot <ArrowRight size={14} /></button> : <p>An authorised editor needs to create the first monthly snapshot.</p>}</div>}
     {!loading && !loadingSnapshot && !error && bundle && <>
+      <div className="dolo-source-strip" role="status" aria-live="polite"><div><strong>{collecting ? 'Collecting connected sources' : selectedSnapshot?.status === 'closed' ? 'Frozen source records' : 'Connected sources'}</strong><span>{collecting ? 'Reading balances for this cut-off. Manual entries are preserved.' : `${importedSources} imported · ${sourceReviewCount} need source review · ${blockedSources} blocked`}</span></div><span>{latestCollection ? `Last collection: ${formatCollectedAt(latestCollection)}` : 'No collection recorded yet'}</span></div>
+      {collectionMessage && <p className="dolo-muted" role="status">{collectionMessage}</p>}
+      {collectionError && <div className="dolo-notice dolo-notice-error" role="alert"><AlertCircle size={16} /><span>Source collection: {collectionError}</span></div>}
       {summary.issues.length > 0 && <div className="dolo-notice"><AlertCircle size={16} /><span>{summary.unclassifiedCount ? `${summary.unclassifiedCount} line${summary.unclassifiedCount === 1 ? '' : 's'} still need classification. ` : ''}{summary.pendingCount ? `${summary.pendingCount} line${summary.pendingCount === 1 ? '' : 's'} need review or source information. ` : 'Snapshot validation is incomplete. '}This is not a validated balance. Missing values are not treated as zero.</span></div>}
       {comparisonError && <div className="dolo-notice dolo-notice-error" role="alert"><AlertCircle size={16} /><span>Comparison unavailable: {comparisonError}</span></div>}
       <div className={`dolo-kpis ${[summary.assets, summary.liabilities, summary.net, summary.availableCash].some((value) => value !== null && formatMoney(value, false).length > 14) ? 'dolo-kpis-long' : ''}`}>
@@ -206,14 +265,14 @@ export function DoloBalanceContent({ access, onPrintMetadata }: DoloBalanceConte
         <BalanceSection title="Liabilities" help={BALANCE_HELP.liabilities} lines={liabilities} comparison={comparison?.lines ?? []} total={summary.liabilities} kind="liability" onSelect={setSelectedLineKey} />
         {unclassified.length > 0 && <BalanceSection title="Awaiting classification / reference" help={BALANCE_HELP.pending} lines={unclassified} comparison={comparison?.lines ?? []} total={null} kind="unclassified" onSelect={setSelectedLineKey} />}
       </div>
-      <footer className="dolo-footer"><span>Cut-off: {formatAsAt(snapshotCutoffDate(bundle.snapshot.as_at_date))} · end of day · Brisbane</span><span>Select a line to view its source and supporting document.</span><span><DoloHelp label="Source-backed manual entries">{BALANCE_HELP.source}</DoloHelp></span></footer>
+      <footer className="dolo-footer"><span>Cut-off: {formatAsAt(snapshotCutoffDate(bundle.snapshot.as_at_date))} · end of day · Brisbane</span><span>Select a line to inspect its source, calculation and review status.</span><span><DoloHelp label="Connected sources and manual exceptions">{BALANCE_HELP.source}</DoloHelp></span></footer>
     </>}
 
     <DoloDrawer open={!!selectedLine} title={selectedLine?.label || 'Balance details'} description={selectedSnapshot ? `As at ${formatAsAt(selectedSnapshot.as_at_date)} · Version ${selectedSnapshot.version}` : ''} onClose={() => { if (!lineSaving) setSelectedLineKey(null); }} canDismiss={!lineSaving}>
-      {selectedLine && selectedSnapshot && <BalanceLineDetails key={`${selectedLine.id}:${selectedLine.revision}`} line={selectedLine} snapshot={selectedSnapshot} canEdit={access.can_edit} onSaved={reloadCurrent} onBusyChange={setLineSaving} />}
+      {selectedLine && selectedSnapshot && <BalanceLineDetails key={`${selectedLine.id}:${selectedLine.revision}`} line={selectedLine} snapshot={selectedSnapshot} canEdit={access.can_edit && !collecting} onSaved={reloadCurrent} onBusyChange={setLineSaving} />}
     </DoloDrawer>
     {access.can_manage_access && <DoloDrawer open={accessOpen} title="DOLO Balance access" description="Manage permissions for existing dashboard users." onClose={() => setAccessOpen(false)}>{accessOpen && <BalanceAccessPanel />}</DoloDrawer>}
-    <DoloConfirm open={confirmation !== null} title={confirmation === 'create' ? 'Create monthly snapshot' : confirmation === 'close' ? 'Close this snapshot?' : 'Create a correction version'} description={confirmation === 'create' ? 'Create a real draft with empty amounts. The snapshot represents the previous month-end, as at the first day of the selected month.' : confirmation === 'close' ? 'This freezes the reviewed values and supporting documents. Later source updates cannot change this version. Corrections require a new version.' : 'The closed version stays unchanged. A new draft is created for corrections and must be reviewed and closed separately.'} confirmLabel={confirmation === 'create' ? 'Create draft' : confirmation === 'close' ? 'Confirm and close' : 'Create correction'} busy={busy} onConfirm={performAction} onClose={() => { if (!busy) setConfirmation(null); }}>
+    <DoloConfirm open={confirmation !== null} title={confirmation === 'create' ? 'Create monthly snapshot' : confirmation === 'close' ? 'Close this snapshot?' : 'Create a correction version'} description={confirmation === 'create' ? 'Create a draft and collect connected-source balances for the previous month-end. Missing sources are never replaced with zero. Review any exceptions before closing.' : confirmation === 'close' ? 'This freezes the reviewed values and supporting documents. Later source updates cannot change this version. Corrections require a new version.' : 'The closed version stays unchanged. A new draft is created for corrections and must be reviewed and closed separately.'} confirmLabel={confirmation === 'create' ? 'Create draft' : confirmation === 'close' ? 'Confirm and close' : 'Create correction'} busy={busy} onConfirm={performAction} onClose={() => { if (!busy) setConfirmation(null); }}>
       {confirmation === 'create' && <label className="dolo-field"><span>Snapshot month</span><input type="month" value={newMonth} onChange={(event) => setNewMonth(event.target.value)} max={defaultAsAtDate().slice(0, 7)} disabled={busy} /></label>}
       {confirmation === 'restate' && <label className="dolo-field"><span>Reason for correction</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} disabled={busy} required /></label>}
       {confirmation === 'close' && selectedSnapshot && <p className="dolo-muted">{metadata}<br />{bundle?.lines.length} balance lines checked. Assets {formatMoney(summary.assets)} · Liabilities {formatMoney(summary.liabilities)} · Net position {formatMoney(summary.net)}.</p>}

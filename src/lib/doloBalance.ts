@@ -1,6 +1,8 @@
 /** Pure snapshot model. All arithmetic is in integer AUD cents, never binary floats. */
 export type Decimal = string | number;
 export type BalanceClassification = 'asset' | 'liability' | 'unclassified' | 'reference';
+export type BalanceSourceKind = 'manual' | 'xero' | 'shopify' | 'unleashed' | 'dashboard';
+export type BalanceSourceStatus = 'ready' | 'needs_review' | 'unavailable';
 
 export interface DoloBalanceAccess {
   can_view: boolean;
@@ -53,7 +55,11 @@ export interface BalanceLine extends BalanceLineInput {
   sort_order: number;
   amount_aud: Decimal | null;
   available_aud: Decimal | null;
-  source_kind: 'manual';
+  source_kind: BalanceSourceKind;
+  source_status?: BalanceSourceStatus | null;
+  source_collected_at?: string | null;
+  source_proof?: Record<string, unknown>;
+  manual_override?: boolean;
   revision: number;
   updated_at: string;
 }
@@ -91,8 +97,20 @@ export const BALANCE_HELP = {
   airwallex: 'Use reconciled Xero information or a reviewed manual entry. A ledger balance alone does not prove immediate cash availability.',
   airwallex_yield: 'Kept separate from the wallet balance. Reconcile its month-end value to the Yield statement. Not included in Available cash.',
   pending: 'The original spreadsheet label is preserved. Confirm its definition, classification and source before closing the snapshot.',
-  source: 'Manual entries with a named source and cut-off date. Supporting documents are optional. No direct financial feed is enabled.',
+  source: 'Connected sources populate draft balances for the selected cut-off. Source access, reconciliation and review status are shown per line. Manual exceptions are preserved. Closed versions never refresh.',
 } as const;
+
+export function balanceSourceLabel(line: BalanceLine): string {
+  if (line.manual_override) return 'Manual override';
+  if (line.source_kind === 'manual') return 'Manual entry';
+  const provider = { xero: 'Xero', shopify: 'Shopify', unleashed: 'Unleashed', dashboard: 'Dashboard' }[line.source_kind];
+  return `${provider ?? 'Connected source'} · ${line.source_status === 'unavailable' ? 'Blocked' : line.source_status === 'needs_review' ? 'Needs review' : line.source_status === 'ready' ? 'Imported' : 'Not checked'}`;
+}
+
+export function formatCollectedAt(value: string | null | undefined): string {
+  if (!value || !Number.isFinite(new Date(value).getTime())) return 'Not collected';
+  return new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Australia/Brisbane' }).format(new Date(value)) + ' Brisbane';
+}
 
 /** Decimal half-away-from-zero rounding, matching PostgreSQL numeric round(..., 2). */
 export function decimalToCents(value: Decimal | null | undefined): bigint | null {
@@ -143,7 +161,7 @@ export function formatAsAt(date: string): string {
   return value ? new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(value) : 'Unknown date';
 }
 
-export function lineIssues(line: BalanceLine, asAtDate?: string): string[] {
+export function lineIssues(line: BalanceLine, asAtDate?: string, includeCash = true): string[] {
   const issues: string[] = [];
   if (!line.definition.trim()) issues.push('Definition is missing');
   if (line.status !== 'reviewed') issues.push('Review is pending');
@@ -151,6 +169,10 @@ export function lineIssues(line: BalanceLine, asAtDate?: string): string[] {
     if (!line.note.trim()) issues.push('Explain why this line is excluded');
     if (line.classification === 'reference' && line.is_included) issues.push('A reference cannot be included');
     return issues;
+  }
+  if (line.source_kind !== 'manual' && !line.manual_override) {
+    if (line.source_status === 'unavailable') issues.push('Connected source is unavailable');
+    else if (line.source_status !== 'ready') issues.push('Source validation is incomplete');
   }
   if (line.classification === 'unclassified') issues.push('Classification is pending');
   if (!['asset', 'liability'].includes(line.classification)) issues.push('Choose Asset or Liability');
@@ -169,7 +191,16 @@ export function lineIssues(line: BalanceLine, asAtDate?: string): string[] {
     if (line.source_as_at && line.source_as_at !== cutoff) issues.push('Source date must match the cut-off date');
     if (line.fx_date && line.fx_date > cutoff) issues.push('Exchange-rate date is after the cut-off');
   }
+  if (includeCash) issues.push(...cashIssues(line));
+  return issues;
+}
+
+/** Cash availability is not inferred from a ledger balance or used to invalidate that asset. */
+export function cashIssues(line: BalanceLine): string[] {
+  const issues: string[] = [];
   if (line.liquidity_eligible) {
+    const amount = decimalToCents(line.amount_aud);
+    const native = decimalToCents(line.amount_native);
     const cash = decimalToCents(line.available_aud);
     const cashNative = decimalToCents(line.available_native);
     if (line.classification !== 'asset') issues.push('Only assets can be available cash');
@@ -203,6 +234,7 @@ export function summarizeBalance(lines: BalanceLine[], asAtDate?: string): Balan
   const expectedKeys = new Set<string>(BALANCE_CONCEPTS.map(([key]) => key));
   for (const line of lines) {
     const problems = lineIssues(line, asAtDate);
+    const balanceProblems = lineIssues(line, asAtDate, false);
     if (problems.length) { pendingCount++; issues.push(...problems.map(problem => `${line.label}: ${problem}`)); }
     if (keys.has(line.key)) { issues.push(`${line.label}: Duplicate concept`); assetComplete = liabilityComplete = cashComplete = false; continue; }
     keys.add(line.key);
@@ -224,10 +256,10 @@ export function summarizeBalance(lines: BalanceLine[], asAtDate?: string): Balan
       unclassifiedCount++; assetComplete = liabilityComplete = cashComplete = false; continue;
     }
     if (line.classification === 'asset') {
-      if (amount === null || amount < 0n || problems.length > 0) assetComplete = false;
+      if (amount === null || amount < 0n || balanceProblems.length > 0) assetComplete = false;
       if (amount !== null && amount >= 0n) assetSum += amount;
     } else if (line.classification === 'liability') {
-      if (amount === null || amount < 0n || problems.length > 0) liabilityComplete = false;
+      if (amount === null || amount < 0n || balanceProblems.length > 0) liabilityComplete = false;
       if (amount !== null && amount >= 0n) liabilitySum += amount;
     } else { assetComplete = liabilityComplete = cashComplete = false; }
     if (line.liquidity_eligible) {

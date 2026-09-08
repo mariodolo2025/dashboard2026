@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { BalanceBundle, BalanceLine, BalanceLineInput, BalanceSnapshot, BalanceUserAccess, DoloBalanceAccess } from './doloBalance';
+import type { BalanceBundle, BalanceLine, BalanceLineInput, BalanceSnapshot, BalanceSourceStatus, BalanceUserAccess, DoloBalanceAccess } from './doloBalance';
 
 export class BalanceApiError extends Error {
   constructor(message: string, public readonly kind: 'setup' | 'denied' | 'conflict' | 'validation' | 'network' = 'network') {
@@ -92,6 +92,58 @@ async function rpcId(name: string, parameters: Record<string, unknown>): Promise
 
 export function createBalanceSnapshot(asAtDate: string): Promise<string> {
   return rpcId('dolo_balance_create_snapshot', { p_as_at_date: asAtDate });
+}
+
+export interface BalanceCollectionResult {
+  run_id: string;
+  imported: number;
+  preserved: number;
+  candidates: { key: string; status: BalanceSourceStatus; note: string; source_label: string }[];
+  errors?: string[];
+}
+
+export async function connectBalanceXero(sourceBaseUrl: string): Promise<string> {
+  const { data, error } = await supabase.functions.invoke('dolo-balance-collect', { body: { action: 'connect_xero' } });
+  if (error) {
+    let detail: unknown;
+    try { detail = await error.context?.json(); } catch { /* A network failure has no response body. */ }
+    if (isRecord(detail) && typeof detail.error === 'string') fail({ message: detail.error });
+    fail({ message: error.message || 'Unable to start Xero authorisation.' });
+  }
+  let url: URL;
+  try { url = new URL(isRecord(data) && typeof data.url === 'string' ? data.url : ''); }
+  catch { throw new BalanceApiError('The server did not return a valid Xero authorisation URL.'); }
+  let sourceOrigin: string;
+  try { sourceOrigin = new URL(sourceBaseUrl).origin; } catch { throw new BalanceApiError('The dashboard source URL is not configured.'); }
+  if (url.protocol !== 'https:' || url.origin !== sourceOrigin || url.pathname !== '/functions/v1/xero-oauth'
+    || url.username || url.password || !/^balance-[0-9a-f-]{36}$/i.test(url.searchParams.get('balance_state') || '')) {
+    throw new BalanceApiError('The server returned an unexpected authorisation destination.');
+  }
+  return url.toString();
+}
+
+export async function collectBalanceSources(snapshotId: string, expectedRevision: number): Promise<BalanceCollectionResult> {
+  if (!UUID.test(snapshotId) || !Number.isInteger(expectedRevision) || expectedRevision < 1) throw new BalanceApiError('Invalid snapshot or revision.', 'validation');
+  const { data, error } = await supabase.functions.invoke('dolo-balance-collect', {
+    body: { snapshot_id: snapshotId, expected_revision: expectedRevision },
+  });
+  if (error) {
+    // Edge-function failures carry their safe application error in the response body.
+    let detail: unknown;
+    try { detail = await error.context?.json(); } catch { /* Network failures may have no HTTP response. */ }
+    if (isRecord(detail) && typeof detail.error === 'string') fail({ code: typeof detail.code === 'string' ? detail.code : undefined, message: detail.error });
+    fail({ message: error.message || 'Source collection failed. Saved manual entries and closed snapshots are unchanged.' });
+  }
+  if (isRecord(data) && typeof data.error === 'string') fail({ message: data.error });
+  if (!isRecord(data) || typeof data.run_id !== 'string' || !UUID.test(data.run_id)
+    || !Number.isInteger(data.imported) || Number(data.imported) < 0 || !Number.isInteger(data.preserved) || Number(data.preserved) < 0
+    || !Array.isArray(data.candidates) || !data.candidates.every((item) => isRecord(item)
+      && typeof item.key === 'string' && ['ready', 'needs_review', 'unavailable'].includes(String(item.status))
+      && typeof item.note === 'string' && typeof item.source_label === 'string')
+    || (data.errors !== undefined && (!Array.isArray(data.errors) || !data.errors.every(item => typeof item === 'string')))) {
+    throw new BalanceApiError('The source collection response could not be verified. Reload the snapshot to check its saved state.');
+  }
+  return data as unknown as BalanceCollectionResult;
 }
 
 export async function saveBalanceLine(lineId: string, expectedRevision: number, input: BalanceLineInput): Promise<BalanceLine> {
