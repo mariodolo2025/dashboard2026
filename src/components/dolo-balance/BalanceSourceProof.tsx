@@ -87,6 +87,72 @@ function XeroEvidence({ proof }: { proof: Evidence }) {
   </table></div>;
 }
 
+function SupplierEvidence({ proof }: { proof: Evidence }) {
+  const report = evidence(proof.report);
+  if (!Array.isArray(report.header) || !Array.isArray(proof.report_rows)) return null;
+  const headers = report.header.map(value => text(value) ?? '');
+  const rows = proof.report_rows.map(evidence);
+  const invoices = rows.filter(row => row.RowType === 'Row');
+  const summaries = rows.filter(row => row.RowType === 'SummaryRow');
+  const column = (label: string) => {
+    const matches = headers.flatMap((header, index) => header.replace(/\s/g, '').toLowerCase() === label ? [index] : []);
+    return matches.length === 1 ? matches[0] : -1;
+  };
+  const referenceColumn = column('reference');
+  const dateColumn = column('date');
+  const dueDateColumn = column('duedate');
+  // Only explicitly labelled currencies are safe here. "Due" / "Due Local" are not AUD evidence.
+  const dueColumns = headers.flatMap((header, index) => {
+    const match = /^due\s+(?:in\s+)?\(?([a-z]{3})\)?$/i.exec(header);
+    return match ? [{ index, currency: match[1].toUpperCase() }] : [];
+  });
+  const ambiguousCurrency = dueColumns.some((item, index) => dueColumns.findIndex(other => other.currency === item.currency) !== index);
+  const amountColumns = ambiguousCurrency ? [] : dueColumns;
+  const cell = (row: Evidence, index: number): unknown => Array.isArray(row.Cells) && index >= 0 ? evidence(row.Cells[index]).Value : null;
+  const cents = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? decimalToCents(value) : null;
+  const sourceDate = (value: unknown) => {
+    const valueText = text(value);
+    return valueText && /^\d{4}-\d{2}-\d{2}$/.test(valueText) ? day(valueText) : valueText ?? 'Not provided';
+  };
+  const currencyAmount = (row: Evidence, index: number, currency: string) => {
+    const value = cents(cell(row, index));
+    return value === null ? 'Not provided' : `${currency} ${formatMoney(value, false)}`;
+  };
+  const paymentState = (row: Evidence) => {
+    const dues = amountColumns.map(item => cents(cell(row, item.index)));
+    if (!dues.length || dues.some(value => value === null)) return 'Not established';
+    if (dues.every(value => value === 0n)) {
+      const fullyPaid = amountColumns.some(({ currency }) => {
+        const total = cents(cell(row, column(`total${currency.toLowerCase()}`)));
+        const paid = cents(cell(row, column(`paid${currency.toLowerCase()}`)));
+        const credited = cents(cell(row, column(`credited${currency.toLowerCase()}`)));
+        return total !== null && total > 0n && paid !== null && paid >= total && credited === 0n;
+      });
+      return fullyPaid ? 'Paid' : 'Nothing due';
+    }
+    return dues.every(value => value !== null && value < 0n) ? 'Credit balance' : 'Amount due';
+  };
+  return <>
+    {(!amountColumns.length || ambiguousCurrency) && <div className="dolo-notice"><AlertCircle size={16} /><span>The report does not identify an unambiguous currency for each amount due. Amounts are not relabelled as AUD; inspect the saved evidence.</span></div>}
+    <div className="dolo-proof-table-wrap"><table className="dolo-proof-table">
+      <caption>Xero supplier invoices</caption>
+      <thead><tr><th scope="col">Invoice</th>{amountColumns.map(({ index, currency }) => <th key={index} scope="col" className="dolo-proof-number">Due {currency}</th>)}<th scope="col">Report status</th></tr></thead>
+      <tbody>{invoices.map((row, index) => <tr key={index}>
+        <th scope="row">{text(cell(row, referenceColumn)) ?? 'Reference not provided'}<span className="dolo-line-subtitle">Invoice date: {sourceDate(cell(row, dateColumn))}</span><span className="dolo-line-subtitle">Due date: {sourceDate(cell(row, dueDateColumn))}</span></th>
+        {amountColumns.map(({ index: valueIndex, currency }) => <td key={valueIndex} className="dolo-proof-number">{currencyAmount(row, valueIndex, currency)}</td>)}
+        <td>{paymentState(row)}</td>
+      </tr>)}</tbody>
+      {summaries.length > 0 && <tfoot>{summaries.map((row, index) => <tr key={index}>
+        <th scope="row">Report summary — {text(cell(row, referenceColumn)) ?? text(cell(row, dateColumn)) ?? 'Total'}</th>
+        {amountColumns.map(({ index: valueIndex, currency }) => <td key={valueIndex} className="dolo-proof-number">{currencyAmount(row, valueIndex, currency)}</td>)}
+        <td>Not an invoice</td>
+      </tr>)}</tfoot>}
+    </table></div>
+    {!invoices.length && <p className="dolo-muted">No invoice detail rows are included in this saved report.</p>}
+    <p className="dolo-muted">These are the amounts due in the saved Xero report. Report summaries are shown separately and are not additional invoices.</p>
+  </>;
+}
+
 /** A readable summary of private saved evidence; the unchanged full record remains downloadable. */
 export function BalanceSourceProof({ line }: { line: BalanceLine }) {
   const [open, setOpen] = useState(false);
@@ -116,9 +182,9 @@ export function BalanceSourceProof({ line }: { line: BalanceLine }) {
     {text(proof.amount_basis) && <p className="dolo-muted">{text(proof.amount_basis)}</p>}
     {text(proof.bank_statement_reconciliation) && <div className="dolo-notice"><AlertCircle size={16} /><span>{text(proof.bank_statement_reconciliation)}</span></div>}
     {proof.book_amount_aud !== undefined && <dl className="dolo-detail-grid"><div><dt>Accounting book balance only</dt><dd>{amount(proof.book_amount_aud)}</dd></div><div><dt>Included as bank funds</dt><dd>No — statement verification required</dd></div></dl>}
-    {line.source_status === 'unavailable' && line.note && <p className="dolo-muted">{line.note}</p>}
+    {(line.source_status === 'unavailable' || line.source_status === 'needs_review') && line.note && <p className="dolo-muted">{line.note}</p>}
     {line.key === 'stock' && proof.provider === 'dashboard' && <StockEvidence proof={proof} />}
-    {(line.source_kind === 'xero' || proof.provider === 'xero') && <XeroEvidence proof={proof} />}
+    {(line.source_kind === 'xero' || proof.provider === 'xero') && <><XeroEvidence proof={proof} /><SupplierEvidence proof={proof} /></>}
     <details onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>Inspect saved source evidence</summary>
       {open && <><p className="dolo-muted">Saved evidence from this collection. Large records are abbreviated here; the download contains the full record.</p><pre>{JSON.stringify(proof, null, 2).slice(0, 12000)}</pre></>}
