@@ -37,6 +37,14 @@ interface Kpis {
   chargedTaxes: number; paidTotal: number; paidFreight: number; paidZonosDT: number;
   paidZonosFees: number; chargedMatched: number; paidMatched: number;
   netAbsorbed: number; netPerOrder: number; recoveryPct: number | null;
+  /** false = the view is a market that absorbs duties/taxes by policy (USA):
+   *  "charged" is shipping only and the gap is intended, not a fault.
+   *  null = the view mixes policies (never today - the aggregate is DDP-only). */
+  chargesDuties: boolean | null;
+  /** Sales tax collected at checkout in absorbing markets. Remitted, not kept;
+   *  not import tax; never part of the reconciliation. Shown so nobody wonders
+   *  where Shopify's tax column went. */
+  salesTax: number;
   /** Total Meta spend across every advertising region in the window. */
   adSpend: number;
   /** One entry per advertising region, each with its OWN ratio. Canada buys its
@@ -60,14 +68,27 @@ interface Country {
 interface LedgerRow {
   order: string; date: string; country: string;
   chargedShipping: number; chargedDuties: number; chargedTaxes: number; chargedTotal: number;
+  salesTax: number; chargesDuties: boolean;
+  /** true once the sync has asked Starshipit about this order. With freight
+   *  null: false = "awaiting" (not looked yet), true = "no label" (looked, nothing). */
+  freightChecked: boolean;
   freight: number | null; zonosDT: number | null; zonosFees: number | null; zonosExpected: boolean;
   paidTotal: number | null; net: number | null; tracking: string | null; carrier: string | null; matched: boolean;
 }
 interface Payload {
   kpis: Kpis; components: Component[]; weekly: Week[]; countries: Country[]; ledger: LedgerRow[];
-  exceptions: { awaitingZonos: string[]; awaitingFreight: string[]; zonosUnmatched: { tracking: string; country: string; amount: number }[] };
-  /** The live markets, from ddp_markets — the tab holds no list of its own. */
-  markets: { code: string; name: string }[];
+  exceptions: {
+    awaitingZonos: string[]; awaitingFreight: string[];
+    /** Totals behind the (capped) name lists above. */
+    awaitingZonosTotal?: number; awaitingFreightTotal?: number;
+    zonosUnmatched: { tracking: string; country: string; amount: number }[];
+  };
+  /** How many rows the ledger has in total; `ledger` is capped by p_ledger_limit. */
+  ledgerTotal: number;
+  /** The live markets with their policies, from ddp_markets — the tab holds no
+   *  list of its own. inAllMarkets=false sits outside the aggregate (USA).
+   *  adRegion null = no MER on this tab. */
+  markets: { code: string; name: string; chargesDuties: boolean; inAllMarkets: boolean; adRegion: string | null }[];
 }
 
 // Names come from the RPC. Only the flags stay in code — they are drawn, and
@@ -98,6 +119,13 @@ function Flag({ cc, className }: { cc: string; className?: string }) {
       <rect width="32" height="16" fill="#fff" />
       <rect width="8" height="16" fill="#D52B1E" /><rect x="24" width="8" height="16" fill="#D52B1E" />
       <path fill="#D52B1E" d="M16 3.1l1.05 2.1 2.1-.5-.65 2.1 1.8.4-2.2 1.75.5 1.05-2.4-.4.3 2.9h-.9l.3-2.9-2.4.4.5-1.05L11.7 7.2l1.8-.4-.65-2.1 2.1.5z" />
+    </svg>
+  );
+  if (cc === 'US') return (
+    <svg viewBox="0 0 19 10" className={cls} aria-hidden>
+      <rect width="19" height="10" fill="#fff" />
+      {[0, 2, 4, 6, 8].map((y) => <rect key={y} y={y} width="19" height="1" fill="#B22234" />)}
+      <rect width="8" height="5" fill="#3C3B6E" />
     </svg>
   );
   if (cc === 'SE') return (
@@ -157,17 +185,20 @@ export default function DDPMarketsTab() {
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [ledgerOpen, setLedgerOpen] = useState(false);
+  // The ledger is capped server-side (USA alone is thousands of rows); this is
+  // the cap in force. "Load more" raises it and refetches.
+  const [ledgerLimit, setLedgerLimit] = useState(300);
   // Country filter: narrows every figure server-side (p_country). null = all.
   const [country, setCountry] = useState<string | null>(null);
 
-  const load = useCallback(async (f: string, t: string, c: string | null) => {
+  const load = useCallback(async (f: string, t: string, c: string | null, lim: number) => {
     setLoading(true); setError(null);
-    const { data: d, error: e } = await supabase.rpc('ddp_markets_dashboard', { p_from: f, p_to: t, p_country: c });
+    const { data: d, error: e } = await supabase.rpc('ddp_markets_dashboard', { p_from: f, p_to: t, p_country: c, p_ledger_limit: lim });
     if (e) setError(e.message); else setData(d as unknown as Payload);
     setLoading(false);
   }, []);
 
-  useEffect(() => { void load(from, to, country); }, [load, from, to, country]);
+  useEffect(() => { void load(from, to, country, ledgerLimit); }, [load, from, to, country, ledgerLimit]);
 
   const runSync = useCallback(async () => {
     setSyncing(true); setSyncNote(null);
@@ -185,7 +216,7 @@ export default function DDPMarketsTab() {
       setSyncNote(j?.success
         ? `Synced — ${j.shopify?.ddpOrders ?? 0} orders · freight +${j.starshipit?.matched ?? 0} · ZONOS +${j.zonos?.matched ?? 0}`
         : `Sync failed: ${j?.message ?? res.status}`);
-      await load(from, to, country);
+      await load(from, to, country, ledgerLimit);
     } catch (e) {
       setSyncNote(`Sync failed: ${String(e)}`);
     } finally {
@@ -219,10 +250,14 @@ export default function DDPMarketsTab() {
     },
     duties_taxes: {
       label: 'Duties + taxes', tip: T.compDT,
-      note: (c) => Math.abs(c.gap) <= Math.max(5, c.paid * 0.05)
-        ? 'checkout tracks ZONOS closely — charging is calibrated'
-        : c.gap < 0 ? 'checkout charges LESS than ZONOS bills — undercharging'
-        : 'checkout charges more than ZONOS bills',
+      // For an absorbing market the gap IS the policy: describing it as
+      // "undercharging" would call a decision a defect.
+      note: (c) => k?.chargesDuties === false
+        ? `absorbed by policy — nothing is charged to the customer; ZONOS bills ${aud(Math.abs(c.perOrder), 2)} per order`
+        : Math.abs(c.gap) <= Math.max(5, c.paid * 0.05)
+          ? 'checkout tracks ZONOS closely — charging is calibrated'
+          : c.gap < 0 ? 'checkout charges LESS than ZONOS bills — undercharging'
+          : 'checkout charges more than ZONOS bills',
     },
     fees: {
       label: 'ZONOS fees', tip: T.compFees,
@@ -277,19 +312,30 @@ export default function DDPMarketsTab() {
       <div className="flex flex-wrap items-center gap-1.5">
         <button type="button" onClick={() => setCountry(null)}
           className={cn('rounded-full border px-3 py-1 text-[13px]', country === null ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
-          title="Every market together.">
-          All markets
+          title="Every DDP market together - the ones that charge duties and taxes to the customer. Markets that absorb them (the USA) sit outside this total: at forty times the next market's volume, folding it in would make the total read as that one market.">
+          All DDP markets
         </button>
-        {(data?.markets ?? []).map(({ code: cc }) => (
+        {(data?.markets ?? []).filter((m) => m.inAllMarkets).map(({ code: cc }) => (
           <button key={cc} type="button" onClick={() => setCountry(country === cc ? null : cc)}
             className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px]', country === cc ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
-            title={`Only ${countryName(cc)}: KPIs, component gaps, weekly chart and ledger all narrow to this market. EU ad spend stays EU-wide - the campaigns cannot be split per country.`}>
+            title={`Only ${countryName(cc)}: KPIs, component gaps, weekly chart and ledger all narrow to this market. Ad spend and MER follow the market's advertising region, which cannot be split per country.`}>
+            <Flag cc={cc} /> {countryName(cc)}
+          </button>
+        ))}
+        {(data?.markets ?? []).some((m) => !m.inAllMarkets) && (
+          <span className="mx-1 h-5 w-px bg-border" aria-hidden />
+        )}
+        {(data?.markets ?? []).filter((m) => !m.inAllMarkets).map(({ code: cc, chargesDuties }) => (
+          <button key={cc} type="button" onClick={() => setCountry(country === cc ? null : cc)}
+            className={cn('flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-[13px]', country === cc ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
+            title={`${countryName(cc)} on its own. Outside the "All DDP markets" total.${chargesDuties ? '' : ' Dolo absorbs every duty and tax here by policy - nothing is charged to the customer - so the gap you will see is intended, not a calibration fault.'} No MER on this tab: it lives in Advertising / E-commerce.`}>
             <Flag cc={cc} /> {countryName(cc)}
           </button>
         ))}
         {country && (
           <span className="text-[13px] text-muted-foreground">
-            viewing {countryName(country)} only · ad spend stays EU-wide
+            viewing {countryName(country)} only
+            {k?.chargesDuties === false && <> · <b className="font-medium text-amber-700 dark:text-amber-500">absorbs duties + taxes by policy</b></>}
           </span>
         )}
       </div>
@@ -318,7 +364,9 @@ export default function DDPMarketsTab() {
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.adSpend) : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums space-y-0.5">
             {!k ? '' : k.adRegions.filter((r) => r.spend > 0).length === 0
-              ? 'no campaigns in window'
+              ? (country && data?.markets.find((m) => m.code === country)?.adRegion == null
+                  ? 'not measured here — this market\'s MER lives in the Advertising tab'
+                  : 'no campaigns in window')
               : k.adRegions.filter((r) => r.spend > 0).map((r) => {
                 // Days Meta reported spend on, straight from the RPC. Deriving
                 // it from the calendar counted a day Meta had not reported yet.
@@ -358,7 +406,9 @@ export default function DDPMarketsTab() {
             <span className="ml-1.5 text-[13px] font-normal text-muted-foreground">from {k ? `${k.matchedOrders} of ${k.orders}` : '…'} orders</span>
           </div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
-            {k ? `total charged ${aud(k.chargedTotal)} · ship ${aud(k.chargedShipping)} · duties ${aud(k.chargedDuties)} · taxes ${aud(k.chargedTaxes)}` : ''}
+            {!k ? '' : k.chargesDuties === false
+              ? <>total charged {aud(k.chargedTotal)} · ship {aud(k.chargedShipping)} · <span className="text-amber-700 dark:text-amber-500">duties + taxes not charged (absorbed by policy)</span></>
+              : `total charged ${aud(k.chargedTotal)} · ship ${aud(k.chargedShipping)} · duties ${aud(k.chargedDuties)} · taxes ${aud(k.chargedTaxes)}`}
           </div>
         </div>
         <div className="cursor-help rounded-xl border border-dashed bg-muted/30 p-3"
@@ -502,7 +552,7 @@ export default function DDPMarketsTab() {
           title={T.ledger}
         >
           {ledgerOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          Order ledger{data ? ` (${data.ledger.length})` : ''}
+          Order ledger{data ? (data.ledgerTotal > data.ledger.length ? ` (${data.ledger.length} of ${data.ledgerTotal})` : ` (${data.ledger.length})`) : ''}
           <span className="ml-1 font-normal text-muted-foreground text-[13px]">one row per order, three sources side by side</span>
         </button>
         {ledgerOpen && (
@@ -549,13 +599,17 @@ export default function DDPMarketsTab() {
                     <td className="py-1.5 pr-2 whitespace-nowrap">{new Date(`${r.date}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}</td>
                     <td className="py-1.5 pr-2 whitespace-nowrap"><span className="flex items-center gap-1.5"><Flag cc={r.country} /> {countryName(r.country)}</span></td>
                     <td className="border-l py-1.5 pl-2 text-right">{n2(r.chargedShipping)}</td>
-                    <td className="py-1.5 pl-2 text-right">{n2(r.chargedDuties)}</td>
-                    <td className="py-1.5 pl-2 text-right">{n2(r.chargedTaxes)}</td>
+                    <td className="py-1.5 pl-2 text-right">{r.chargesDuties === false ? <span title="Not charged - absorbed by policy.">—</span> : n2(r.chargedDuties)}</td>
+                    <td className="py-1.5 pl-2 text-right">{r.chargesDuties === false
+                      ? <span title="Nothing charged. Duties and import taxes are absorbed by policy, and the tax Shopify records on these orders sits inside the shelf price - it was never an amount added at checkout.">—</span>
+                      : n2(r.chargedTaxes)}</td>
                     <td className="py-1.5 pl-2 text-right font-semibold text-foreground">{n2(r.chargedTotal)}</td>
                     <td className="border-l py-1.5 pl-2 text-right">
-                      {r.freight === null
-                        ? <span className="rounded bg-muted px-1.5 py-0.5 text-[12px]" title="Shipped outside Starshipit (DHL Express booked directly) or no label yet.">no label</span>
-                        : n2(r.freight)}
+                      {r.freight !== null
+                        ? n2(r.freight)
+                        : r.freightChecked
+                          ? <span className="rounded bg-muted px-1.5 py-0.5 text-[12px]" title="Starshipit was asked and has no label cost for this order: shipped outside Starshipit (DHL Express booked directly), or the label is not created yet. Retried every sync.">no label</span>
+                          : <span className="rounded bg-muted px-1.5 py-0.5 text-[12px] italic" title="The sync has not reached this order yet. Freight is fetched newest-first, about fifty orders a run, one Starshipit call each - the USA backlog is thousands of orders deep and drains over the day.">awaiting</span>}
                     </td>
                     <td className="py-1.5 pl-2 text-right">
                       {!r.zonosExpected
@@ -578,7 +632,13 @@ export default function DDPMarketsTab() {
               </tbody>
               <tfoot>
                 <tr className="border-t-2 font-bold">
-                  <td className="py-2 pr-2" colSpan={3}>{data?.ledger.length ?? 0} orders</td>
+                  <td className="py-2 pr-2" colSpan={3}
+                    title={data && data.ledgerTotal > data.ledger.length
+                      ? `Totals below are over the ${data.ledger.length} rows shown, not all ${data.ledgerTotal} orders. Use "Load more" to widen them - the KPI cards above are always over every order.`
+                      : 'Totals over every order in the window.'}>
+                    {data?.ledger.length ?? 0}{data && data.ledgerTotal > data.ledger.length ? ` of ${data.ledgerTotal}` : ''} orders
+                    {data && data.ledgerTotal > data.ledger.length && <span className="ml-1 font-normal text-amber-700 dark:text-amber-500">(totals over rows shown)</span>}
+                  </td>
                   <td className="border-l py-2 pl-2 text-right">{n2(totals.ship)}</td>
                   <td className="py-2 pl-2 text-right">{n2(totals.duties)}</td>
                   <td className="py-2 pl-2 text-right">{n2(totals.taxes)}</td>
@@ -592,8 +652,16 @@ export default function DDPMarketsTab() {
                 </tr>
               </tfoot>
             </table>
+            {data && data.ledgerTotal > data.ledger.length && (
+              <div className="mt-3 flex items-center gap-3 text-[13px] text-muted-foreground">
+                <span>Showing the newest {data.ledger.length} of {data.ledgerTotal} orders.</span>
+                <Button size="sm" variant="outline" onClick={() => setLedgerLimit((l) => Math.min(l * 3, data.ledgerTotal))}>
+                  Load more
+                </Button>
+              </div>
+            )}
             <div className="mt-2 text-[13px] text-muted-foreground">
-              Grey rows are not fully matched yet and stay out of Net absorbed. Hover any row for its tracking number.
+              Grey rows are not fully matched yet and stay out of Net absorbed. The tracking number sits beside each order name; one click selects it.
             </div>
           </div>
         )}

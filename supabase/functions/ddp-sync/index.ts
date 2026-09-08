@@ -60,6 +60,27 @@ Deno.serve(async (req: Request) => {
       : DDP_START;
 
     const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    // Wall-clock budget. Edge functions are cut at 150s idle; the USA (3,217
+    // orders since 1-Aug) made a single-run backfill impossible, so every pass
+    // that can be partial is: it does what fits, reports what is left, and the
+    // next run (scheduled or manual) continues. Nothing is ever redone.
+    const t0 = Date.now();
+    const timeLeft = () => 140_000 - (Date.now() - t0);
+
+    // PostgREST caps EVERY select at 1,000 rows and says nothing. Before the USA
+    // no table here came near that; with 3,200 US orders the tracking map was
+    // loading a third of the rows, and ZONOS reported the other two thirds as
+    // orders that did not exist (57 "unmatched" of which 51 were in the table).
+    // Read in pages of 1,000 until a short page.
+    const readAll = async <T,>(build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> => {
+      const out: T[] = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await build(from, from + 999);
+        if (error) throw new Error(error.message);
+        out.push(...(data ?? []));
+        if (!data || data.length < 1000) return out;
+      }
+    };
 
     // Which markets are live. Gates BOTH ends: which Shopify orders are picked
     // up and which ZONOS records are looked at. Refuse to run on an empty list
@@ -130,25 +151,35 @@ Deno.serve(async (req: Request) => {
       url = next ? next[1] : null;
     }
     // Same key set on every row → the upsert can't null-out unrelated columns.
-    if (shopifyRows.length) {
+    // Chunked: the USA turns this into thousands of rows per call. Every row
+    // still carries the same key set, so no chunk can null out another
+    // source's columns (the PostgREST full-row-upsert trap).
+    for (let i = 0; i < shopifyRows.length; i += 500) {
       const { error } = await supabase.from('ddp_shipments')
-        .upsert(shopifyRows, { onConflict: 'shopify_order_id' });
+        .upsert(shopifyRows.slice(i, i + 500), { onConflict: 'shopify_order_id' });
       if (error) return json({ success: false, message: `upsert: ${error.message}` }, 500);
     }
 
     // ════════════════════════════ 2. STARSHIPIT ═════════════════════════════
+    // Two facts shape this pass. (a) The bulk list /api/orders/shipped does NOT
+    // carry the label price - Starshipit has an open feature request for
+    // exactly that, and its OpenAPI schema for the endpoint lists order_id,
+    // order_number, order_date, shipped_date, country, carrier, carrier_name,
+    // tracking_number ... and no price - so the price needs one detail call per
+    // order, no way round it. (b) The old approach spent TWO calls per order (a
+    // search to find the order_id, then the detail) and died at 150s on 23
+    // Canadian orders. Now: walk the shipped list in pages of 250 to learn
+    // order_id + tracking for every pending order in bulk (a handful of calls
+    // for the whole window), then spend what time is left on detail calls,
+    // newest first. Whatever does not fit is reported as `remaining` and picked
+    // up by the next run - the pending query is "freight still null", so no
+    // order is ever fetched twice. Orders the list never shows (booked outside
+    // Starshipit) fall back to the per-order search, still within budget.
     const ssKey = Deno.env.get('STARSHIPIT_API_KEY');
     const ssSub = Deno.env.get('STARSHIPIT_SUBSCRIPTION_KEY');
-    let freightMatched = 0, freightMissing = 0;
+    let freightMatched = 0, freightMissing = 0, freightRemaining = 0, ssPages = 0, pendingTotal = 0;
     if (ssKey && ssSub) {
       const ssHeaders = { 'StarShipIT-Api-Key': ssKey, 'Ocp-Apim-Subscription-Key': ssSub };
-      // Which orders still need a freight cost?
-      const { data: pending } = await supabase.from('ddp_shipments')
-        .select('shopify_order_id, order_name, tracking_number')
-        .is('freight_cost_aud', null);
-      // Look each pending order up by its order number. The shipped-orders list
-      // IGNORES since_order_date (page 1 spans ~4 days), so walking it misses
-      // anything older; /orders/search is exact and two calls per order.
       const ssGet = async (url: string): Promise<Response> => {
         await new Promise((r) => setTimeout(r, 150));
         let res = await fetch(url, { headers: ssHeaders });
@@ -158,24 +189,105 @@ Deno.serve(async (req: Request) => {
         }
         return res;
       };
-      for (const local of pending ?? []) {
-        const q = encodeURIComponent(local.order_name);
-        const sRes = await ssGet(`https://api.starshipit.com/api/orders/search?phrase=${q}&limit=5`);
-        if (!sRes.ok) { freightMissing++; continue; }
-        const hit = ((await sRes.json())?.orders ?? []).find((o: any) => o?.order_number === local.order_name);
-        if (!hit) { freightMissing++; continue; }
-        const dRes = await ssGet(`https://api.starshipit.com/api/orders?order_id=${hit.order_id}`);
-        if (!dRes.ok) { freightMissing++; continue; }
-        const detail = (await dRes.json())?.order;
-        const cost = num(detail?.total_shipping_price);      // AUD (label price)
-        if (cost <= 0) { freightMissing++; continue; }       // no label yet — stay pending
+
+      // Newest 1,000 pending per run (the drain order), plus the true backlog
+      // size so the caller can tell how far it has to go.
+      // Record that Starshipit was ASKED and had nothing (not found, or no label
+      // cost yet). Only on a real answer - a failed request proves nothing and
+      // the order must stay "awaiting". The tab reads this as freightChecked.
+      const markChecked = (id: number) => supabase.from('ddp_shipments')
+        .update({ freight_checked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('shopify_order_id', id);
+
+      const { count: pendingCount } = await supabase.from('ddp_shipments')
+        .select('shopify_order_id', { count: 'exact', head: true })
+        .is('freight_cost_aud', null);
+      pendingTotal = pendingCount ?? 0;
+      const retryBefore = new Date(Date.now() - 6 * 3600_000).toISOString();
+      const { data: pendingRows } = await supabase.from('ddp_shipments')
+        .select('shopify_order_id, order_name, tracking_number, order_date')
+        .is('freight_cost_aud', null)
+        .or(`freight_checked_at.is.null,freight_checked_at.lt.${retryBefore}`)
+        .order('order_date', { ascending: false })
+        .limit(1000);
+      const pending = pendingRows ?? [];
+      const pendingByName = new Map(pending.map((p) => [String(p.order_name), p]));
+
+      // (1) bulk discovery: order_number -> { order_id, tracking, carrier }
+      type Hit = { order_id: number; tracking: string | null; carrier: string | null; price: number };
+      const found = new Map<string, Hit>();
+      if (pending.length) {
+        const oldestPending = String(pending[pending.length - 1]?.order_date ?? since).slice(0, 10);
+        // The API does not promise to honour limit=250 or even `page` - the
+        // first runs came back with one short page and the old rule "stop when a
+        // page has fewer than 250" ended the walk there, sending every order
+        // down the two-call search path. So: stop on an EMPTY page, on a page
+        // that adds no order_id we have not seen (the API repeating itself), or
+        // when the page is older than anything still pending. Never on size.
+        const seenIds = new Set<string>();
+        for (let page = 1; page <= 60 && timeLeft() > 70_000; page++) {
+          const res = await ssGet(`https://api.starshipit.com/api/orders/shipped?limit=250&page=${page}`);
+          if (!res.ok) break;
+          const list: any[] = (await res.json())?.orders ?? [];
+          ssPages++;
+          if (!list.length) break;
+          let fresh = 0;
+          let oldestOnPage = '9999';
+          for (const o of list) {
+            const key = String(o?.order_id ?? o?.order_number ?? '');
+            if (key) { if (seenIds.has(key)) continue; seenIds.add(key); fresh++; }
+            const name = String(o?.order_number ?? '');
+            const when = String(o?.order_date ?? o?.shipped_date ?? '').slice(0, 10);
+            if (when && when < oldestOnPage) oldestOnPage = when;
+            if (pendingByName.has(name) && !found.has(name)) {
+              found.set(name, {
+                order_id: o.order_id,
+                tracking: o.tracking_number ?? null,
+                carrier: o.carrier_name ?? o.carrier ?? null,
+                // if the list ever starts carrying the price, use it and skip the detail call
+                price: num(o?.total_shipping_price),
+              });
+            }
+          }
+          // the list is newest-first: once a whole page predates our oldest
+          // pending order there is nothing further back worth reading
+          if (fresh === 0 || (oldestOnPage !== '9999' && oldestOnPage < oldestPending)) break;
+        }
+      }
+
+      // (2) detail calls, newest first, inside the budget
+      for (const local of pending) {
+        // Leave ZONOS a real slice: it has its own budget below, and a run that
+        // spends everything on freight starves the pass that closes the orders.
+        if (timeLeft() < 45_000) { freightRemaining++; continue; }
+        const name = String(local.order_name);
+        let hit = found.get(name);
+        if (!hit) {
+          // not on the shipped list (booked outside Starshipit, or older than
+          // the walk reached): the exact search, one order at a time
+          const q = encodeURIComponent(name);
+          const sRes = await ssGet(`https://api.starshipit.com/api/orders/search?phrase=${q}&limit=5`);
+          if (!sRes.ok) { freightMissing++; continue; }
+          const so = ((await sRes.json())?.orders ?? []).find((x: any) => x?.order_number === name);
+          if (!so) { freightMissing++; await markChecked(local.shopify_order_id); continue; }
+          hit = { order_id: so.order_id, tracking: so.tracking_number ?? null, carrier: so.carrier_name ?? so.carrier ?? null, price: 0 };
+        }
+        let cost = hit.price;
+        if (!(cost > 0)) {
+          const dRes = await ssGet(`https://api.starshipit.com/api/orders?order_id=${hit.order_id}`);
+          if (!dRes.ok) { freightMissing++; continue; }
+          const detail = (await dRes.json())?.order;
+          cost = num(detail?.total_shipping_price);      // AUD (label price)
+          if (!hit.tracking) hit.tracking = detail?.tracking_number ?? null;
+        }
+        if (!(cost > 0)) { freightMissing++; await markChecked(local.shopify_order_id); continue; }  // no label yet - stay pending, but say we looked
         const { error } = await supabase.from('ddp_shipments').update({
           freight_cost_aud: cost,
           ss_order_id: hit.order_id,
-          ss_carrier: hit.carrier_name ?? hit.carrier ?? null,
+          ss_carrier: hit.carrier,
           freight_matched_at: new Date().toISOString(),
           // Starshipit fills the tracking gap when Shopify had none
-          ...(local.tracking_number ? {} : { tracking_number: hit.tracking_number ?? null }),
+          ...(local.tracking_number ? {} : { tracking_number: hit.tracking }),
           updated_at: new Date().toISOString(),
         }).eq('shopify_order_id', local.shopify_order_id);
         if (error) freightMissing++; else freightMatched++;
@@ -184,12 +296,15 @@ Deno.serve(async (req: Request) => {
 
     // ════════════════════════════ 3. ZONOS ══════════════════════════════════
     const zKey = Deno.env.get('ZONOS_API_KEY');
-    let zonosMatched = 0, zonosUnmatched = 0;
+    let zonosMatched = 0, zonosUnmatched = 0, zonosTruncated = false;
     if (zKey) {
-      const { data: rows } = await supabase.from('ddp_shipments')
-        .select('shopify_order_id, tracking_number, zonos_matched_at')
-        .not('tracking_number', 'is', null);
-      const byTracking = new Map((rows ?? []).map((r) => [r.tracking_number, r]));
+      const rows = await readAll<{ shopify_order_id: number; tracking_number: string; zonos_matched_at: string | null }>(
+        (from, to) => supabase.from('ddp_shipments')
+          .select('shopify_order_id, tracking_number, zonos_matched_at')
+          .not('tracking_number', 'is', null)
+          .order('shopify_order_id')
+          .range(from, to));
+      const byTracking = new Map(rows.map((r) => [r.tracking_number, r]));
 
       const unmatchedRows: Record<string, unknown>[] = [];
       let after: string | null = null;
@@ -212,6 +327,11 @@ Deno.serve(async (req: Request) => {
         }),
       });
       for (let page = 0; page < 100; page++) {
+        // Budget: the 152s death of the first full-window run happened HERE -
+        // the freight pass had a clock, this one did not. A truncated walk is
+        // fine for matching (idempotent, the next run continues) but must NOT
+        // be allowed to rebuild the unmatched cache from a partial view.
+        if (timeLeft() < 8_000) { zonosTruncated = true; break; }
         // Zonos rate-limits by query complexity — pace the pages and retry once.
         await new Promise((r) => setTimeout(r, 250));
         let res = await zonosPage(after);
@@ -254,17 +374,22 @@ Deno.serve(async (req: Request) => {
         if (!data.pageInfo?.hasNextPage) break;
         after = data.pageInfo.endCursor;
       }
-      // Derived cache: rebuild wholesale (NOT stock data; replacing is safe).
-      await supabase.from('ddp_zonos_unmatched').delete().gte('seen_at', '1970-01-01');
-      if (unmatchedRows.length) await supabase.from('ddp_zonos_unmatched').upsert(unmatchedRows, { onConflict: 'tracking_number' });
+      // Derived cache: rebuild wholesale (NOT stock data; replacing is safe) -
+      // but only from a COMPLETE walk. Half a walk would shrink the list to
+      // whatever pages were reached and read as "problems solved".
+      if (!zonosTruncated) {
+        await supabase.from('ddp_zonos_unmatched').delete().gte('seen_at', '1970-01-01');
+        if (unmatchedRows.length) await supabase.from('ddp_zonos_unmatched').upsert(unmatchedRows, { onConflict: 'tracking_number' });
+      }
     }
 
     return json({
       success: true,
       window: { since },
       shopify: { scanned, ddpOrders: shopifyRows.length },
-      starshipit: { matched: freightMatched, failed: freightMissing, connected: !!(ssKey && ssSub) },
-      zonos: { matched: zonosMatched, unmatched: zonosUnmatched, connected: !!zKey },
+      starshipit: { matched: freightMatched, failed: freightMissing, remaining: freightRemaining, pendingTotal, pages: ssPages, connected: !!(ssKey && ssSub) },
+      zonos: { matched: zonosMatched, unmatched: zonosUnmatched, truncated: zonosTruncated, connected: !!zKey },
+      elapsedMs: Date.now() - t0,
     });
   } catch (e) {
     return json({ success: false, message: String(e) }, 500);
