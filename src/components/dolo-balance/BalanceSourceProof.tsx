@@ -112,7 +112,9 @@ function SupplierEvidence({ proof }: { proof: Evidence }) {
   const cents = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? decimalToCents(value) : null;
   const sourceDate = (value: unknown) => {
     const valueText = text(value);
-    return valueText && /^\d{4}-\d{2}-\d{2}$/.test(valueText) ? day(valueText) : valueText ?? 'Not provided';
+    // Xero serializes calendar dates at midnight without a timezone; keep the source day.
+    const calendarDate = valueText?.match(/^(\d{4}-\d{2}-\d{2})(?:T00:00:00(?:\.0+)?)?$/);
+    return calendarDate ? day(calendarDate[1]) : valueText ?? 'Not provided';
   };
   const currencyAmount = (row: Evidence, index: number, currency: string) => {
     const value = cents(cell(row, index));
