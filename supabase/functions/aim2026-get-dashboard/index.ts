@@ -483,6 +483,140 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ success: false, message: `Unknown warehouse key: ${warehouseKey}` }, 400);
       }
 
+      // ── SKU detail for a PAST day ──────────────────────────────────────
+      //
+      // The KPI cache below only ever holds today's quantities, so until now a
+      // past date could not be downloaded at all — the button was disabled and
+      // the dialog said so. Since every warehouse is valued on one cost basis
+      // (the Default Purchase Price), a past day is simply that day's SOH
+      // snapshot priced at today's costs — exactly the sum
+      // aim2026_recalc_valuation_history already shows on screen for that date,
+      // so the CSV and the figure above it cannot disagree.
+      //
+      // The requested day may have no snapshot (the sync does not run every
+      // day). The closest snapshot at or before it is used — the same rule the
+      // dialog's date picker applies — and the date actually used comes back in
+      // snapshotDate, which names the file.
+      const asOfDate = typeof body?.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.date)
+        ? body.date
+        : null;
+
+      if (asOfDate) {
+        const { data: dayRow, error: dayErr } = await supabase
+          .from("aim2026_soh_snapshots")
+          .select("snapshot_date")
+          .lte("snapshot_date", asOfDate)
+          .order("snapshot_date", { ascending: false })
+          .limit(1);
+        if (dayErr) return jsonResponse({ success: false, message: dayErr.message }, 500);
+        const useDate = dayRow?.[0]?.snapshot_date;
+        if (!useDate) {
+          return jsonResponse({
+            success: true, data: [], snapshotDate: null, warehouse: warehouseKey,
+            message: `No stock snapshot on or before ${asOfDate}.`,
+          });
+        }
+
+        const pageSizeH = 1000;
+        let sohRows: any[] = [];
+        for (let off = 0; ; off += pageSizeH) {
+          const { data: page, error } = await supabase
+            .from("aim2026_soh_snapshots")
+            .select("sku, warehouse, quantity, allocated, available")
+            .eq("snapshot_date", useDate)
+            .range(off, off + pageSizeH - 1);
+          if (error) return jsonResponse({ success: false, message: error.message }, 500);
+          if (!page || page.length === 0) break;
+          sohRows = sohRows.concat(page);
+          if (page.length < pageSizeH) break;
+        }
+
+        // Costs, paginated: a bare select stops at 1,000 rows and the catalogue
+        // is larger, which would silently value the tail at zero.
+        const costMap = new Map<string, { cost: number; desc: string; group: string }>();
+        for (let off = 0; ; off += pageSizeH) {
+          const { data: page, error } = await supabase
+            .from("aim2026_sku_parameters")
+            .select("sku, product_cost_china, product_description, product_group")
+            .order("sku")
+            .range(off, off + pageSizeH - 1);
+          if (error) return jsonResponse({ success: false, message: error.message }, 500);
+          if (!page || page.length === 0) break;
+          for (const r of page) {
+            costMap.set(r.sku, {
+              cost: Number(r.product_cost_china) || 0,
+              desc: String(r.product_description ?? ""),
+              group: String(r.product_group ?? ""),
+            });
+          }
+          if (page.length < pageSizeH) break;
+        }
+
+        // Per SKU, per pseudo-warehouse, so China can be netted of the units
+        // already counted in Container and DHL — the same subtraction the
+        // aggregate makes. Without it a unit in transit is valued twice.
+        const bySku = new Map<string, Record<string, { q: number; a: number; v: number }>>();
+        const bucketOf = (wh: string): string | null => {
+          const w = wh.toLowerCase();
+          if (w.includes("container")) return "container";
+          if (w.includes("dhl")) return "dhl";
+          if (w.includes("production")) return "onProduction";
+          if (w.includes("korea")) return "pesadoKorea";
+          if (w.includes("china")) return "china";
+          if (w.includes("main")) return "mainWarehouse";
+          return null;
+        };
+        for (const r of sohRows) {
+          const b = bucketOf(String(r.warehouse ?? ""));
+          if (!b) continue;
+          const e = bySku.get(r.sku) ?? {};
+          const cur = e[b] ?? { q: 0, a: 0, v: 0 };
+          cur.q += Number(r.quantity) || 0;
+          cur.a += Number(r.allocated) || 0;
+          cur.v += Number(r.available) || 0;
+          e[b] = cur;
+          bySku.set(r.sku, e);
+        }
+
+        const detail: any[] = [];
+        for (const [sku, buckets] of bySku) {
+          const b = buckets[warehouseKey];
+          let quantity = b?.q ?? 0;
+          if (warehouseKey === "china") {
+            quantity = Math.max(0, quantity - (buckets.container?.q ?? 0) - (buckets.dhl?.q ?? 0));
+          }
+          if (quantity <= 0) continue;
+          const c = costMap.get(sku);
+          const unitCost = c?.cost ?? 0;
+          detail.push({
+            sku,
+            product: c?.desc ?? "",
+            productGroup: c?.group ?? "",
+            warehouse: warehouseKey,
+            quantity,
+            allocated: b?.a ?? 0,
+            available: b?.v ?? 0,
+            unitCostChina: unitCost,
+            landedCostAUD: unitCost,
+            unitCostUsed: Math.round(unitCost * 100) / 100,
+            totalValue: Math.round(quantity * unitCost * 100) / 100,
+            valuationMethod: "Default Purchase Price (AUD, paid in China — no freight, duty or insurance)",
+          });
+        }
+        detail.sort((a, b) => b.totalValue - a.totalValue);
+        const grandTotalH = detail.reduce((sum, r) => sum + r.totalValue, 0);
+        return jsonResponse({
+          success: true,
+          data: detail,
+          snapshotDate: useDate,
+          requestedDate: asOfDate,
+          warehouse: warehouseKey,
+          grandTotal: Math.round(grandTotalH * 100) / 100,
+          skuCount: detail.length,
+          source: "soh_snapshot",
+        });
+      }
+
       // China / On Production are valued at BARE product cost; the rest at
       // landed cost. product_cost_china is ALREADY AUD (the KPI calc says so:
       // "LANDED COST - NO FX conversion - costs are already AUD"). This CSV

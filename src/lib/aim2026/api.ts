@@ -1156,17 +1156,35 @@ export interface WarehouseDetailRow {
 export interface WarehouseDetailResult {
   success: boolean;
   data: WarehouseDetailRow[];
+  /** The snapshot actually used — for a past request, the closest day at or
+   *  before the one asked for. Null when no snapshot reaches back that far. */
   snapshotDate: string | null;
+  /** Echoed back only for a past request, so the caller can tell that the day
+   *  served is not the day asked for. */
+  requestedDate?: string;
   warehouse: string;
   grandTotal: number;
-  exchangeRate: number;
+  exchangeRate?: number;
   skuCount: number;
+  /** 'kpi_cache' for today, 'soh_snapshot' for a past day. */
+  source?: string;
+  message?: string;
 }
 
-export async function fetchWarehouseDetail(warehouseKey: string): Promise<WarehouseDetailResult> {
+/** SKU-level stock detail for one warehouse.
+ *
+ * `asOf` (YYYY-MM-DD) asks for a past day: the closest snapshot at or before it
+ * is priced at today's costs, which is what the on-screen valuation for that
+ * date already shows. Omit it for today's live figures. The date actually used
+ * comes back as `snapshotDate`. */
+export async function fetchWarehouseDetail(
+  warehouseKey: string,
+  asOf?: string | null
+): Promise<WarehouseDetailResult> {
   return callFunction<WarehouseDetailResult>('aim2026-get-dashboard', {
     action: 'warehouse_detail',
     warehouse: warehouseKey,
+    ...(asOf ? { date: asOf } : {}),
   });
 }
 

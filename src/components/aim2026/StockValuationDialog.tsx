@@ -36,12 +36,12 @@ interface StockValuationDialogProps {
 // ─── Colors & Labels ───────────────────────────────────────────────────────
 
 const LOCATIONS = [
-  { key: 'mainWarehouse', label: 'Main Warehouse', color: '#3b82f6', desc: 'Physical stock in the main warehouse in Australia, valued at landed cost (AUD).' },
-  { key: 'china', label: 'China WH (net)', color: '#8b5cf6', desc: 'Stock physically in the China warehouse, valued at bare product cost (AUD). Net of units already in transit (Container/DHL): those ship from China but stay in the China SOH until AU receipt, so they are subtracted here to avoid double-counting.' },
-  { key: 'container', label: 'Container (Sea)', color: '#06b6d4', desc: 'Stock currently in sea freight containers en route to Australia (already netted out of China WH).' },
-  { key: 'dhl', label: 'DHL (Express)', color: '#f97316', desc: 'Stock being shipped via DHL express courier (5-7 business days).' },
-  { key: 'onProduction', label: 'On Production', color: '#a855f7', desc: 'Stock currently being manufactured in China, not yet shipped.' },
-  { key: 'pesadoKorea', label: 'Pesado Korea', color: '#ec4899', desc: 'Stock held at the Pesado Korea warehouse/partner.' },
+  { key: 'mainWarehouse', label: 'Main Warehouse', color: '#3b82f6', desc: 'Physical stock in the main warehouse in Australia. Valued at the Default Purchase Price (AUD) — what was paid the supplier in China, with no freight, duty or insurance in it.' },
+  { key: 'china', label: 'China WH (net)', color: '#8b5cf6', desc: 'Stock physically in the China warehouse, at the Default Purchase Price (AUD). Net of units already in transit (Container/DHL): those ship from China but stay in the China SOH until AU receipt, so they are subtracted here to avoid double-counting.' },
+  { key: 'container', label: 'Container (Sea)', color: '#06b6d4', desc: 'Stock currently in sea freight containers en route to Australia (already netted out of China WH), at the Default Purchase Price (AUD).' },
+  { key: 'dhl', label: 'DHL (Express)', color: '#f97316', desc: 'Stock being shipped via DHL express courier (5-7 business days), at the Default Purchase Price (AUD).' },
+  { key: 'onProduction', label: 'On Production', color: '#a855f7', desc: 'Stock currently being manufactured in China, not yet shipped, at the Default Purchase Price (AUD).' },
+  { key: 'pesadoKorea', label: 'Pesado Korea', color: '#ec4899', desc: 'Stock held at the Pesado Korea warehouse/partner, at the Default Purchase Price (AUD).' },
 ] as const;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -116,7 +116,10 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
   const handleWarehouseDownload = useCallback(async (warehouseKey: string, label: string) => {
     setDownloadingWH(warehouseKey);
     try {
-      const result = await fetchWarehouseDetail(warehouseKey);
+      // A past day is served from that day's stock snapshot priced at today's
+      // costs — the same basis as the figure shown above the button, so the CSV
+      // sums to what is on screen. No date means today's live numbers.
+      const result = await fetchWarehouseDetail(warehouseKey, historical ? selected!.snapshotDate : null);
       if (result.success && result.data.length > 0) {
         const csvRows = result.data.map((r) => ({
           SKU: r.sku,
@@ -142,7 +145,7 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
     } finally {
       setDownloadingWH(null);
     }
-  }, []);
+  }, [historical, selected]);
 
   const pieData = useMemo(() => {
     if (!shown) return [];
@@ -303,9 +306,11 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
                       <div className="flex items-center justify-between text-xs mb-1">
                         <button
                           onClick={() => handleWarehouseDownload(d.key, d.name)}
-                          disabled={isDownloading || historical}
+                          disabled={isDownloading}
                           className="flex items-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-                          title={historical ? 'SKU-level detail exists only for the current snapshot - switch back to Today to download.' : `Download CSV with SKU-level detail for ${d.name}`}
+                          title={historical
+                            ? `Download CSV with SKU-level detail for ${d.name} as of ${selected!.snapshotDate} — that day's units at today's Default Purchase Price, the same basis as the figure beside it.`
+                            : `Download CSV with SKU-level detail for ${d.name} — today's units at the Default Purchase Price.`}
                         >
                           <div className="w-2.5 h-2.5 rounded" style={{ backgroundColor: d.color }} />
                           <span className="font-medium">{d.name}</span>
