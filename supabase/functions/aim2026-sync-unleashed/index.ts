@@ -71,21 +71,60 @@ async function unleashedGet(
   const url = `${UNLEASHED_BASE}/${endpoint}${queryString ? "?" + queryString : ""}`;
   const signature = await hmacSign(creds.api_key, queryString);
 
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "api-auth-id": creds.api_id,
-      "api-auth-signature": signature,
-    },
-    signal: AbortSignal.timeout(55000), // 55s timeout (Pro plan allows up to 300s)
-  });
+  // Unleashed is slow under load and a single slow page used to sink a whole
+  // warehouse (2026-09-09: Main Warehouse page 2 of 8 hit the timeout, the
+  // caller swallowed it, and the day's Australian stock was deleted). A
+  // transient timeout, a 429 or a 5xx is retried with backoff; only a genuine
+  // 4xx (bad credentials, bad endpoint) fails immediately, because retrying
+  // that just wastes the run's time budget.
+  const ATTEMPTS = 3;
+  let lastErr: unknown = null;
 
-  if (!res.ok) {
-    throw new Error(`Unleashed ${endpoint}: ${res.status} ${res.statusText}`);
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "api-auth-id": creds.api_id,
+          "api-auth-signature": signature,
+        },
+        signal: AbortSignal.timeout(75000),
+      });
+
+      if (res.ok) return await res.json();
+
+      const retryable = res.status === 429 || res.status >= 500;
+      const err = new Error(
+        `Unleashed ${endpoint}: ${res.status} ${res.statusText}`
+      );
+      if (!retryable) throw err;
+      lastErr = err;
+    } catch (e) {
+      // A non-retryable HTTP error is rethrown as-is; anything else (timeout,
+      // socket reset, DNS) is worth another go.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/^Unleashed .*: 4\d\d /.test(msg)) throw e;
+      lastErr = e;
+    }
+
+    if (attempt < ATTEMPTS) {
+      const waitMs = 2000 * attempt;
+      console.warn(
+        `Unleashed ${endpoint}: attempt ${attempt}/${ATTEMPTS} failed (${
+          lastErr instanceof Error ? lastErr.message : String(lastErr)
+        }) — retrying in ${waitMs}ms`
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
   }
-  return res.json();
+
+  throw new Error(
+    `Unleashed ${endpoint}: failed after ${ATTEMPTS} attempts — ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`
+  );
 }
 
 /** Fetch all pages from a paginated Unleashed endpoint.
@@ -199,7 +238,11 @@ interface SyncResult {
 }
 
 /** Step 1: Sync Products → aim2026_sku_parameters
- * Syncs product metadata (description, group, supplier) and cost for new SKUs.
+ * Syncs product metadata (description, group, supplier) and keeps
+ * product_cost_china in step with Unleashed's Default Purchase Price — the
+ * supplier price in China, AUD, no freight and no customs. Freight, duty and
+ * insurance are added downstream from aim2026_cost_config, and must never be
+ * baked into this column.
  * Does NOT touch lead_time_days — that is loaded exclusively from ProductList.csv
  * via Settings → "Load Lead Times from CSV". */
 async function syncProducts(
@@ -209,16 +252,28 @@ async function syncProducts(
   const products = await unleashedGetAll("Products", "", creds);
   console.log(`Products API returned ${products.length} products`);
 
-  // Load existing SKUs to know which already have cost from CSV
-  const { data: existingRows } = await supabase
-    .from("aim2026_sku_parameters")
-    .select("sku, product_cost_china");
+  // Load every existing SKU and its stored cost.
+  //
+  // PAGINATED ON PURPOSE: a bare select returns at most 1,000 rows and says
+  // nothing about it. There are ~1,560 SKUs, so an unpaginated read makes the
+  // last third look like brand-new products that have never had a cost.
   const existingMap = new Map<string, { cost: number }>();
-  for (const r of existingRows ?? []) {
-    existingMap.set(r.sku, {
-      cost: Number(r.product_cost_china) || 0,
-    });
+  {
+    const page = 1000;
+    for (let from = 0; ; from += page) {
+      const { data, error } = await supabase
+        .from("aim2026_sku_parameters")
+        .select("sku, product_cost_china")
+        .order("sku")
+        .range(from, from + page - 1);
+      if (error) throw new Error(`Reading existing costs: ${error.message}`);
+      for (const r of data ?? []) {
+        existingMap.set(r.sku, { cost: Number(r.product_cost_china) || 0 });
+      }
+      if (!data || data.length < page) break;
+    }
   }
+  console.log(`Existing SKUs loaded: ${existingMap.size}`);
 
   // Filter out products without a valid SKU and deduplicate.
   //
@@ -232,9 +287,8 @@ async function syncProducts(
   // a cost is exactly what selected them for deletion.
   //
   // rows      -> metadata only, identical keys for every SKU, safe to upsert.
-  // costRows  -> cost only, and only for SKUs that have none. Written
-  //              separately so a cost from costs.csv can never be in a payload
-  //              that might null it.
+  // costRows  -> cost only, written one SKU at a time as targeted UPDATEs, so a
+  //              cost can never sit in a payload that might null it.
   const seenSkus = new Set<string>();
   const rows: any[] = [];
   const costRows: any[] = [];
@@ -253,10 +307,25 @@ async function syncProducts(
       updated_at: new Date().toISOString(),
     });
 
-    // Seed a cost only where there is none. Never overwrite costs.csv.
-    if (!existing || existing.cost === 0) {
-      const seed = Number(p.LastCost ?? p.DefaultPurchasePrice ?? 0);
-      if (seed > 0) costRows.push({ sku, product_cost_china: seed });
+    // COST SOURCE OF TRUTH: Unleashed's Default Purchase Price.
+    //
+    // Mario's convention (2026-09-09): product_cost_china is what we actually
+    // paid the supplier in China, in AUD, with no freight and no customs in it.
+    // That is the field he maintains by hand in Unleashed, and the dashboard
+    // follows it.
+    //
+    // NOT LastCost. LastCost is the price of the most recent purchase order and
+    // drifts with every receipt; on 120 of the 156 SKUs corrected in September
+    // it held a different number from the maintained one (AB3070CD: Default
+    // 24.50 against LastCost 14.50). Reading LastCost first is what kept the
+    // dashboard disagreeing with Unleashed.
+    //
+    // A missing or zero Default Purchase Price writes NOTHING. Zero does not
+    // mean free, it means not maintained, and overwriting a real cost with it
+    // is how landed cost goes to zero across the board.
+    const dpp = Number(p.DefaultPurchasePrice ?? 0);
+    if (dpp > 0 && (!existing || Math.abs(existing.cost - dpp) > 0.005)) {
+      costRows.push({ sku, product_cost_china: dpp, was: existing?.cost ?? null });
     }
 
     // NOTE: lead_time_days is NOT set here. The Products list endpoint does not
@@ -264,20 +333,31 @@ async function syncProducts(
     // via Settings → "Load Lead Times from CSV". This avoids overwriting CSV values.
   }
 
-  console.log(`Products: ${rows.length} unique valid SKUs, ${costRows.length} needing a seed cost`);
+  console.log(`Products: ${rows.length} unique valid SKUs, ${costRows.length} with a changed Default Purchase Price`);
   if (rows.length === 0) return 0;
 
   // Costs first, as targeted UPDATEs. An update touches only the column named,
   // so nothing else on the row can be disturbed, and a SKU that already has a
   // cost is never in this list at all.
+  // One targeted UPDATE per SKU, naming exactly one column. This is the shape
+  // that survives the 2026-08-03 incident: a single-row update cannot take part
+  // in a key-union batch, so no other column and no other row can be nulled.
+  let costsWritten = 0;
   for (const c of costRows) {
     const { error } = await supabase
       .from("aim2026_sku_parameters")
       .update({ product_cost_china: c.product_cost_china })
-      .eq("sku", c.sku)
-      .or("product_cost_china.is.null,product_cost_china.eq.0");
-    if (error) console.error(`Error seeding cost for ${c.sku}:`, error.message);
+      .eq("sku", c.sku);
+    if (error) {
+      console.error(`Error writing cost for ${c.sku}:`, error.message);
+    } else {
+      costsWritten++;
+      console.log(
+        `cost ${c.sku}: ${c.was ?? "(none)"} -> ${c.product_cost_china}`
+      );
+    }
   }
+  console.log(`Costs updated from Default Purchase Price: ${costsWritten}`);
 
   // Upsert in batches — ignoreDuplicates: false so it updates existing rows.
   // Every row here carries exactly the same keys, so the UNION-of-keys
@@ -337,6 +417,11 @@ async function syncStockOnHand(
     `Fetching StockOnHand per-warehouse for: ${WAREHOUSES.map((w) => `${w.code} → ${w.name}`).join(", ")}`
   );
 
+  // Which warehouses actually came back. ONLY these may be deleted and
+  // rewritten — see the delete block below.
+  const okWarehouses: string[] = [];
+  const failedWarehouses: string[] = [];
+
   for (const wh of WAREHOUSES) {
     console.log(`Fetching StockOnHand for warehouse: ${wh.code} (${wh.name})...`);
     try {
@@ -370,9 +455,13 @@ async function syncStockOnHand(
           available,
         });
       }
+      okWarehouses.push(wh.name);
     } catch (e) {
+      // Keep going so one bad warehouse does not cost us the others — but this
+      // warehouse is NOT in okWarehouses, so its stored rows are left untouched
+      // and the step is reported as failed at the end.
+      failedWarehouses.push(wh.name);
       console.error(`StockOnHand ${wh.code} failed:`, e);
-      // Continue with other warehouses
     }
   }
 
@@ -384,12 +473,18 @@ async function syncStockOnHand(
     console.log(`StockOnHand warehouses: ${JSON.stringify(warehouses)}`);
   }
 
-  if (allRows.length === 0) return 0;
+  if (allRows.length === 0 && failedWarehouses.length === 0) return 0;
 
-  // Delete today's snapshots ONLY for warehouses we're replacing
-  // (preserve PO-based entries: Container, DHL, On Production)
-  const warehouseNames = WAREHOUSES.map((w) => w.name);
-  for (const wh of warehouseNames) {
+  // Delete today's snapshots ONLY for warehouses THIS RUN actually fetched.
+  //
+  // INVARIANT — do not widen this list back to WAREHOUSES. On 2026-09-09 the
+  // Main Warehouse fetch timed out, the catch above swallowed it, and this loop
+  // then deleted the Main Warehouse rows it had no replacement for: 116,113
+  // units vanished from the day's stock and the dashboard valued the company
+  // without its Australian warehouse. A warehouse that did not come back keeps
+  // whatever it already had; stale beats missing.
+  // (PO-based entries — Container, DHL, On Production — were never in scope.)
+  for (const wh of okWarehouses) {
     await supabase
       .from("aim2026_soh_snapshots")
       .delete()
@@ -408,6 +503,17 @@ async function syncStockOnHand(
     if (error) {
       console.error(`Error inserting SOH batch ${i}:`, error);
     }
+  }
+
+  // Everything that could be saved has been saved. Now say out loud that a
+  // warehouse is missing, so the run is marked failed and shows up in Recent
+  // updates instead of quietly reporting a company that is short a warehouse.
+  if (failedWarehouses.length > 0) {
+    throw new Error(
+      `StockOnHand incomplete: ${failedWarehouses.join(", ")} did not respond. ` +
+        `Their previous stock was left in place (not overwritten). ` +
+        `Fetched: ${okWarehouses.join(", ") || "none"}.`
+    );
   }
 
   return allRows.length;
