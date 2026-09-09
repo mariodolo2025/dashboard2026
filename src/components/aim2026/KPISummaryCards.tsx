@@ -244,6 +244,7 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
         label="Inventory Value"
         value={formatCurrencyAUD(data.totalInventoryValueAUD)}
         subtitle={`${formatCurrencyUSD(data.totalInventoryValueUSD)} · Click for details`}
+        helpText="Units on hand across every location × the Default Purchase Price — what was paid the supplier in China, in AUD, straight from Unleashed. Freight, duty and insurance (12.24%) are NOT in it: they are reported as their own cost categories from Xero, and counting them here too would double them. They are still applied to COGS, margin, turnover and GMROI."
         // The history arrives newest-first from the API. Drawn as-is the line reads
         // backwards — an 18% fall rendered as a rise. The valuation dialog and panel
         // already reverse their own copy; this one did not.
@@ -272,7 +273,7 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
         label="Avg Turnover"
         value={fmtOrDash(avgTurnover, (n) => n.toFixed(1))}
         subtitle="times per period"
-        helpText="How many times inventory is sold and replaced. Higher = better capital efficiency."
+        helpText="How many times inventory is sold and replaced: annual COGS ÷ average inventory, both at LANDED cost (Default Purchase Price + 12.24% freight, duty and insurance). Not the same basis as the Inventory Value card, which reports what was paid in China. Higher = better capital efficiency."
         trend={{ direction: data.avgTurnoverTrend }}
         accent="#8b5cf6"
         delay={0.1}
@@ -282,7 +283,7 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
         label="Avg GMROI"
         value={fmtOrDash(avgGMROI, (n) => (n > 100 ? '>100' : n.toFixed(1)))}
         subtitle="return on inventory $"
-        helpText="Gross Margin Return on Investment: annual gross profit per AUD invested in inventory. High values (>100) indicate very low stock relative to sales. Target: > 3.0."
+        helpText="Gross Margin Return on Investment: annual gross profit per AUD invested in inventory. Both sides are measured at LANDED cost (Default Purchase Price + 12.24% freight, duty and insurance), unlike the Inventory Value card above, which reports what was paid in China. Mixing the two bases would inflate this ratio by 12.24%. High values (>100) indicate very low stock relative to sales. Target: > 3.0."
         accent={avgGMROI === null ? '#94a3b8' : avgGMROI >= 3 ? '#10b981' : avgGMROI >= 1 ? '#f59e0b' : '#ef4444'}
         delay={0.15}
       />
@@ -291,7 +292,7 @@ export function KPISummaryCards({ data, filteredOverrides, loading, onValuationC
         label="Avg Margin"
         value={fmtOrDash(avgMarginPercent, (n) => `${n.toFixed(1)}%`)}
         subtitle="gross profit"
-        helpText="Gross profit margin: (Selling Price − Landed Cost) ÷ Selling Price × 100."
+        helpText="Gross profit margin: (Selling Price − Landed Cost) ÷ Selling Price × 100. Landed Cost = Default Purchase Price + 12.24% (freight 5.92%, duty 5%, insurance 1.32%, from Financial Configuration). The freight is in here on purpose: by the time a unit is sold it has been paid."
         trend={{ direction: data.avgMarginTrend }}
         accent="#f59e0b"
         delay={0.2}

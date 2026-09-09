@@ -303,8 +303,8 @@ export function SKUDetailDialog({
           <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg px-4 py-2.5 border border-blue-200/40 dark:border-blue-800/40 flex items-start gap-2">
             <Info size={13} className="text-blue-500 mt-0.5 flex-shrink-0" />
             <p className="text-[11px] text-blue-700 dark:text-blue-300 leading-relaxed">
-              <strong>Cost China</strong> = FOB factory price (AUD). 
-              <strong>Landed AUD</strong> = Cost China × (1 + freight + duty + insurance).
+              <strong>Cost China</strong> = Default Purchase Price from Unleashed (AUD) — what was paid the supplier, no freight, no customs. This is what values the stock.
+              <strong>Landed AUD</strong> = Cost China × (1 + freight 5.92% + duty 5% + insurance 1.32%), rates from Financial Configuration. This is what a unit costs to sell, and it is what margin, COGS, turnover and GMROI use.
               <strong>GMROI</strong> (Gross Margin Return on Investment) measures profit per dollar invested — target &gt; 3.0.
               <strong>ROP</strong> (Reorder Point) = trigger level to place an order. <strong>Sug. Qty</strong> = order up to Target Stock Level minus pipeline.
             </p>
@@ -321,13 +321,13 @@ export function SKUDetailDialog({
                 label="Cost China"
                 value={fmtCurrency(sku.productCostChina)}
                 icon={Package}
-                sub="FOB Factory"
+                sub="Default Purchase Price · values the stock"
               />
               <StatCard
                 label="Landed AUD"
                 value={fmtCurrency(sku.landedCostAUD)}
                 icon={Truck}
-                sub="Incl. freight, duty, ins."
+                sub="+12.24% · used for COGS & margin"
               />
               <StatCard
                 label="Avg Sell Price"

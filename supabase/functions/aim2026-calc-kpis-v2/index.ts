@@ -1008,13 +1008,33 @@ Deno.serve(async (req: Request) => {
           : null;
 
       const annualCOGS = demandStats.avgMonthly * 12 * landedCostAUD;
-      const avgInventoryValue = scopeWH.quantity * landedCostAUD;
-      const turnover = costKnown && avgInventoryValue > 0 ? annualCOGS / avgInventoryValue : null;
+
+      // TWO BASES, ON PURPOSE (Mario, 2026-09-09).
+      //
+      // What the stock is WORTH is what we paid the supplier in China — the
+      // Default Purchase Price the sync keeps in product_cost_china. Freight,
+      // duty and insurance are real costs but they are reported in their own
+      // categories from Xero; adding them to the stock value counts them twice.
+      //
+      // What it COSTS to sell a unit still carries the 12.24% uplift, because
+      // by the time it is sold the freight has been paid. So margin, COGS and
+      // the two efficiency ratios stay on the landed cost.
+      //
+      // Turnover and GMROI keep a LANDED denominator on purpose: both divide a
+      // landed-cost numerator, and mixing a landed numerator with a bare
+      // denominator would inflate them by 12.24% and break comparison with
+      // every figure recorded before today.
+      const avgInventoryValue = scopeWH.quantity * params.productCostChina;
+      const avgInventoryValueLanded = scopeWH.quantity * landedCostAUD;
+      const turnover =
+        costKnown && avgInventoryValueLanded > 0
+          ? annualCOGS / avgInventoryValueLanded
+          : null;
 
       const grossMarginAnnual = demandStats.avgMonthly * 12 * (avgSellingPrice - landedCostAUD);
       const gmroi =
-        costKnown && priceKnown && avgInventoryValue > 0
-          ? grossMarginAnnual / avgInventoryValue
+        costKnown && priceKnown && avgInventoryValueLanded > 0
+          ? grossMarginAnnual / avgInventoryValueLanded
           : null;
 
       const abcClass = abcMap.get(sku) ?? params.abcClass ?? "C";
@@ -1123,12 +1143,17 @@ Deno.serve(async (req: Request) => {
       // edge case where a shipment's units aren't reflected in China SOH.
       const netChinaQty = Math.max(0, chinaWH.quantity - containerWH.quantity - dhlWH.quantity);
 
-      totalValuationMainWH += mainWH.quantity * landedCostAUD;
+      // Every warehouse valued at the Default Purchase Price — what was paid in
+      // China. China and On Production were already on this basis; Main,
+      // Container, DHL and Korea used to carry the 12.24% landed uplift, which
+      // put freight into the stock value while Xero was reporting the same
+      // freight as an expense.
+      totalValuationMainWH += mainWH.quantity * params.productCostChina;
       totalValuationChina += netChinaQty * params.productCostChina;
-      totalValuationContainer += containerWH.quantity * landedCostAUD;
-      totalValuationDHL += dhlWH.quantity * landedCostAUD;
+      totalValuationContainer += containerWH.quantity * params.productCostChina;
+      totalValuationDHL += dhlWH.quantity * params.productCostChina;
       totalValuationOnProd += onProdWH.quantity * params.productCostChina;
-      totalValuationKorea += koreaWH.quantity * landedCostAUD;
+      totalValuationKorea += koreaWH.quantity * params.productCostChina;
     }
 
     // ── For date range queries: return data directly without persisting ──

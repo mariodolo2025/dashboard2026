@@ -632,7 +632,7 @@ export async function fetchDashboardData(): Promise<DashboardData> {
   const latestValuation = valuationHistory[0];
   const totalInventoryValue = latestValuation
     ? latestValuation.totalInventory
-    : rows.reduce((s, r) => s + r.sohMainWH * r.landedCostAUD, 0);
+    : rows.reduce((s, r) => s + r.sohMainWH * r.productCostChina, 0);
 
   const itemsAtRisk = rows.filter(
     (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
@@ -783,7 +783,7 @@ export async function recalcKPIsForDateRange(
   const kpiData = result.data ?? [];
   const rows: SKURow[] = kpiData.map((row) => kpiDataToRow(row.sku, row.kpi_data));
 
-  const totalInventoryValue = rows.reduce((s, r) => s + r.sohMainWH * r.landedCostAUD, 0);
+  const totalInventoryValue = rows.reduce((s, r) => s + r.sohMainWH * r.productCostChina, 0);
   const itemsAtRisk = rows.filter(
     (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
   ).length;
@@ -837,7 +837,7 @@ export async function recalcKPIsForDemandMode(
   const kpiData = result.data ?? [];
   const rows: SKURow[] = kpiData.map((row) => kpiDataToRow(row.sku, row.kpi_data));
 
-  const totalInventoryValue = rows.reduce((s, r) => s + r.sohMainWH * r.landedCostAUD, 0);
+  const totalInventoryValue = rows.reduce((s, r) => s + r.sohMainWH * r.productCostChina, 0);
   const itemsAtRisk = rows.filter(
     (r) => r.status === 'CRITICAL' || r.status === 'LOW STOCK'
   ).length;

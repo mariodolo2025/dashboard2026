@@ -396,12 +396,15 @@ export default function AIM2026Dashboard({ dateRange, setDateRange }: AIM2026Das
   }, [filteredData]);
 
   const filteredValuation = useMemo(() => {
+    // Every warehouse at the Default Purchase Price — what was paid in China.
+    // Freight, duty and insurance are reported as their own cost categories and
+    // are deliberately not in the stock value. See aim2026_recalc_valuation_history.
     let mainWH = 0, china = 0, container = 0, dhl = 0, onProduction = 0;
     for (const r of filteredData) {
-      mainWH += r.sohMainWH * (r.landedCostAUD || 0);
+      mainWH += r.sohMainWH * (r.productCostChina || 0);
       china += r.sohChina * (r.productCostChina || 0);
-      container += r.container * (r.landedCostAUD || 0);
-      dhl += r.dhl * (r.landedCostAUD || 0);
+      container += r.container * (r.productCostChina || 0);
+      dhl += r.dhl * (r.productCostChina || 0);
       onProduction += r.onProduction * (r.productCostChina || 0);
     }
     const total = mainWH + china + container + dhl + onProduction;

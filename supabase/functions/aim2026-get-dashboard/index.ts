@@ -488,7 +488,13 @@ Deno.serve(async (req: Request) => {
       // "LANDED COST - NO FX conversion - costs are already AUD"). This CSV
       // used to multiply it by the USD->AUD rate AGAIN, inflating those two
       // warehouses by 54% against the on-screen snapshot.
-      const useBareCost = warehouseKey === "china" || warehouseKey === "onProduction";
+      // Every warehouse is valued at the Default Purchase Price (what was paid
+      // in China). Freight, duty and insurance are reported as their own Xero
+      // categories and must not also sit in the stock value. China and On
+      // Production were always on this basis; the rest joined them on
+      // 2026-09-09. Kept as a named constant so the CSV cannot silently drift
+      // from aim2026_recalc_valuation_history and the KPI card.
+      const useBareCost = true;
 
       // Quantities come from the SAME rows the on-screen snapshot summed — the
       // KPI cache — not from the SOH pseudo-warehouses, which miss SKUs whose
@@ -544,7 +550,7 @@ Deno.serve(async (req: Request) => {
               landedCostAUD: landedAUD,
               unitCostUsed: Math.round(unitCost * 100) / 100,
               totalValue: Math.round(quantity * unitCost * 100) / 100,
-              valuationMethod: useBareCost ? "Product cost (AUD, no landed uplift)" : "Landed Cost AUD",
+              valuationMethod: "Default Purchase Price (AUD, paid in China — no freight, duty or insurance)",
             };
           })
           .filter((r) => r.quantity > 0)
@@ -647,7 +653,7 @@ Deno.serve(async (req: Request) => {
             landedCostAUD: landedAUD,
             unitCostUsed: Math.round(unitCost * 100) / 100,
             totalValue: Math.round(totalValue * 100) / 100,
-            valuationMethod: useBareCost ? "Product cost (AUD, no landed uplift)" : "Landed Cost AUD",
+            valuationMethod: "Default Purchase Price (AUD, paid in China — no freight, duty or insurance)",
           };
         })
         .sort((a: any, b: any) => b.totalValue - a.totalValue);

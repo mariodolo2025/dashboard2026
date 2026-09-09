@@ -242,8 +242,12 @@ export function StockValuationDialog({ open, onOpenChange, valuation, history }:
           <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg px-4 py-3 border border-blue-200/40 dark:border-blue-800/40 flex items-start gap-2">
             <Info size={14} className="text-blue-500 mt-0.5 flex-shrink-0" />
             <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
-              <strong>What is this?</strong> Stock Valuation shows the total monetary value of your inventory 
-              across all physical locations. Main WH is valued at landed cost (AUD); China and Production are valued at bare product cost (already AUD, no landed uplift - freight, duty and insurance have not been incurred yet). Hover over each location for details.
+              <strong>What is this?</strong> Stock Valuation shows the total monetary value of your inventory
+              across all physical locations. Every location is valued at the <strong>Default Purchase Price</strong>: what
+              was paid the supplier in China, in AUD, with no freight, duty or insurance in it. That price comes from
+              Unleashed and is refreshed by the products sync. Freight, duty and insurance (12.24%) are reported in
+              their own cost categories from Xero and are deliberately kept out of this number, so the same money is
+              not counted twice. They are still applied to COGS and margin. Hover over each location for details.
             </p>
           </div>
 
