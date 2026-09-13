@@ -17,7 +17,7 @@
 // collapsed at the bottom.
 // =============================================================================
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis,
 } from 'recharts';
@@ -75,6 +75,23 @@ interface LedgerRow {
   freight: number | null; zonosDT: number | null; zonosFees: number | null; zonosExpected: boolean;
   paidTotal: number | null; net: number | null; tracking: string | null; carrier: string | null; matched: boolean;
 }
+/** One side of a dated policy change. Money in AUD at the monthly rate. */
+interface PolicySide {
+  from: string; to: string; orders: number; ordersPerDay: number | null;
+  medianSubtotal: number | null;
+  checkoutDutiesTaxes: number | null; checkoutDutiesTaxesPct: number | null;
+  customerPaysTotal: number | null;
+  /** Orders ZONOS has already billed, and what it billed in duties+taxes as a
+   *  share of THOSE orders' subtotal. Low coverage = not readable yet. */
+  zonosOrders: number; zonosDutiesTaxesPct: number | null; zonosFeePerOrder: number | null;
+}
+/** Before/after a market moved duties+taxes into the price (Canada, 11-Sep-2026).
+ *  Equal windows either side of the cutover, independent of the date range. */
+interface PolicyChange {
+  country: string; cutAt: string; windowDays: number;
+  before: PolicySide | null; after: PolicySide | null;
+}
+
 interface Payload {
   kpis: Kpis; components: Component[]; weekly: Week[]; countries: Country[]; ledger: LedgerRow[];
   exceptions: {
@@ -88,7 +105,9 @@ interface Payload {
   /** The live markets with their policies, from ddp_markets — the tab holds no
    *  list of its own. inAllMarkets=false sits outside the aggregate (USA).
    *  adRegion null = no MER on this tab. */
-  markets: { code: string; name: string; chargesDuties: boolean; inAllMarkets: boolean; adRegion: string | null }[];
+  markets: { code: string; name: string; chargesDuties: boolean; inAllMarkets: boolean; adRegion: string | null; dutiesIncludedFrom: string | null }[];
+  /** Null unless one market with a dated policy change is selected. */
+  policyChange: PolicyChange | null;
 }
 
 // Names come from the RPC. Only the flags stay in code — they are drawn, and
@@ -225,6 +244,12 @@ export default function DDPMarketsTab() {
   }, [from, to, country, load]);
 
   const k = data?.kpis;
+  // "Nothing added at checkout" has two different reasons, and they tell
+  // opposite stories about who pays. The USA absorbs duties by policy; Canada
+  // moved them INTO THE PRICE on 11-Sep-2026 (prices up ~20%). The words follow
+  // the market's own data, never a country code.
+  const notChargedWhy = country && data?.markets.find((m) => m.code === country)?.dutiesIncludedFrom
+    ? 'included in the price' : 'absorbed by policy';
   // Names come from the payload; an unknown code falls back to itself rather
   // than rendering "undefined" if a market is added while the tab is open.
   const countryName = (cc: string) =>
@@ -253,7 +278,7 @@ export default function DDPMarketsTab() {
       // For an absorbing market the gap IS the policy: describing it as
       // "undercharging" would call a decision a defect.
       note: (c) => k?.chargesDuties === false
-        ? `absorbed by policy — nothing is charged to the customer; ZONOS bills ${aud(Math.abs(c.perOrder), 2)} per order`
+        ? `${notChargedWhy} — nothing is added at checkout; ZONOS bills ${aud(Math.abs(c.perOrder), 2)} per order`
         : Math.abs(c.gap) <= Math.max(5, c.paid * 0.05)
           ? 'checkout tracks ZONOS closely — charging is calibrated'
           : c.gap < 0 ? 'checkout charges LESS than ZONOS bills — undercharging'
@@ -335,7 +360,7 @@ export default function DDPMarketsTab() {
         {country && (
           <span className="text-[13px] text-muted-foreground">
             viewing {countryName(country)} only
-            {k?.chargesDuties === false && <> · <b className="font-medium text-amber-700 dark:text-amber-500">absorbs duties + taxes by policy</b></>}
+            {k?.chargesDuties === false && <> · <b className="font-medium text-amber-700 dark:text-amber-500">duties + taxes {notChargedWhy}</b></>}
           </span>
         )}
       </div>
@@ -407,7 +432,7 @@ export default function DDPMarketsTab() {
           </div>
           <div className="text-[13px] text-muted-foreground tabular-nums">
             {!k ? '' : k.chargesDuties === false
-              ? <>total charged {aud(k.chargedTotal)} · ship {aud(k.chargedShipping)} · <span className="text-amber-700 dark:text-amber-500">duties + taxes not charged (absorbed by policy)</span></>
+              ? <>total charged {aud(k.chargedTotal)} · ship {aud(k.chargedShipping)} · <span className="text-amber-700 dark:text-amber-500">duties + taxes not charged at checkout ({notChargedWhy})</span></>
               : `total charged ${aud(k.chargedTotal)} · ship ${aud(k.chargedShipping)} · duties ${aud(k.chargedDuties)} · taxes ${aud(k.chargedTaxes)}`}
           </div>
         </div>
@@ -453,6 +478,122 @@ export default function DDPMarketsTab() {
           </div>
         ))}
       </div>
+
+      {/* ── before / after a dated policy change ────────────────────────────
+          Mario, 2026-09-14: Canada moved duties and taxes into the price on
+          11-Sep and he wants to compare against what came before. The trap this
+          block exists to avoid: after the change "charged at checkout" is
+          shipping only, so recovery collapses on paper while the customer pays
+          MORE - the money moved into the subtotal, which the reconciliation
+          never reads. So it compares what the customer pays IN TOTAL, and what
+          ZONOS bills as a share of the price, over equal windows either side. */}
+      {data?.policyChange && (() => {
+        const pc = data.policyChange;
+        const b = pc.before;
+        const a = pc.after;
+        const cutLabel = new Date(pc.cutAt).toLocaleString('en-AU', {
+          timeZone: 'Australia/Brisbane', weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+        });
+        const chg = (after: number | null | undefined, before: number | null | undefined) =>
+          after == null || before == null || before === 0 ? null : Math.round((100 * (after - before)) / before);
+        const signed = (v: number | null, suffix = '%') =>
+          v == null ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v)}${suffix}`;
+        // A side's ZONOS share is only worth reading once most of its orders
+        // have been billed; below half it is a handful of early parcels.
+        const readable = (sd: PolicySide | null) => !!sd && sd.orders > 0 && sd.zonosOrders / sd.orders >= 0.5;
+        const zonosCell = (sd: PolicySide | null) => !sd ? '—' : sd.zonosOrders === 0
+          ? <span className="text-muted-foreground">not billed yet <span className="text-[12px]">(0 of {sd.orders})</span></span>
+          : <span className={cn(!readable(sd) && 'text-muted-foreground')}>
+              {sd.zonosDutiesTaxesPct ?? '—'}%
+              <span className="ml-1 text-[12px] text-muted-foreground">({sd.zonosOrders} of {sd.orders} billed)</span>
+            </span>;
+        const dtDiff = a?.checkoutDutiesTaxes != null && b?.checkoutDutiesTaxes != null
+          ? a.checkoutDutiesTaxes - b.checkoutDutiesTaxes : null;
+        const rows: { label: string; tip: string; before: ReactNode; after: ReactNode; change: string }[] = [
+          {
+            label: 'Orders per day',
+            tip: 'Orders placed per day in each window. Both windows are the same length, so volume compares directly - but they fall on different weekdays, and the weekday moves volume on its own.',
+            before: b?.ordersPerDay ?? '—', after: a?.ordersPerDay ?? '—',
+            change: signed(chg(a?.ordersPerDay, b?.ordersPerDay)),
+          },
+          {
+            label: 'Median order subtotal',
+            tip: 'The middle order\'s merchandise subtotal - before shipping, duties and taxes - in AUD at the monthly rate. The median, not the average: most orders are one product, so the median shows the price change that a few big baskets would blur in an average.',
+            before: aud(b?.medianSubtotal, 2), after: aud(a?.medianSubtotal, 2),
+            change: signed(chg(a?.medianSubtotal, b?.medianSubtotal)),
+          },
+          {
+            label: 'Duties + taxes added at checkout',
+            tip: 'Charged on top of the price at checkout: the average per order, and as a share of the window\'s total subtotal. Zero after the change by design - that money now sits inside the subtotal above.',
+            before: <>{aud(b?.checkoutDutiesTaxes, 2)}{b?.checkoutDutiesTaxesPct != null && <span className="ml-1 text-[12px] text-muted-foreground">({b.checkoutDutiesTaxesPct}% of subtotal)</span>}</>,
+            after: <>{aud(a?.checkoutDutiesTaxes, 2)}{a?.checkoutDutiesTaxesPct != null && <span className="ml-1 text-[12px] text-muted-foreground">({a.checkoutDutiesTaxesPct}% of subtotal)</span>}</>,
+            change: dtDiff == null ? '—' : `${dtDiff > 0 ? '+' : dtDiff < 0 ? '−' : ''}${aud(Math.abs(dtDiff), 2)}`,
+          },
+          {
+            label: 'Customer pays in total, per order',
+            tip: 'Everything the customer pays for an order: merchandise, shipping and whatever was added at checkout. This is the like-for-like figure across the two policies. It is an average, so it moves with basket size as well as with price.',
+            before: aud(b?.customerPaysTotal, 2), after: aud(a?.customerPaysTotal, 2),
+            change: signed(chg(a?.customerPaysTotal, b?.customerPaysTotal)),
+          },
+          {
+            label: 'ZONOS duties + taxes, % of subtotal',
+            tip: 'What ZONOS billed Dolo in duties and taxes, as a share of those same orders\' subtotal - counting only orders ZONOS has already billed. ZONOS bills Canada about a week after the parcel ships, so a side where fewer than half the orders are billed is shown grey: not readable yet.',
+            before: zonosCell(b), after: zonosCell(a),
+            change: readable(a) && readable(b) && a!.zonosDutiesTaxesPct != null && b!.zonosDutiesTaxesPct != null
+              ? `${signed(Math.round((a!.zonosDutiesTaxesPct - b!.zonosDutiesTaxesPct) * 10) / 10, ' pts')}` : '—',
+          },
+        ];
+        const priceUp = chg(a?.medianSubtotal, b?.medianSubtotal);
+        return (
+          <div className="rounded-xl border bg-card p-4">
+            <div className="cursor-help text-sm font-bold"
+              title={`${countryName(pc.country)} stopped adding duties and taxes at checkout and moved them into the price. Cutover read off the orders themselves: the last one charged tax and the next charged nothing, with no orders in between. Two windows of equal length either side of it, computed server-side; they grow together every day and ignore the date range above.`}>
+              Before / after {cutLabel} (Brisbane) — duties + taxes moved into the price
+              <span className="ml-2 font-normal text-muted-foreground text-[13px]">
+                {pc.windowDays} days each side · independent of the date range above
+              </span>
+            </div>
+            {pc.windowDays < 7 && (
+              <div className="mt-1 text-[13px] text-amber-700 dark:text-amber-500">
+                Less than a week each side, on different weekdays — an early read, not a verdict.
+              </div>
+            )}
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[640px] border-collapse text-[13px] tabular-nums">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="py-1.5 pr-2 font-semibold" />
+                    <th className="cursor-help py-1.5 pl-2 text-right font-semibold"
+                      title={b ? `Orders placed ${new Date(b.from).toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane', day: 'numeric', month: 'short' })} to the cutover. Duties and taxes added at checkout.` : 'No orders before the change.'}>
+                      Before · charged at checkout
+                    </th>
+                    <th className="cursor-help py-1.5 pl-2 text-right font-semibold"
+                      title={a ? `Orders placed from the cutover to ${new Date(a.to).toLocaleDateString('en-AU', { timeZone: 'Australia/Brisbane', day: 'numeric', month: 'short' })}, the latest order synced. Duties and taxes included in the price.` : 'No orders since the change yet.'}>
+                      After · included in the price
+                    </th>
+                    <th className="cursor-help py-1.5 pl-2 text-right font-semibold" title="After against before: % change, or the difference where a percentage would mislead.">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.label} className="border-b border-border/60">
+                      <td className="cursor-help py-1.5 pr-2" title={r.tip}>{r.label}</td>
+                      <td className="py-1.5 pl-2 text-right">{r.before}</td>
+                      <td className="py-1.5 pl-2 text-right font-semibold">{r.after}</td>
+                      <td className="py-1.5 pl-2 text-right text-muted-foreground">{r.change}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-2 text-[13px] text-muted-foreground">
+              {readable(a)
+                ? <>The price rose <b className="text-foreground">{signed(priceUp)}</b> (median order); ZONOS bills <b className="text-foreground">{a!.zonosDutiesTaxesPct}%</b> of subtotal in duties and taxes on the orders placed after the change.</>
+                : <>The cost side is not readable yet: ZONOS has billed <b className="text-foreground">{a?.zonosOrders ?? 0} of {a?.orders ?? 0}</b> orders placed after the change. It bills about a week after shipping. The price side already shows: median order {signed(priceUp)}.</>}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── components + weekly ──────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
