@@ -152,6 +152,18 @@ function Flag({ cc, className }: { cc: string; className?: string }) {
       <rect width="16" height="10" fill="#006AA7" /><rect x="5" width="2" height="10" fill="#FECC00" /><rect y="4" width="16" height="2" fill="#FECC00" />
     </svg>
   );
+  if (cc === 'GB') return (
+    <svg viewBox="0 0 60 30" className={cls} aria-hidden>
+      <clipPath id="ddp-gb-clip"><path d="M0 0h60v30H0z" /></clipPath>
+      <g clipPath="url(#ddp-gb-clip)">
+        <path fill="#012169" d="M0 0h60v30H0z" />
+        <path stroke="#fff" strokeWidth="6" d="M0 0l60 30m0-30L0 30" />
+        <path stroke="#C8102E" strokeWidth="4" d="M0 0l60 30m0-30L0 30" clipPath="url(#ddp-gb-clip)" />
+        <path stroke="#fff" strokeWidth="10" d="M30 0v30M0 15h60" />
+        <path stroke="#C8102E" strokeWidth="6" d="M30 0v30M0 15h60" />
+      </g>
+    </svg>
+  );
   return null;
 }
 const aud = (v: number | null | undefined, dec = 0) =>
