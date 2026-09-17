@@ -41,7 +41,12 @@ import { cn, downloadCSV } from '@/lib/utils';
 
 interface Product {
   sku: string; name: string; share: number; price: number;
-  stock: number; lead: number; cost: number; assembled: boolean;
+  /** Main warehouse (Australia) — what can actually be sold now. */
+  stock: number;
+  /** China + Container: real units, but still to be sailed. Credited as an
+   *  arrival after CONTAINER_TRANSIT_DAYS, never as opening stock. */
+  inbound: number;
+  lead: number; cost: number; assembled: boolean;
 }
 interface Payload {
   baselineMonths: number; lookbackDays: number;
@@ -97,11 +102,39 @@ const usdk = (v: number) => (Math.abs(v) >= 1000 ? `US$${Math.round(v / 1000)}k`
 const num  = (v: number) => Math.round(v).toLocaleString('en-AU');
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-/** Label for month `i` ahead of today. */
-function monthLabel(i: number) {
+/** Days for sea freight from China to the Main warehouse. The same figure the
+ *  container-loading planner uses (CONTAINER_TRANSIT_DAYS in
+ *  complete-projection/projection.ts); kept in step with it on purpose. */
+const TRANSIT_DAYS = 30;
+
+/** The plan runs in ROLLING months from today, not calendar months.
+ *
+ *  Mario, 2026-09-18: "necesito que la proyeccion pueda empezar por ejemplo hoy
+ *  18/9 y que si le puse 6 meses vaya al 18/10, 18/11 y asi."
+ *
+ *  Calendar months forced period 1 to be a stub — the rest of the current month
+ *  — which had to be prorated and still landed production starts in the wrong
+ *  month whenever today was near a month end. Period i now runs from today + i
+ *  months to today + (i+1) months, so every period is a whole month of demand
+ *  and the start dates mean what they say. */
+function periodStart(i: number) {
   const d = new Date();
-  d.setDate(1); d.setMonth(d.getMonth() + i);
-  return `${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
+  d.setMonth(d.getMonth() + i);
+  return d;
+}
+function monthLabel(i: number) {
+  const d = periodStart(i);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
+}
+/** Which period an arrival `days` from now falls into. Period boundaries are
+ *  months, so a 30-day sail lands in period 2 counting from 1. */
+function periodOfDays(days: number) {
+  const target = new Date();
+  target.setDate(target.getDate() + days);
+  for (let i = 0; i < 120; i++) {
+    if (periodStart(i) > target) return Math.max(1, i);
+  }
+  return 1;
 }
 
 // ─── Small pieces ───────────────────────────────────────────────────────────
@@ -162,6 +195,29 @@ function T({ tip, children }: { tip: string; children: React.ReactNode }) {
   return <span title={tip} className="cursor-help border-b border-dotted border-muted-foreground/50">{children}</span>;
 }
 
+// ─── Saved plans ────────────────────────────────────────────────────────────
+
+/** Reserved row: the draft the screen reopens with. Named scenarios live in the
+ *  same table and can never take this name (the RPC rejects it). */
+const DRAFT = '__working__';
+
+interface PlanState {
+  v: 1;
+  spend: number | null; b: number | null; linear: boolean; horizon: number;
+  budgetMode: 'ramp' | 'growth' | 'manual'; growthPct: number;
+  manual: number[]; topN: number; thr: number;
+}
+interface ScenarioRow { name: string; payload: PlanState; updated_at: string; updated_by: string | null }
+
+async function fetchScenarios(): Promise<ScenarioRow[]> {
+  const { data, error } = await supabase
+    .from('growth_forecast_scenarios')
+    .select('name, payload, updated_at, updated_by')
+    .order('updated_at', { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as ScenarioRow[];
+}
+
 // ─── Model ──────────────────────────────────────────────────────────────────
 
 interface Row { i: number; label: string; opening: number; sells: number; arrives: number; closing: number; started: number; rate: number }
@@ -192,6 +248,18 @@ export function GrowthForecastContent() {
   const [openSku, setOpenSku] = useState<string | null>(null);
   const [thr, setThr] = useState(100);
 
+  // ── The plan survives closing the panel ──────────────────────────────────
+  // Everything above used to be thrown away on close, including the
+  // month-by-month figures, which are the only ones that cost real work to
+  // retype. The draft is written back to the server as it changes and read on
+  // open; named scenarios sit beside it in the same table.
+  const [scenarios, setScenarios] = useState<ScenarioRow[]>([]);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  /** Until the draft has been read, autosave must stay quiet: writing the
+   *  seeded defaults over a saved plan is exactly how it would be lost. */
+  const [restored, setRestored] = useState(false);
+
   const load = async () => {
     setLoading(true); setError(null);
     try {
@@ -199,10 +267,20 @@ export function GrowthForecastContent() {
       if (e) throw new Error(e.message);
       const p = d as Payload;
       setData(p);
-      // Seed the controls once, from the data itself — a 50% step is the
-      // question people actually arrive with.
-      setSpend((s) => s ?? Math.round((p.baseline.spend * 1.5) / 1000) * 1000);
-      setB((v) => v ?? p.fit.b);
+
+      const rows = await fetchScenarios();
+      setScenarios(rows);
+      const draft = rows.find((r) => r.name === DRAFT)?.payload;
+      if (draft) {
+        applyPlan(draft);
+        setSavedAt(rows.find((r) => r.name === DRAFT)?.updated_at ?? null);
+      } else {
+        // Nothing saved yet: seed from the data itself — a 50% step is the
+        // question people actually arrive with.
+        setSpend((s) => s ?? Math.round((p.baseline.spend * 1.5) / 1000) * 1000);
+        setB((v) => v ?? p.fit.b);
+      }
+      setRestored(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load');
     } finally {
@@ -210,6 +288,55 @@ export function GrowthForecastContent() {
     }
   };
   useEffect(() => { void load(); }, []);
+
+  /** Everything a reader would have to retype. Read back by applyPlan. */
+  const plan = useMemo<PlanState>(() => ({
+    v: 1, spend, b, linear, horizon, budgetMode, growthPct, manual, topN, thr,
+  }), [spend, b, linear, horizon, budgetMode, growthPct, manual, topN, thr]);
+
+  const applyPlan = (s: PlanState) => {
+    if (typeof s.spend === 'number' || s.spend === null) setSpend(s.spend);
+    if (typeof s.b === 'number' || s.b === null) setB(s.b);
+    if (typeof s.linear === 'boolean') setLinear(s.linear);
+    if (typeof s.horizon === 'number') setHorizon(s.horizon);
+    if (s.budgetMode === 'ramp' || s.budgetMode === 'growth' || s.budgetMode === 'manual') setBudgetMode(s.budgetMode);
+    if (typeof s.growthPct === 'number') setGrowthPct(s.growthPct);
+    if (Array.isArray(s.manual)) setManual(s.manual.filter((n) => typeof n === 'number'));
+    if (typeof s.topN === 'number') setTopN(s.topN);
+    if (typeof s.thr === 'number') setThr(s.thr);
+  };
+
+  // Debounced: typing a six-digit budget is six keystrokes, not six saves.
+  useEffect(() => {
+    if (!restored) return;
+    const t = setTimeout(() => {
+      void (async () => {
+        try {
+          const { error: e } = await supabase.rpc('growth_forecast_scenario_save', {
+            p_name: DRAFT, p_payload: plan,
+          });
+          if (e) throw new Error(e.message);
+          setSavedAt(new Date().toISOString()); setSaveErr(null);
+        } catch (err) {
+          setSaveErr(err instanceof Error ? err.message : 'not saved');
+        }
+      })();
+    }, 900);
+    return () => clearTimeout(t);
+  }, [plan, restored]);
+
+  const saveAs = async (name: string) => {
+    const n = name.trim();
+    if (!n || n === DRAFT) return;
+    const { error: e } = await supabase.rpc('growth_forecast_scenario_save', { p_name: n, p_payload: plan });
+    if (e) { setSaveErr(e.message); return; }
+    setScenarios(await fetchScenarios()); setSaveErr(null);
+  };
+  const removeScenario = async (name: string) => {
+    const { error: e } = await supabase.rpc('growth_forecast_scenario_delete', { p_name: name });
+    if (e) { setSaveErr(e.message); return; }
+    setScenarios(await fetchScenarios());
+  };
 
   /** The month-by-month budget, before anything is derived from it.
    *
@@ -261,17 +388,14 @@ export function GrowthForecastContent() {
 
   const months = useMemo(() => {
     if (!S || !data) return [];
-    // Month 1 of the plan is the CURRENT month: its budget is still steerable,
-    // stock keeps selling through it, and a production run can start in it.
-    // Only its remaining days consume stock (frac); skipping the month made
-    // every balance one month too optimistic.
-    const now = new Date();
-    const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const restFrac = (daysIn - now.getDate() + 1) / daysIn;
+    // Period 1 starts TODAY and runs a whole month, so there is no stub to
+    // prorate: `frac` is 1 everywhere. Under calendar months this was the rest
+    // of the current month, which near a month end shrank to a few days and
+    // pushed every production start into the following period.
     return budget.map((sp, idx) => ({
       i: idx + 1, label: monthLabel(idx), spend: sp,
       rev: data.baseline.revenue * Math.pow(sp / data.baseline.spend, S.bb),
-      frac: idx === 0 ? restFrac : 1,
+      frac: 1,
     }));
   }, [S, data, budget]);
 
@@ -304,6 +428,13 @@ export function GrowthForecastContent() {
     return S.list.map((s) => {
       const leadM = Math.max(1, Math.round(s.lead / 30));
       const arriving: Record<number, number> = {};
+      // Units already made but still in China (or on the water) are NOT opening
+      // stock — they cannot be sold until they land. They are booked as an
+      // arrival one sea-freight away, in the same column a factory run uses, so
+      // the reader sees when they turn up instead of finding them folded into
+      // day one. Before 2026-09-18 they opened the balance: PSD-HD-BR54 started
+      // at 4,715 when only 3,067 were in Australia.
+      if (s.inbound > 0) arriving[periodOfDays(TRANSIT_DAYS)] = s.inbound;
       const rows: Row[] = []; const starts: Start[] = []; const covers: number[] = [];
       let stock = s.stock;
       for (const p of months) {
@@ -337,6 +468,8 @@ export function GrowthForecastContent() {
       return {
         ...s, leadM, rows, starts, totalQty, totalCost: totalQty * s.cost,
         minCover: Math.min(...covers),
+        // Cover is what is sellable TODAY divided by the rate: China stock does
+        // not cover a stockout next week, so it is excluded here too.
         coverNow: s.stock / Math.max(sellsNow, 1e-9),
         coverAfter: s.stock / Math.max(sellsAfter, 1e-9),
       };
@@ -471,6 +604,31 @@ export function GrowthForecastContent() {
     ]
   );
 
+  /** The budget itself, month by month — what a finance person means by a
+   *  budget, as opposed to the production plan the button beside it exports.
+   *  Revenue and MER come from the same projection shown on screen, so the
+   *  workbook and the tab cannot disagree. */
+  const exportBudget = () => downloadCSV(
+    months.map((m) => {
+      const prod = plans.reduce(
+        (a, p) => a + p.starts.filter((o) => o.month === m.i).reduce((x, o) => x + o.cost, 0), 0);
+      return {
+        period: m.label, spend: m.spend, rev: m.rev,
+        mer: m.spend > 0 ? m.rev / m.spend : 0,
+        prod, total: m.spend + prod,
+      };
+    }),
+    'budget.csv',
+    [
+      { header: 'Period start', key: 'period' },
+      { header: 'Ad spend AUD', key: 'spend', formatter: (v) => (v as number).toFixed(2) },
+      { header: 'Projected revenue AUD', key: 'rev', formatter: (v) => (v as number).toFixed(2) },
+      { header: 'MER', key: 'mer', formatter: (v) => (v as number).toFixed(2) },
+      { header: 'Production cost AUD', key: 'prod', formatter: (v) => (v as number).toFixed(2) },
+      { header: 'Total outlay AUD', key: 'total', formatter: (v) => (v as number).toFixed(2) },
+    ]
+  );
+
   return (
     // Same shell as the other reports: fixed header, one scrolling body. Without
     // the overflow-y-auto pane the overlay clips the content and nothing scrolls.
@@ -486,9 +644,66 @@ export function GrowthForecastContent() {
             b {data.fit.b.toFixed(2)} · R² {data.fit.r2.toFixed(2)} · {data.fit.n} mo ·
             break-even {BE.toFixed(2)}× · target today {TG_TODAY.toFixed(2)}×
           </span>
-          <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={exportPlan}>
-            <Download className="h-3.5 w-3.5" /> CSV
+          <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={exportBudget}
+            title="Download the budget month by month: period start, ad spend, projected revenue, MER, production cost and total outlay. AUD. The same figures shown on screen.">
+            <Download className="h-3.5 w-3.5" /> Budget
           </Button>
+          <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={exportPlan}
+            title="Download the production plan: one row per product per start month, with units, cost and lead time. AUD.">
+            <Download className="h-3.5 w-3.5" /> Plan
+          </Button>
+        </div>
+
+        {/* ── Saved plans ────────────────────────────────────────────────
+            The draft saves itself, so the state of this bar is information,
+            not a chore: it says whether the work is safe. Naming a scenario is
+            the only deliberate act. */}
+        <div className="flex flex-wrap items-center gap-2 border-t px-5 py-1.5">
+          <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground"
+            title="Everything you type here is written to the server as you go and comes back when you reopen the screen. Saved for everyone who opens the dashboard, not just this browser.">
+            Plan
+          </span>
+          <span className={cn('font-mono text-[11px] tabular-nums',
+            saveErr ? 'text-destructive' : 'text-muted-foreground')}
+            title={saveErr
+              ? `The last change was NOT saved: ${saveErr}. Keep the window open and try again.`
+              : 'When the current draft was last written to the server.'}>
+            {saveErr ? `not saved — ${saveErr}` : savedAt ? `saved ${new Date(savedAt).toLocaleString('en-AU')}` : 'not saved yet'}
+          </span>
+
+          <select
+            className="h-7 rounded-md border bg-background px-2 text-xs"
+            value=""
+            onChange={(e) => {
+              const row = scenarios.find((r) => r.name === e.target.value);
+              if (row) applyPlan(row.payload);
+            }}
+            title="Load a saved scenario into the screen. The draft keeps saving on top of whatever you load, so loading never destroys the scenario itself.">
+            <option value="">Load a scenario…</option>
+            {scenarios.filter((r) => r.name !== DRAFT).map((r) => (
+              <option key={r.name} value={r.name}>{r.name}</option>
+            ))}
+          </select>
+
+          <Button variant="outline" size="sm" className="h-7 text-xs"
+            title="Save the plan as it stands under a name, so you can come back to it after trying something else."
+            onClick={() => {
+              const n = window.prompt('Name this scenario (e.g. Base, Agresivo)');
+              if (n) void saveAs(n);
+            }}>
+            Save as…
+          </Button>
+
+          {scenarios.filter((r) => r.name !== DRAFT).length > 0 && (
+            <Button variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground"
+              title="Delete a saved scenario. The draft cannot be deleted — it is whatever is on screen."
+              onClick={() => {
+                const n = window.prompt('Delete which scenario?');
+                if (n) void removeScenario(n);
+              }}>
+              Delete
+            </Button>
+          )}
         </div>
         <nav className="flex flex-wrap px-3" role="tablist">
           {TABS.map((t) => (
