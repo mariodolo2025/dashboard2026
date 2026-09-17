@@ -107,32 +107,47 @@ const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
  *  complete-projection/projection.ts); kept in step with it on purpose. */
 const TRANSIT_DAYS = 30;
 
-/** The plan runs in ROLLING months from today, not calendar months.
+/** The plan runs in ROLLING months from a start date the reader picks, not
+ *  calendar months.
  *
  *  Mario, 2026-09-18: "necesito que la proyeccion pueda empezar por ejemplo hoy
- *  18/9 y que si le puse 6 meses vaya al 18/10, 18/11 y asi."
+ *  18/9 y que si le puse 6 meses vaya al 18/10, 18/11 y asi", and then: "quiero
+ *  poder elegir que el plan va a comenzar en una fecha determinada."
  *
  *  Calendar months forced period 1 to be a stub — the rest of the current month
  *  — which had to be prorated and still landed production starts in the wrong
- *  month whenever today was near a month end. Period i now runs from today + i
- *  months to today + (i+1) months, so every period is a whole month of demand
+ *  month whenever today was near a month end. Period i now runs from start + i
+ *  months to start + (i+1) months, so every period is a whole month of demand
  *  and the start dates mean what they say. */
-function periodStart(i: number) {
+const isoToday = () => {
   const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+/** Parsed as LOCAL midnight. `new Date('2026-09-18')` is parsed as UTC and in
+ *  Brisbane lands on the 18th at 10am, which shifts every period label. */
+const parseISO = (iso: string) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+};
+const DAY_MS = 86400_000;
+function periodStart(startISO: string, i: number) {
+  const d = parseISO(startISO);
   d.setMonth(d.getMonth() + i);
   return d;
 }
-function monthLabel(i: number) {
-  const d = periodStart(i);
+function monthLabel(startISO: string, i: number) {
+  const d = periodStart(startISO, i);
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
 }
-/** Which period an arrival `days` from now falls into. Period boundaries are
- *  months, so a 30-day sail lands in period 2 counting from 1. */
-function periodOfDays(days: number) {
+/** Which period an arrival `days` from TODAY falls into, counting from 1.
+ *  0 means it has already landed by the time the plan opens, so it belongs in
+ *  the opening balance rather than in a later arrival. */
+function periodOfDays(startISO: string, days: number) {
   const target = new Date();
   target.setDate(target.getDate() + days);
-  for (let i = 0; i < 120; i++) {
-    if (periodStart(i) > target) return Math.max(1, i);
+  if (target <= periodStart(startISO, 0)) return 0;
+  for (let i = 1; i < 240; i++) {
+    if (periodStart(startISO, i) > target) return i;
   }
   return 1;
 }
@@ -203,6 +218,10 @@ const DRAFT = '__working__';
 
 interface PlanState {
   v: 1;
+  /** yyyy-mm-dd the plan opens on. Defaults to today; never before today,
+   *  because the opening balance is measured stock and we hold no history of
+   *  what it was last month. */
+  startISO?: string;
   spend: number | null; b: number | null; linear: boolean; horizon: number;
   budgetMode: 'ramp' | 'growth' | 'manual'; growthPct: number;
   manual: number[]; topN: number; thr: number;
@@ -247,6 +266,7 @@ export function GrowthForecastContent() {
   const [topN, setTopN] = useState(10);
   const [openSku, setOpenSku] = useState<string | null>(null);
   const [thr, setThr] = useState(100);
+  const [startISO, setStartISO] = useState<string>(isoToday());
 
   // ── The plan survives closing the panel ──────────────────────────────────
   // Everything above used to be thrown away on close, including the
@@ -291,10 +311,15 @@ export function GrowthForecastContent() {
 
   /** Everything a reader would have to retype. Read back by applyPlan. */
   const plan = useMemo<PlanState>(() => ({
-    v: 1, spend, b, linear, horizon, budgetMode, growthPct, manual, topN, thr,
-  }), [spend, b, linear, horizon, budgetMode, growthPct, manual, topN, thr]);
+    v: 1, startISO, spend, b, linear, horizon, budgetMode, growthPct, manual, topN, thr,
+  }), [startISO, spend, b, linear, horizon, budgetMode, growthPct, manual, topN, thr]);
 
   const applyPlan = (s: PlanState) => {
+    // A saved plan that starts in the past would open on stock we no longer
+    // have; it is pulled forward to today rather than silently lying.
+    if (typeof s.startISO === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.startISO)) {
+      setStartISO(s.startISO < isoToday() ? isoToday() : s.startISO);
+    }
     if (typeof s.spend === 'number' || s.spend === null) setSpend(s.spend);
     if (typeof s.b === 'number' || s.b === null) setB(s.b);
     if (typeof s.linear === 'boolean') setLinear(s.linear);
@@ -393,11 +418,11 @@ export function GrowthForecastContent() {
     // of the current month, which near a month end shrank to a few days and
     // pushed every production start into the following period.
     return budget.map((sp, idx) => ({
-      i: idx + 1, label: monthLabel(idx), spend: sp,
+      i: idx + 1, label: monthLabel(startISO, idx), spend: sp,
       rev: data.baseline.revenue * Math.pow(sp / data.baseline.spend, S.bb),
       frac: 1,
     }));
-  }, [S, data, budget]);
+  }, [S, data, budget, startISO]);
 
   /** Plan-wide aggregates. The projection cards read THESE, so typing in any
    *  month of the budget moves them — the end-budget figure alone ignored
@@ -425,6 +450,8 @@ export function GrowthForecastContent() {
    *  while it is still in production. */
   const plans = useMemo<Plan[]>(() => {
     if (!S || !data) return [];
+    // Days between the measured stock (today) and the day the plan opens.
+    const gapDays = Math.max(0, Math.round((parseISO(startISO).getTime() - parseISO(isoToday()).getTime()) / DAY_MS));
     return S.list.map((s) => {
       const leadM = Math.max(1, Math.round(s.lead / 30));
       const arriving: Record<number, number> = {};
@@ -434,9 +461,24 @@ export function GrowthForecastContent() {
       // the reader sees when they turn up instead of finding them folded into
       // day one. Before 2026-09-18 they opened the balance: PSD-HD-BR54 started
       // at 4,715 when only 3,067 were in Australia.
-      if (s.inbound > 0) arriving[periodOfDays(TRANSIT_DAYS)] = s.inbound;
+      //
+      // If the plan starts in the future, that sail may already be over by the
+      // time period 1 opens — periodOfDays returns 0 — and the units belong in
+      // the opening balance instead.
+      const inboundAt = s.inbound > 0 ? periodOfDays(startISO, TRANSIT_DAYS) : 0;
+      if (s.inbound > 0 && inboundAt > 0) arriving[inboundAt] = s.inbound;
+
+      // Stock is MEASURED today. A plan that starts later opens on what is left
+      // after the gap has been sold at today's rate — otherwise it opens with
+      // units that will already be gone, which is the same lie the China stock
+      // was telling.
+      const rateNow = (data.baseline.revenue * s.share) / s.price;
+      const openAt = s.stock
+        + (s.inbound > 0 && inboundAt === 0 ? s.inbound : 0)
+        - rateNow * (gapDays / 30);
+
       const rows: Row[] = []; const starts: Start[] = []; const covers: number[] = [];
-      let stock = s.stock;
+      let stock = Math.max(0, openAt);
       for (const p of months) {
         const opening = stock;
         // The current month consumes only its remaining days (frac), but
@@ -474,7 +516,7 @@ export function GrowthForecastContent() {
         coverAfter: s.stock / Math.max(sellsAfter, 1e-9),
       };
     });
-  }, [S, data, months]);
+  }, [S, data, months, startISO]);
 
   // ── Loading / error ───────────────────────────────────────────────────────
   if (error) return (
@@ -795,12 +837,27 @@ export function GrowthForecastContent() {
             </p>
           </div>
           <div className="p-3">
+            <label htmlFor="gf-start" className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">
+              <T tip="The day the plan opens. Every period after it is a whole month from this date — pick 18 Sep with a 6-month horizon and the periods are 18 Sep, 18 Oct, 18 Nov and so on, not calendar months. Stock is measured TODAY, so a later start opens on what is left after the gap has been sold at today's rate. Earlier than today is not offered: we hold no history of what the balance was.">Plan starts</T>
+            </label>
+            <input id="gf-start" type="date" value={startISO} min={isoToday()}
+              onChange={(e) => setStartISO(e.target.value || isoToday())}
+              className="w-full rounded border bg-muted/40 px-2.5 py-1.5 text-[14px]" />
+            <p className="mt-1.5 text-[13.5px] text-foreground/70">
+              {startISO === isoToday()
+                ? 'Opens on today’s stock.'
+                : `Opens on what is left after ${Math.max(0, Math.round((parseISO(startISO).getTime() - parseISO(isoToday()).getTime()) / DAY_MS))} more days of selling.`}
+            </p>
+          </div>
+          <div className="p-3">
             <label htmlFor="gf-h" className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">Horizon</label>
             <select id="gf-h" value={horizon} onChange={(e) => setHorizon(+e.target.value)}
               className="w-full rounded border bg-muted/40 px-2.5 py-1.5 text-[14px]">
               <option value={3}>3 months</option><option value={6}>6 months</option><option value={12}>12 months</option>
             </select>
-            <p className="mt-1.5 text-[13.5px] text-foreground/70">Budget ramps evenly.</p>
+            <p className="mt-1.5 text-[13.5px] text-foreground/70">
+              {monthLabel(startISO, 0)} → {monthLabel(startISO, horizon)}
+            </p>
           </div>
           <div className="p-3">
             <span className="mb-2 block font-mono text-[13px] font-semibold uppercase tracking-wide text-foreground/90">Products covered</span>
@@ -841,7 +898,7 @@ export function GrowthForecastContent() {
             {budget.map((sp, idx) => (
               <div key={idx} className="min-w-[92px] flex-1 rounded border bg-background px-2 py-1.5">
                 <div className="font-mono text-[11.5px] uppercase tracking-wide text-foreground/60">
-                  {monthLabel(idx)}
+                  {monthLabel(startISO, idx)}
                 </div>
                 {budgetMode === 'manual' ? (
                   <input type="number" step={5000} min={0}
@@ -1087,6 +1144,11 @@ export function GrowthForecastContent() {
           <p className="mb-3 max-w-4xl text-[14px] text-foreground/70">
             Units to put into production each month. Click any product to open its running balance.
           </p>
+          <p className="mb-3 max-w-4xl text-[13.5px] text-foreground/70">
+            Periods run <b>{monthLabel(startISO, 0)} → {monthLabel(startISO, horizon)}</b>, a whole month each from the start date, not calendar months.
+            Each balance opens on stock <b>in Australia</b>; units already made in China or on the water land under <b>Arrives</b> about 30 days out,
+            the same sea-freight transit the container planner assumes.
+          </p>
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Units to produce" value={num(totalQty)} tone="accent"
               sub={`Across ${plans.filter((p) => p.totalQty > 0).length} of ${plans.length} products`}
@@ -1145,9 +1207,9 @@ export function GrowthForecastContent() {
                             <table className="w-full text-[14.5px]">
                               <thead><tr className="border-b">
                                 <Th align="left" tip="Each month of the horizon.">Month</Th>
-                                <Th tip="Stock on hand at the start of the month: Main warehouse plus China plus what is on the water.">Opening</Th>
+                                <Th tip="Units sellable in AUSTRALIA when the period opens — Main warehouse only. Stock sitting in China or on the water is NOT here: it cannot be sold until it lands, so it appears under Arrives instead, 30 days out. Counting it as opening stock is what used to make the first stockout look later than it really is.">Opening</Th>
                                 <Th tip="Projected units sold that month: projected store revenue times this product's share of revenue, divided by its average price. The current month sells at the measured baseline rate, prorated to its remaining days.">Sells</Th>
-                                <Th tip="Units landing that month from a run started earlier.">Arrives</Th>
+                                <Th tip="Units landing in that period: a factory run started earlier, plus — in the first 30 days — whatever was already made and waiting in China or on the water. 30 days is the sea-freight transit the container planner uses.">Arrives</Th>
                                 <Th tip="Opening minus sells plus arrives. Turns red when it falls inside the lead time, meaning a stockout before anything can land.">Closing</Th>
                                 <Th tip="Units to put into production THIS month so they arrive before stock runs out.">Start now</Th>
                               </tr></thead>
@@ -1199,7 +1261,7 @@ export function GrowthForecastContent() {
           <div className="relative space-y-3 pl-7 before:absolute before:bottom-2 before:left-2 before:top-2 before:w-px before:bg-border">
             {months.map((m) => {
               const due = plans.flatMap((p) => p.starts.filter((o) => o.month === m.i)
-                .map((o) => ({ sku: p.sku, qty: o.qty, cost: o.cost, lead: p.lead, land: monthLabel(m.i - 1 + o.leadM) })));
+                .map((o) => ({ sku: p.sku, qty: o.qty, cost: o.cost, lead: p.lead, land: monthLabel(startISO, m.i - 1 + o.leadM) })));
               const cost = due.reduce((a, o) => a + o.cost, 0);
               return (
                 <div key={m.i} className="relative">
@@ -1571,9 +1633,23 @@ export function GrowthForecastContent() {
 
           <Card className="p-5">
             <h3 className="mb-2 text-[15px] font-semibold">The production plan</h3>
-            <p className="mb-2.5 max-w-3xl text-muted-foreground">Each product carries a running balance, month by month:</p>
+            <p className="mb-2.5 max-w-3xl text-muted-foreground">Each product carries a running balance, one period at a time:</p>
             <p className="mb-2.5 rounded border-l-2 border-amber-600 bg-muted/50 px-3.5 py-2.5 font-mono text-[14px]">
               opening stock − what sells + what arrives = closing stock
+            </p>
+            <p className="mb-2.5 max-w-3xl text-muted-foreground">
+              <b className="text-foreground">Opening stock is what is in Australia</b>, nothing else. Units already
+              made but still in China, or on the water in a container, cannot be sold until they land, so they are not
+              opening stock — they appear under <b className="text-foreground">Arrives</b> about 30 days out, the same
+              sea-freight transit the container planner assumes. Until 18 Sep 2026 all three warehouses were added
+              together on day one, which made the first stockout look later than it was and started factory runs late:
+              PSD-HD-BR54 opened at 4,715 when only 3,067 were in the country.
+            </p>
+            <p className="mb-2.5 max-w-3xl text-muted-foreground">
+              <b className="text-foreground">Periods are whole months from the start date you pick</b>, not calendar
+              months — start on the 18th and they run 18 Sep, 18 Oct, 18 Nov. Stock is measured today, so choosing a
+              later start opens the balance on what is left after the gap has been sold at today's rate. A start before
+              today is not offered: there is no record of what the balance was last month.
             </p>
             <p className="mb-2.5 max-w-3xl text-muted-foreground">
               A run starts as soon as stock plus what is already in transit would no longer cover
