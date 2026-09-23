@@ -258,7 +258,23 @@ function App() {
   const doLoadDataFromSupabase = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/parse-csv-data`, {
+      // The front page and By Channel read the DATABASE, not a rebuilt file.
+      //
+      // Until 2026-09-24 this called parse-csv-data, which rebuilds an 11.6 MB
+      // parsed-snapshot.json from five CSVs that are themselves written from
+      // this same database. On 21-Sep that rebuild stopped fitting in an edge
+      // function — the Unleashed CSV had grown to 26.6 MB — and failed on every
+      // run afterwards with "not enough compute resources". The read path kept
+      // serving the last good snapshot, so these two screens silently froze on
+      // 21-Sep while E-commerce, which queries the DB, stayed current.
+      //
+      // dashboard-data returns the same five arrays with the same field names
+      // and units, straight from the tables, bounded by the range on screen.
+      // Reconciled against the CSV over 1-20 Sep: 1,847 rows both ways.
+      //
+      // Deliberately NO fallback to the old path: serving a stale snapshot
+      // without saying so is the failure being fixed here.
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/dashboard-data`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
