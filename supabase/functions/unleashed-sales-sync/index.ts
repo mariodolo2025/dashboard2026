@@ -53,13 +53,29 @@ function parseUDate(v: any): string | null {
   return new Date(Number(m[1])).toISOString().slice(0, 10);
 }
 
-/** Page through an Unleashed collection endpoint, calling onPage for each. */
-async function pageAll(path: string, baseQs: string, creds: any, onPage: (items: any[]) => void) {
+/** Page through an Unleashed collection endpoint, calling onPage for each.
+ *
+ *  Stops early when `outOfTime` says so and reports it, instead of running until
+ *  the platform kills the function. A killed run wrote NOTHING — every page it
+ *  had already paid for was thrown away — which is why this step showed
+ *  "Request idle timeout limit (150s) reached" in most runs while the data
+ *  limped along on whichever run happened to fit. Stopping on our own terms
+ *  keeps the rows we fetched and lets the caller decide what to do about the
+ *  rest. */
+async function pageAll(
+  path: string, baseQs: string, creds: any,
+  onPage: (items: any[]) => void,
+  outOfTime: () => boolean,
+): Promise<boolean> {
   for (let page = 1; ; page++) {
     const d = await ug(`${path}/${page}`, baseQs, creds);
     onPage(d.Items ?? []);
     const pages = d.Pagination?.NumberOfPages ?? 1;
-    if (page >= pages) break;
+    if (page >= pages) return false;
+    if (outOfTime()) {
+      console.warn(`${path}: stopped at page ${page} of ${pages} — out of time budget`);
+      return true;
+    }
   }
 }
 
@@ -67,6 +83,11 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: corsHeaders });
   try {
     const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    // The platform kills an idle edge function at 150s. Stop paging at 105s so
+    // there is room left to write the rows we already have and update state.
+    const t0 = Date.now();
+    const outOfTime = () => Date.now() - t0 > 105_000;
+    let truncated = false;
     const body = await req.json().catch(() => ({}));
     const backfill = body?.backfill === true;
 
@@ -80,17 +101,17 @@ Deno.serve(async (req: Request) => {
 
     // ── Lookups: ProductCode → Product Group, Customer(name/code) → type ──────
     const groupByCode = new Map<string, string>();
-    await pageAll('Products', 'pageSize=200', creds, (items) => {
+    truncated = await pageAll('Products', 'pageSize=200', creds, (items) => {
       for (const p of items) if (p.ProductCode) groupByCode.set(String(p.ProductCode), p.ProductGroup?.GroupName ?? '');
-    });
+    }, outOfTime) || truncated;
     const typeByCustomer = new Map<string, string>();
-    await pageAll('Customers', 'pageSize=200', creds, (items) => {
+    truncated = await pageAll('Customers', 'pageSize=200', creds, (items) => {
       for (const c of items) {
         const t = typeof c.CustomerType === 'string' ? c.CustomerType : (c.CustomerType?.CustomerType ?? '');
         if (c.CustomerName) typeByCustomer.set(String(c.CustomerName), t);
         if (c.CustomerCode) typeByCustomer.set(String(c.CustomerCode), t);
       }
-    });
+    }, outOfTime) || truncated;
 
     // ── Fetch orders ──────────────────────────────────────────────────────────
     // Incremental keys off the modified-date window (startDate/endDate); the
@@ -100,13 +121,13 @@ Deno.serve(async (req: Request) => {
     let maxModified = state?.last_modified_watermark ? new Date(state.last_modified_watermark) : null;
     if (backfill || !state?.last_modified_watermark) {
       // startDate filters by ORDER date → every order dated >= the live boundary.
-      await pageAll('SalesOrders', `startDate=${LIVE_BOUNDARY}&pageSize=200`, creds, (items) => { orders.push(...items); });
+      truncated = await pageAll('SalesOrders', `startDate=${LIVE_BOUNDARY}&pageSize=200`, creds, (items) => { orders.push(...items); }, outOfTime) || truncated;
     } else {
       // modifiedSince catches new AND edited orders since the last run.
       const since = new Date(state.last_modified_watermark);
       since.setDate(since.getDate() - 1); // 1-day safety overlap
       const modifiedSince = since.toISOString().slice(0, 10);
-      await pageAll('SalesOrders', `modifiedSince=${modifiedSince}&pageSize=200`, creds, (items) => { orders.push(...items); });
+      truncated = await pageAll('SalesOrders', `modifiedSince=${modifiedSince}&pageSize=200`, creds, (items) => { orders.push(...items); }, outOfTime) || truncated;
     }
 
     // ── Build live rows, grouped by order ─────────────────────────────────────
@@ -163,11 +184,15 @@ Deno.serve(async (req: Request) => {
     // ── Watermark + state ─────────────────────────────────────────────────────
     const { count: liveCount } = await supabase
       .from('unleashed_sales_lines').select('*', { count: 'exact', head: true }).eq('source', 'api');
+    // The rows we DID fetch are already written — upserts, so replaying them is
+    // free. The watermark is the one thing a truncated run must not touch:
+    // moving it past orders we never read would skip them for good. Held back,
+    // the next run re-reads the same window and gets further.
     await supabase.from('unleashed_sales_sync_state').upsert({
       id: 1,
-      last_modified_watermark: (maxModified ?? runStart).toISOString(),
+      ...(truncated ? {} : { last_modified_watermark: (maxModified ?? runStart).toISOString() }),
       last_run_at: runStart.toISOString(),
-      last_run_status: 'ok',
+      last_run_status: truncated ? 'partial-timebox' : 'ok',
       rows_live: liveCount ?? 0,
     });
 
@@ -187,7 +212,11 @@ Deno.serve(async (req: Request) => {
     }
 
     return json({
-      success: true,
+      // `partial` says "did real work, has more to do" — the orchestrator shows
+      // that as a warning, not the red error a killed run used to produce.
+      success: !truncated,
+      partial: truncated,
+      ...(truncated ? { message: 'stopped at the 105s budget — rows written, watermark held, run again to continue' } : {}),
       mode: backfill || !state?.last_modified_watermark ? 'backfill' : 'incremental',
       ordersFetched: orders.length,
       ordersInLiveWindow: byOrder.size,

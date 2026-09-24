@@ -244,7 +244,10 @@ Deno.serve(async (req: Request) => {
     });
 
     return json({
-      success: !capped, mode: backfill ? 'backfill' : 'incremental',
+      // Capped means "more pages waiting", which is the design, not a fault.
+      // It still reports !success so the message survives, and `partial` tells
+      // the orchestrator to paint it amber instead of red.
+      success: !capped, partial: capped, mode: backfill ? 'backfill' : 'incremental',
       ordersProcessed: ids.length, momentsWritten: finalMoments.length,
       pendingRetried: retried, pages, capped,
       cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated,

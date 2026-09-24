@@ -119,7 +119,13 @@ const STEPS: { name: string; fn: string; body: unknown; optional?: boolean }[] =
   // worker resources and each failure branded the WHOLE run 'error' while every
   // data step had succeeded; the dashboard just keeps serving the previous
   // snapshot. A failure now records as 'warn' and the run still counts as done.
-  { name: 'Dashboard snapshot', fn: 'parse-csv-data', body: { materialize: true, startDate: '2023-01-01T00:00:00.000Z' }, optional: true },
+  // 'Dashboard snapshot' (parse-csv-data materialize) was removed on 2026-09-25.
+  // It rebuilt parsed-snapshot.json, and since the front page and By Channel
+  // moved to dashboard-data nothing reads that file any more. It had been
+  // failing on "not enough compute resources" in EVERY run since 21-Sep while
+  // feeding nobody. parse-csv-data itself stays deployed: the FY Report still
+  // calls it with prefix 'fy2025-26' to read the deliberately frozen snapshot,
+  // which is a different file and is never rebuilt.
 ];
 // A step lock older than this is treated as dead and reclaimed. MUST exceed the
 // edge wall-clock ceiling (~400s = 6.7 min) so a reclaim NEVER races a live
@@ -232,7 +238,14 @@ Deno.serve(async (req: Request) => {
         });
         const payload = await r.json().catch(() => ({}));
         const ok = r.ok && payload?.success !== false;
-        entry = { name: step.name, status: ok ? 'ok' : (step.optional ? 'warn' : 'error'), rows: rowsOf(payload), ms: Date.now() - started, message: ok ? null : (payload?.message ?? `HTTP ${r.status}`), at: new Date().toISOString() };
+        // THREE states, not two. A step that says `partial: true` did real work
+        // and has more to do — Shopify attribution hitting its page cap, a sync
+        // stopping at its time budget. Those used to be branded 'error' in
+        // every single run, which trained everyone to ignore the red dots and
+        // hid the one failure that mattered (the dashboard snapshot). Partial
+        // is a warning; only a genuine failure stays red.
+        const partial = payload?.partial === true;
+        entry = { name: step.name, status: ok ? 'ok' : (partial || step.optional ? 'warn' : 'error'), rows: rowsOf(payload), ms: Date.now() - started, message: ok ? null : (payload?.message ?? `HTTP ${r.status}`), at: new Date().toISOString() };
       } catch (e) {
         entry = { name: step.name, status: step.optional ? 'warn' : 'error', rows: null, ms: Date.now() - started, message: e instanceof Error ? e.message : 'failed', at: new Date().toISOString() };
       }
