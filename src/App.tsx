@@ -875,9 +875,17 @@ function App() {
     if (!dateRange || !dateRange.from || !dateRange.to) return { unleashed: [], shopify: [], oldShopify: [], meta: [] };
     const fromDay = format(dateRange.from, 'yyyy-MM-dd');
     const toDay = format(dateRange.to, 'yyyy-MM-dd');
+    // LOCAL calendar day on both sides. `2026-09-24` is parsed by parseISO as
+    // local midnight, so in Brisbane toISOString() reported it as 2026-09-23
+    // and every row slid back a day. Over a long window that only shaved the
+    // edges and looked plausible; over a short one it emptied the screen —
+    // 24-25 Sep showed $0.00 of Shopify sales against 97 real rows on the 24th,
+    // while the Xero costs, which never went through this filter, printed
+    // normally. A confident -$34,083 "Estimated Revenue" was the result.
+    // fromDay/toDay are built with format(), which is local; this now matches.
     const inWindow = (d: Date | null | undefined) => {
       if (!d) return false;
-      const day = d.toISOString().slice(0, 10);
+      const day = format(d, 'yyyy-MM-dd');
       return day >= fromDay && day <= toDay;
     };
 
