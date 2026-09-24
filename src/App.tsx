@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { RangeCalendar } from '@/components/RangeCalendar';
 import { format, parseISO, isValid, startOfWeek, isWithinInterval, parse, addDays, differenceInDays } from 'date-fns';
-import { Calendar as CalendarIcon, Download, RefreshCw, ChevronDown, ChevronUp, Link2, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Search, X, AlertTriangle, PanelLeftClose, PanelLeft, Settings, LogOut, UserPlus, ShoppingBag } from 'lucide-react';
+import { Calendar as CalendarIcon, Download, RefreshCw, ChevronDown, ChevronUp, Link2, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Search, X, AlertTriangle, PanelLeftClose, PanelLeft, Settings, LogOut, UserPlus, ShoppingBag, Pencil } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, BarChart, Bar, Cell, LabelList } from 'recharts';
 
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,7 @@ import { signOut } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { XeroData, computeCostsSnapshot, loadCostsConfigFromSupabase, saveCostsConfig, loadCostsConfig, saveCostsConfigToSupabase } from '@/lib/costsCalculator';
 import { CostsSnapshot } from '@/lib/utils';
+import { fetchCostProfiles, profileToConfig, type CostProfile } from '@/lib/costsProfiles';
 // Every module below opens from a pill or a button — none is needed for first
 // paint, and eagerly importing them all produced a single 2.7MB bundle
 // (Codex P1, 31-Aug-2026). React.lazy moves each behind its own chunk that
@@ -128,6 +129,12 @@ function App() {
   const [manualFxRate, setManualFxRate] = useState<string>('');
   const [blendedRoasTarget, setBlendedRoasTarget] = useState<number>(2.1);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  // isLoading alone is not enough: on a page refresh there is a gap between
+  // mount and the first fetch where it is false and every total renders as
+  // $0.00 — Mario, 2026-09-25: "cuando refresco dice 0 en los valores". A
+  // zero that means "nothing yet" looks exactly like a zero that means
+  // "nothing sold". This says which it is.
+  const [hasLoadedOnce, setHasLoadedOnce] = useState<boolean>(false);
   const [syncRunning, setSyncRunning] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [selectedChannels, setSelectedChannels] = useState<string[]>(['Shopify', 'B2B', 'Korea']);
@@ -180,6 +187,16 @@ function App() {
     return localStorage.getItem('bychannel-costs-source') || 'estimations';
   });
   const [costsSnapshot, setCostsSnapshot] = useState<CostsSnapshot | null>(null);
+
+  // The cost PROFILE behind those numbers (Mario, 2026-09-25: "quiero que
+  // diga cual es el perfil que se esta usando de los costos en el cost tab y
+  // tambien poder cambiarlo desde aca"). The profile decides which Xero
+  // account is fixed, variable, Andrea's or excluded, and how much of each
+  // goes to B2B — so two people reading the same window disagreed by tens of
+  // thousands with nothing on screen saying why. The Costs tab owns it; this
+  // shows it and can switch it without leaving By Channel.
+  const [costProfiles, setCostProfiles] = useState<CostProfile[]>([]);
+  const [costsConfigTick, setCostsConfigTick] = useState(0);
 
   // Pesado critical stock (from AIM 2026)
   const [pesadoCriticalStock, setPesadoCriticalStock] = useState<SKURow[]>([]);
@@ -370,6 +387,9 @@ function App() {
       alert(`Failed to load data: ${(error as Error).message}`);
     } finally {
       setIsLoading(false);
+      // Also on failure: the alert already says what happened, and staying
+      // blurred for ever would hide it behind a spinner that never stops.
+      setHasLoadedOnce(true);
     }
   };
 
@@ -929,6 +949,11 @@ function App() {
     }
   };
 
+  /** True while the numbers on screen cannot be trusted yet: either a range
+   *  is being re-read, or nothing has come back at all. Everything that
+   *  renders these totals blurs on this, not on isLoading alone. */
+  const dataPending = isLoading || !hasLoadedOnce;
+
   // Fetch Xero data on mount
   useEffect(() => {
     fetchXeroCosts();
@@ -953,6 +978,60 @@ function App() {
   useEffect(() => {
     localStorage.setItem('bychannel-costs-source', costsSource);
   }, [costsSource]);
+
+  // ── Cost profiles ─────────────────────────────────────────────────────────
+  // Same list the Costs tab shows, from the same function. Re-read when By
+  // Channel opens so a profile saved or renamed over there is already here.
+  useEffect(() => {
+    if (activeModal !== 'channel') return;
+    let cancelled = false;
+    fetchCostProfiles()
+      .then((list) => { if (!cancelled) setCostProfiles(list); })
+      .catch((e) => console.error('Failed to load cost profiles:', e));
+    return () => { cancelled = true; };
+  }, [activeModal]);
+
+  // saveCostsConfig fires costs:updated; that is also how the Costs tab tells
+  // the rest of the dashboard the classification moved.
+  useEffect(() => {
+    const bump = () => setCostsConfigTick((n) => n + 1);
+    window.addEventListener('costs:updated', bump);
+    return () => window.removeEventListener('costs:updated', bump);
+  }, []);
+
+  /**
+   * Which profile the numbers on screen actually correspond to.
+   *
+   * NOT just whatever id localStorage remembers: the Costs tab lets you drag
+   * an account somewhere else without saving it back to the profile, and then
+   * the remembered name would be a lie. The live config is compared account
+   * by account — board (or pool / excluded) plus the B2B slider — against
+   * each profile, over every account Xero returns. No match means the view is
+   * a one-off, and it says so instead of borrowing a name.
+   */
+  const activeCostProfile = useMemo(() => {
+    void costsConfigTick;
+    if (!xeroData || costProfiles.length === 0) return null;
+    const cfg = loadCostsConfig();
+    if (!cfg) return null;
+    const names = xeroData.items.map((i) => i.name).sort();
+    const sig = (boards: Record<string, string>, sliders: Record<string, number>, excluded: Record<string, boolean>) =>
+      names.map((n) => `${n}|${excluded[n] ? 'excluded' : (boards[n] ?? 'pool')}|${sliders[n] ?? 50}`).join('~');
+    const live = sig(cfg.boards, cfg.sliders, cfg.excluded);
+    return costProfiles.find((p) => sig(p.boards, p.sliders, p.excluded) === live) ?? null;
+  }, [xeroData, costProfiles, costsConfigTick]);
+
+  /** Apply a profile as the active classification, exactly as the Costs tab
+   *  does: local first (so the screen redraws at once) and to the server, so
+   *  the Costs tab and the other machines open on the same one. */
+  const applyCostProfile = (id: string) => {
+    const profile = costProfiles.find((p) => p.id === id);
+    if (!profile) return;
+    const cfg = profileToConfig(profile);
+    try { localStorage.setItem('costs-active-profile', profile.id); } catch { /* private mode */ }
+    saveCostsConfig(cfg);                        // writes local + fires costs:updated
+    saveCostsConfigToSupabase(cfg).catch((e) => console.error('Failed to save costs config:', e));
+  };
 
   // Compute costs snapshot on-demand when using costs source
   const computedCostsSnapshot = useMemo(() => {
@@ -2400,8 +2479,26 @@ function App() {
       </aside>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-auto">
-        <main className="flex-1 p-6 space-y-6 overflow-auto">
+      {/* Blurred until the first answer arrives, and again whenever the range
+          is re-read. Before this the page painted $0.00 everywhere on a
+          refresh — a real-looking zero, complete with a "data incompleta"
+          warning underneath it, while the request was still in flight. */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-auto relative">
+        {dataPending && (
+          <div className="sticky top-0 z-30 flex justify-center pt-5 -mb-14 pointer-events-none">
+            <div className="flex items-center gap-2.5 rounded-full border bg-background/95 px-4 py-2 shadow-sm">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              <span className="text-sm font-medium">Loading this period…</span>
+            </div>
+          </div>
+        )}
+        <main
+          className={cn(
+            "flex-1 p-6 space-y-6 overflow-auto",
+            dataPending && "blur-[3px] opacity-60 pointer-events-none select-none",
+          )}
+          aria-busy={dataPending}
+        >
         {/* KPI Cards Row */}
         <div className="flex gap-6 mb-6">
           {/* Total Sales KPI */}
@@ -2841,6 +2938,59 @@ function App() {
                   <SelectItem value="costs">Use info from Costs tab</SelectItem>
                 </SelectContent>
               </Select>
+
+              {/* WHICH profile of the Costs tab is behind these numbers, and the way
+                  to change it without leaving. Mario, 2026-09-25. The profile is what
+                  decides whether an account is fixed, variable, Andrea's or excluded
+                  altogether, and how much of it lands on B2B — so it moves every line
+                  in both cards. Only shown with the Costs source, because estimations
+                  do not read Xero at all and the profile would change nothing. */}
+              {costsSource === 'costs' && (
+                <TooltipProvider>
+                  <div className="flex items-center gap-2">
+                    <TooltipComponent>
+                      <TooltipTrigger asChild>
+                        <Label htmlFor="costs-profile" className="whitespace-nowrap cursor-help underline decoration-dotted">
+                          Profile:
+                        </Label>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-sm">
+                        <p>The cost profile from the Costs tab that these two cards are built on.</p>
+                        <p className="mt-1">It sets, for every Xero account, whether it is a fixed cost, a variable one, one of Andrea's or left out, and what share of it belongs to B2B. Changing it here changes it everywhere: Costs tab, Cost distribution and the FY report.</p>
+                        <p className="mt-1">"Custom" means the Costs tab was edited without saving those edits back to a profile.</p>
+                      </TooltipContent>
+                    </TooltipComponent>
+                    <Select
+                      value={activeCostProfile?.id ?? ''}
+                      onValueChange={applyCostProfile}
+                      disabled={costProfiles.length === 0}
+                    >
+                      <SelectTrigger id="costs-profile" className="w-[230px]">
+                        <SelectValue placeholder="Custom (not saved to a profile)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {costProfiles.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <TooltipComponent>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-9 px-2.5"
+                          onClick={() => { setActiveModal(null); setIsCostsModalOpen(true); }}
+                          aria-label="Edit this profile in the Costs tab"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent><p>Open the Costs tab to edit this profile.</p></TooltipContent>
+                    </TooltipComponent>
+                  </div>
+                </TooltipProvider>
+              )}
             </div>
             {/* While the range is being re-read, the whole pair is covered.
                 Half-loaded was worse than slow: Shopify would still be zero
@@ -2848,8 +2998,8 @@ function App() {
                 an Estimated Revenue of -$373,272 that looked like a result and
                 was an artefact of the two halves landing at different times.
                 Blurred, dimmed and inert until both are in. */}
-            <div className={`flex gap-4 relative ${isLoading ? 'pointer-events-none select-none' : ''}`} aria-busy={isLoading}>
-              {isLoading && (
+            <div className={`flex gap-4 relative ${dataPending ? 'pointer-events-none select-none' : ''}`} aria-busy={dataPending}>
+              {dataPending && (
                 <div className="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-background/60 backdrop-blur-[3px]">
                   <div className="flex items-center gap-2.5 rounded-full border bg-background/95 px-4 py-2 shadow-sm">
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -2920,8 +3070,10 @@ function App() {
                               <TooltipTrigger asChild>
                                 <span className="cursor-help underline decoration-dotted">Net Total Shopify Sales</span>
                               </TooltipTrigger>
-                              <TooltipContent>
-                                <p>This is Gross sales - discounts - returns</p>
+                              <TooltipContent className="max-w-sm">
+                                <p>Gross sales minus discounts and returns, with NO tax and NO shipping inside.</p>
+                                <p className="mt-1">Australian and European shelf prices carry the tax inside the price, so it is taken out here and shown on its own line below. Shopify's own report leaves it in, which is why that number is higher.</p>
+                                <p className="mt-1">Source: shopify_sales_by_variant, by order date in Brisbane time, in AUD.</p>
                               </TooltipContent>
                             </TooltipComponent>
                           </TableCell>
@@ -2938,7 +3090,17 @@ function App() {
                           )}
                         </TableRow>
                         <TableRow>
-                          <TableCell className="font-medium">Taxes received</TableCell>
+                          <TableCell className="font-medium">
+                            <TooltipComponent>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-help underline decoration-dotted">Taxes received</span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-sm">
+                                <p>The tax inside those orders, taken out of the sales line above and shown here.</p>
+                                <p className="mt-1">Source: shopify_sales_by_variant (taxes), by order date in Brisbane time, in AUD.</p>
+                              </TooltipContent>
+                            </TooltipComponent>
+                          </TableCell>
                           <TableCell className="text-right">
                             ${taxesReceived.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                           </TableCell>
@@ -2952,7 +3114,17 @@ function App() {
                           )}
                         </TableRow>
                         <TableRow>
-                          <TableCell className="font-medium">Shipping charges received</TableCell>
+                          <TableCell className="font-medium">
+                            <TooltipComponent>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-help underline decoration-dotted">Shipping charges received</span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-sm">
+                                <p>What the customer paid for delivery. It is NOT inside the sales line above.</p>
+                                <p className="mt-1">Source: shopify_sales_by_variant (shipping), by order date in Brisbane time, in AUD.</p>
+                              </TooltipContent>
+                            </TooltipComponent>
+                          </TableCell>
                           <TableCell className="text-right">
                             ${shippingChargesReceived.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                           </TableCell>
@@ -2966,7 +3138,18 @@ function App() {
                           )}
                         </TableRow>
                         <TableRow>
-                          <TableCell className="font-medium">Total Shopify Sales</TableCell>
+                          <TableCell className="font-medium">
+                            <TooltipComponent>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-help underline decoration-dotted">Total Shopify Sales</span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-sm">
+                                <p>Net sales + tax + shipping: everything the customer paid.</p>
+                                <p className="mt-1">This is the line to compare against Shopify. The three lines above split the same money.</p>
+                                <p className="mt-1">Source: shopify_sales_by_variant, by order date in Brisbane time, in AUD.</p>
+                              </TooltipContent>
+                            </TooltipComponent>
+                          </TableCell>
                           <TableCell className="text-right">
                             ${totalShopifySalesGross.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                           </TableCell>
