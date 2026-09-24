@@ -103,7 +103,12 @@ Deno.serve(async (req: Request) => {
   const t0 = Date.now();
   try {
     const body = await req.json().catch(() => ({}));
-    // The screens send ISO instants; the tables are keyed by store day.
+    // STORE DAYS in, store days out. The screens send 'yyyy-MM-dd' — the day the
+    // picker shows — because they are the only side that knows the viewer's
+    // timezone. They used to send toISOString(), and slicing the date off that
+    // in Brisbane moved "to = 25 Sep" back to the 24th: every range quietly lost
+    // its last day. An ISO instant is still tolerated so an old client or a
+    // manual call does not break, but it carries that same ambiguity.
     const day = (v: unknown) => (typeof v === 'string' && v.length >= 10 ? v.slice(0, 10) : null);
     const from = day(body?.startDate);
     const to = day(body?.endDate);

@@ -281,8 +281,13 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          startDate: dateRange.from?.toISOString(),
-          endDate: dateRange.to?.toISOString(),
+          // STORE DAYS, not instants. Sending toISOString() from Brisbane
+          // turned "to = 25 Sep" into "2026-09-24T14:00Z", the server sliced
+          // the date off it and queried up to the 24th — so By Channel was
+          // silently missing the last day of every range it asked for, to the
+          // cent. Same class of bug as the row filter, one layer out.
+          startDate: dateRange.from ? format(dateRange.from, 'yyyy-MM-dd') : undefined,
+          endDate: dateRange.to ? format(dateRange.to, 'yyyy-MM-dd') : undefined,
         }),
       });
 
