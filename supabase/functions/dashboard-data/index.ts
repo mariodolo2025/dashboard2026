@@ -116,13 +116,30 @@ Deno.serve(async (req: Request) => {
     for (const r of fxRows ?? []) rateMap[`${r.year}-${r.month}`] = num(r.rate);
     const rateFor = (d: Date | null) => (d ? rateMap[`${d.getFullYear()}-${d.getMonth() + 1}`] ?? 1.54 : 1.54);
 
-    // ── Unleashed: aim2026_demand_detail, the table SalesEnquiryList.csv is
-    //    written from. AUD. ────────────────────────────────────────────────
-    const uRaw = await readAll(
+    const readCsv = async (name: string): Promise<string | null> => {
+      const { data, error } = await supabase.storage.from(BUCKET).download(name);
+      if (error || !data) return null;
+      return await data.text();
+    };
+
+    // Everything below is independent, so it goes out at once. Run in sequence
+    // a four-day window still took ~5s of pure round trips, which is what made
+    // changing the period feel broken.
+    const [uRaw, sRaw, mRaw, oldText, costText] = await Promise.all([
+      readAll(
       supabase, 'aim2026_demand_detail',
       'order_date, sku, customer, quantity, amount, status, warehouse, product_group, customer_type',
-      'order_date', from, to,
-    );
+      'order_date', from, to),
+      readAll(
+        supabase, 'shopify_sales_by_variant',
+        'order_date, sku, country, quantity, net_aud, taxes_aud, shipping_aud',
+        'order_date', from, to),
+      readAll(
+        supabase, 'meta_ads_daily', 'date, currency, spend, conversion_value', 'date', from, to),
+      readCsv('old-shopify-sales.csv'),
+      readCsv('costs.csv'),
+    ]);
+
     let droppedWeb = 0;
     const unleashed = uRaw.filter((r: any) => {
       const t = String(r.customer_type ?? '').trim().toLowerCase();
@@ -152,11 +169,6 @@ Deno.serve(async (req: Request) => {
     //    written from. AUD. netSales is taken EX-TAX with the same factor the
     //    CSV parser applied, because AU/EU shelf prices include the tax and the
     //    screens list "Taxes received" as its own line. ────────────────────
-    const sRaw = await readAll(
-      supabase, 'shopify_sales_by_variant',
-      'order_date, sku, country, quantity, net_aud, taxes_aud, shipping_aud',
-      'order_date', from, to,
-    );
     const shopify = sRaw.map((r: any) => {
       const rawNet = num(r.net_aud), taxes = num(r.taxes_aud), shipping = num(r.shipping_aud);
       const base = rawNet + shipping;
@@ -173,9 +185,6 @@ Deno.serve(async (req: Request) => {
 
     // ── Meta: meta_ads_daily. USD accounts convert at the month's house rate,
     //    the same rule the CSV path used. ──────────────────────────────────
-    const mRaw = await readAll(
-      supabase, 'meta_ads_daily', 'date, currency, spend, conversion_value', 'date', from, to,
-    );
     const meta = mRaw.map((r: any) => {
       const d = r.date ? new Date(`${String(r.date).slice(0, 10)}T00:00:00`) : null;
       const currency = String(r.currency ?? 'AUD').toUpperCase();
@@ -187,14 +196,7 @@ Deno.serve(async (req: Request) => {
     // ── The two frozen files. Small, historical, and no table stands behind
     //    them. costs.csv in particular is the COGS basis this screen has always
     //    used; reading product_cost_china instead would move every margin. ──
-    const readCsv = async (name: string): Promise<string | null> => {
-      const { data, error } = await supabase.storage.from(BUCKET).download(name);
-      if (error || !data) return null;
-      return await data.text();
-    };
-
     let oldShopify: any[] = [];
-    const oldText = await readCsv('old-shopify-sales.csv');
     if (oldText) {
       const rows: string[][] = parse(oldText, { skipFirstRow: false });
       oldShopify = rows.slice(1).map((row) => ({
@@ -204,7 +206,6 @@ Deno.serve(async (req: Request) => {
     }
 
     const costs: Record<string, number> = {};
-    const costText = await readCsv('costs.csv');
     if (costText) {
       const rows: string[][] = parse(costText, { skipFirstRow: false });
       for (const row of rows.slice(1)) {

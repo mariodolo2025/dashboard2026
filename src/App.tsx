@@ -2829,7 +2829,21 @@ function App() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex gap-4">
+            {/* While the range is being re-read, the whole pair is covered.
+                Half-loaded was worse than slow: Shopify would still be zero
+                while the Xero costs had already arrived, so the screen printed
+                an Estimated Revenue of -$373,272 that looked like a result and
+                was an artefact of the two halves landing at different times.
+                Blurred, dimmed and inert until both are in. */}
+            <div className={`flex gap-4 relative ${isLoading ? 'pointer-events-none select-none' : ''}`} aria-busy={isLoading}>
+              {isLoading && (
+                <div className="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-background/60 backdrop-blur-[3px]">
+                  <div className="flex items-center gap-2.5 rounded-full border bg-background/95 px-4 py-2 shadow-sm">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    <span className="text-sm font-medium">Loading this period…</span>
+                  </div>
+                </div>
+              )}
               <Card className="flex-1">
                 <CardHeader>
                   <div className="flex items-center justify-between">
