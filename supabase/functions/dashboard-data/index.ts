@@ -79,17 +79,58 @@ const getChannelAndBrand = (customer: string): { channel: string; brand: string 
   return { channel: 'B2B', brand: 'B2B' };
 };
 
-/** Read every row of a date-bounded query, page by page. */
+/**
+ * Read every row of a date-bounded query, page by page.
+ *
+ * BY KEY, NOT BY OFFSET, wherever the source has a unique column (`keyCol`).
+ * Mario, 2026-09-25: "a veces tambien falla al cargar la primera vez", with a
+ * 500 on the front page. The cause was aim2026_demand_detail: 194,754 rows, no
+ * index on order_date, so every page was a full scan — and `.range(off, …)`
+ * asked for thirteen of them to cover one month. Postgres re-walked and re-
+ * sorted the same 12,611 rows once per page, 1.37 s each, and whichever page
+ * was unlucky got cut off by the statement timeout. Warm cache: it just fit.
+ * Cold: it did not. Hence "sometimes".
+ *
+ * Paging by key asks for rows after the last id seen, so each page starts
+ * where the previous one ended and nothing is walked twice. The index added in
+ * 20260925090000 is what makes both halves cheap.
+ *
+ * Without a keyCol — shopify_sales_by_variant is a GROUP BY view with no
+ * unique column, and skipping by a repeated order_date would drop rows — it
+ * falls back to offsets. That one is small (2,732 rows for a month) and its
+ * base table is indexed on (order_date, sku, country).
+ */
 async function readAll(
   supabase: any, table: string, cols: string, dateCol: string,
-  from: string | null, to: string | null,
+  from: string | null, to: string | null, keyCol: string | null = null,
 ): Promise<any[]> {
   const out: any[] = [];
-  for (let off = 0; ; off += PAGE) {
-    let q = supabase.from(table).select(cols).order(dateCol, { ascending: true }).range(off, off + PAGE - 1);
+  const bound = (q: any) => {
     if (from) q = q.gte(dateCol, from);
     if (to) q = q.lte(dateCol, to);
-    const { data, error } = await q;
+    return q;
+  };
+
+  if (keyCol) {
+    let after: number | string | null = null;
+    for (;;) {
+      let q = bound(supabase.from(table).select(cols).order(keyCol, { ascending: true }).limit(PAGE));
+      if (after !== null) q = q.gt(keyCol, after);
+      const { data, error } = await q;
+      if (error) throw new Error(`${table}: ${error.message}`);
+      if (!data || data.length === 0) break;
+      out.push(...data);
+      if (data.length < PAGE) break;
+      after = data[data.length - 1][keyCol];
+      // A page that comes back without its key would loop for ever.
+      if (after === null || after === undefined) throw new Error(`${table}: ${keyCol} missing from the page`);
+    }
+    return out;
+  }
+
+  for (let off = 0; ; off += PAGE) {
+    const { data, error } = await bound(
+      supabase.from(table).select(cols).order(dateCol, { ascending: true }).range(off, off + PAGE - 1));
     if (error) throw new Error(`${table}: ${error.message}`);
     if (!data || data.length === 0) break;
     out.push(...data);
@@ -133,14 +174,14 @@ Deno.serve(async (req: Request) => {
     const [uRaw, sRaw, mRaw, oldText, costText] = await Promise.all([
       readAll(
       supabase, 'aim2026_demand_detail',
-      'order_date, sku, customer, quantity, amount, status, warehouse, product_group, customer_type',
-      'order_date', from, to),
+      'id, order_date, sku, customer, quantity, amount, status, warehouse, product_group, customer_type',
+      'order_date', from, to, 'id'),
       readAll(
         supabase, 'shopify_sales_by_variant',
         'order_date, sku, country, quantity, net_aud, taxes_aud, shipping_aud',
         'order_date', from, to),
       readAll(
-        supabase, 'meta_ads_daily', 'date, currency, spend, conversion_value', 'date', from, to),
+        supabase, 'meta_ads_daily', 'id, date, currency, spend, conversion_value', 'date', from, to, 'id'),
       readCsv('old-shopify-sales.csv'),
       readCsv('costs.csv'),
     ]);
