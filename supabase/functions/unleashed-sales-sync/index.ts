@@ -27,6 +27,11 @@ const corsHeaders = {
 const UNLEASHED_BASE = 'https://api.unleashedsoftware.com';
 const LIVE_BOUNDARY = '2026-07-01'; // first day owned by the API (frozen ends 2026-06-30)
 
+// How far back to look for DELETED orders. aim2026_demand_detail starts on
+// 2025-01-01 and is cleaned from here too, so this has to reach that far; the
+// sales lines themselves only hold api rows from LIVE_BOUNDARY.
+const DELETED_SINCE = '2025-01-01';
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
@@ -150,6 +155,7 @@ Deno.serve(async (req: Request) => {
         rows.push({
           id: l.Guid,
           order_date: orderDate,
+          order_number: o.OrderNumber ?? null,
           product_code: code ?? desc,
           product: code ? desc : desc,
           customer,
@@ -179,6 +185,48 @@ Deno.serve(async (req: Request) => {
       const { error } = await supabase.from('unleashed_sales_lines').upsert(chunk, { onConflict: 'id' });
       if (error) throw new Error(`upsert failed: ${error.message}`);
       upserted += chunk.length;
+    }
+
+    // ── Orders deleted in Unleashed ───────────────────────────────────────────
+    // Mario, 2026-09-25: "arreglalo". Unleashed leaves a Deleted order OUT of
+    // every SalesOrders list unless it is asked for by name — checked against
+    // the API that day: modifiedSince=2026-09-01 returned 5,981 orders and none
+    // of the four deleted ones; orderStatus=Deleted returned exactly them. So an
+    // order that was Parked or Placed and then deleted never came back to
+    // overwrite its lines, and sat in the tables as a live order for good. On
+    // 25-Sep that was 20 orders, 173 lines and A$179,968 of B2B sales
+    // (A$149,021 of it in July), plus 158 lines in aim2026_demand_detail.
+    //
+    // Each run lists them explicitly and removes their lines. Only guids that
+    // Unleashed itself returns as Deleted are touched, one by one, so a list cut
+    // short by the time budget deletes less, never more. These are sales order
+    // lines in reporting tables: stock on hand comes from Unleashed, not from
+    // here, and nothing a Deleted order did was ever dispatched.
+    const deletedGuids: string[] = [];
+    let deletedListComplete = false;
+    if (!outOfTime()) {
+      const cut = await pageAll('SalesOrders', `orderStatus=Deleted&startDate=${DELETED_SINCE}&pageSize=200`, creds, (items) => {
+        for (const o of items) if (o.Guid && String(o.OrderStatus ?? '') === 'Deleted') deletedGuids.push(String(o.Guid));
+      }, outOfTime);
+      deletedListComplete = !cut;
+      truncated = cut || truncated;
+    }
+    let deletedSalesLines = 0;
+    let deletedDemandLines = 0;
+    for (let i = 0; i < deletedGuids.length; i += 200) {
+      const batch = deletedGuids.slice(i, i + 200);
+      const a = await supabase.from('unleashed_sales_lines')
+        .delete({ count: 'exact' }).eq('source', 'api').in('order_guid', batch);
+      if (a.error) throw new Error(`deleting lines of deleted orders: ${a.error.message}`);
+      deletedSalesLines += a.count ?? 0;
+      // type = 'sale' only: component_usage rows belong to assemblies, not orders.
+      const b = await supabase.from('aim2026_demand_detail')
+        .delete({ count: 'exact' }).eq('type', 'sale').in('order_guid', batch);
+      if (b.error) throw new Error(`deleting demand of deleted orders: ${b.error.message}`);
+      deletedDemandLines += b.count ?? 0;
+    }
+    if (deletedSalesLines || deletedDemandLines) {
+      console.log(`Deleted orders: ${deletedGuids.length} listed, removed ${deletedSalesLines} sales lines and ${deletedDemandLines} demand lines`);
     }
 
     // ── Watermark + state ─────────────────────────────────────────────────────
@@ -221,6 +269,10 @@ Deno.serve(async (req: Request) => {
       ordersFetched: orders.length,
       ordersInLiveWindow: byOrder.size,
       linesUpserted: upserted,
+      deletedOrdersListed: deletedGuids.length,
+      deletedListComplete,
+      deletedSalesLines,
+      deletedDemandLines,
       liveRowsTotal: liveCount ?? 0,
       products: groupByCode.size,
       customers: typeByCustomer.size,
