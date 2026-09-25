@@ -67,6 +67,7 @@ interface UnleashedRow {
   status: string;
   orderNumber?: string;   // SO-xxxxx
   lineId?: string;        // Unleashed sales order line guid
+  isCharge?: boolean;     // no product code in Unleashed (freight, flat fee…)
 }
 
 interface ShopifyRow {
@@ -1380,11 +1381,12 @@ function App() {
    * left BLANK, never 0: zero reads as "free" and hides the gap. Fees are
    * charges on the order, not goods, and are outside COGS by decision.
    */
-  const cogsLine = (sku: string, quantity: number) => {
+  const cogsLine = (sku: string, quantity: number, isCharge = false) => {
     const isFee = (costBasis?.notProducts ?? []).some((n) => n.toLowerCase() === sku.trim().toLowerCase());
     const landed = costsData.get(sku);
     const china = costsChinaData.get(sku);
     if (isFee) return { unitCostChina: null, unitCost: null, totalCost: null, costSource: 'Fee — not a product, outside COGS' };
+    if (isCharge) return { unitCostChina: null, unitCost: null, totalCost: null, costSource: 'Charge line — no product code in Unleashed, outside COGS' };
     if (landed === undefined) return { unitCostChina: null, unitCost: null, totalCost: null, costSource: 'MISSING — no Default Purchase Price in Unleashed' };
     return {
       unitCostChina: china ?? null,
@@ -1431,7 +1433,7 @@ function App() {
         customer: sale.customer,
         quantity: sale.quantity,
         saleAmount: sale.subTotal,
-        ...cogsLine(sale.product, sale.quantity),
+        ...cogsLine(sale.product, sale.quantity, sale.isCharge === true),
       }));
   }, [filteredData.unleashed, costsData, costsChinaData, costBasis]);
 
@@ -3256,7 +3258,7 @@ function App() {
                           <TableCell
                             className="font-medium cursor-pointer hover:underline text-blue-600"
                             onClick={handleDownloadShopifyCOGS}
-                            title={`Default Purchase Price from Unleashed + ${((costBasis?.landedRate ?? 0) * 100).toFixed(2)}% landing (freight, duty, insurance), per unit sold, AUD. Sales order lines only: assembly consumption is production, not a sale. Courier Fee and Fee are charges, not goods, and are left out. A SKU with no Default Purchase Price counts nothing here; the CSV marks it MISSING. Click to download every line.`}
+                            title={`Default Purchase Price from Unleashed + ${((costBasis?.landedRate ?? 0) * 100).toFixed(2)}% landing (freight, duty, insurance), per unit sold, AUD. Sales order lines only: assembly consumption is production, not a sale. Courier Fee, Fee and lines with no product code are charges, not goods, and are left out. A SKU with no Default Purchase Price counts nothing here; the CSV marks it MISSING. Click to download every line.`}
                           >
                             Total Shopify COGS
                           </TableCell>
@@ -3576,7 +3578,7 @@ function App() {
                           <TableCell 
                             className="cursor-pointer hover:underline text-blue-600"
                             onClick={handleDownloadB2BCOGS}
-                            title={`Default Purchase Price from Unleashed + ${((costBasis?.landedRate ?? 0) * 100).toFixed(2)}% landing (freight, duty, insurance), per unit sold, AUD. Sales order lines only: assembly consumption is production, not a sale. Courier Fee and Fee are charges, not goods, and are left out. A SKU with no Default Purchase Price counts nothing here; the CSV marks it MISSING. Click to download every line.`}
+                            title={`Default Purchase Price from Unleashed + ${((costBasis?.landedRate ?? 0) * 100).toFixed(2)}% landing (freight, duty, insurance), per unit sold, AUD. Sales order lines only: assembly consumption is production, not a sale. Courier Fee, Fee and lines with no product code are charges, not goods, and are left out. A SKU with no Default Purchase Price counts nothing here; the CSV marks it MISSING. Click to download every line.`}
                           >
                             Total B2B COGS
                           </TableCell>

@@ -32,6 +32,23 @@
 //   - channel/brand are derived from the customer name by the same rules.
 // The numbers must not move. A window that exists in both paths should tie out.
 //
+// THEY DID MOVE, and it took Mario to see it (2026-09-25: "el csv en sale
+// amount dice AUD, pero por ej en la SO-00020273 ese valor creo que es en usd",
+// then "ya no confio en vos"). The first version of this function read Unleashed
+// sales from aim2026_demand_detail instead of the table the CSV came from. That
+// table is built for DEMAND: its `amount` is qty x UnitPrice in the order's own
+// currency, before discounts, sign stripped, and it only starts in 2025. Over
+// 1-25 Sep two of those errors almost cancelled — foreign-currency orders
+// undercounted by A$41,420, discounts overcounted by A$47,152 — so the B2B total
+// looked plausible while being built wrong. It also brought assembly consumption
+// in as B2B. The earlier "1,847 rows both ways" check compared row counts, not
+// money, and missed all of it.
+//
+// Unleashed sales now come from unleashed_sales_lines, the table the
+// SalesEnquiryList CSV was written from: sub_total is Unleashed's BCLineTotal,
+// AUD after discounts, signed; source 'frozen' holds 2024-07 to 2026-06 and
+// 'api' everything since. The mapping is parse-csv-data's, field for field.
+//
 // oldShopify still comes from its CSV: frozen, tiny, and no table stands
 // behind it.
 //
@@ -204,17 +221,17 @@ Deno.serve(async (req: Request) => {
     // a four-day window still took ~5s of pure round trips, which is what made
     // changing the period feel broken.
     const [uRaw, sRaw, mRaw, oldText, paramRows, rateRes] = await Promise.all([
-      // type = 'sale' ONLY. This table also holds component_usage: the parts
-      // an assembly (ASM-...) consumed. Those are production, not sales: they
-      // move value from components into a finished product that is costed
-      // again when it is sold. Reading them here, from 24 to 25 Sep, added
-      // 2,719 "Assembly ASM-..." rows to B2B: $0 of sales and $49,790 of COGS
-      // for 1-24 Sep. The CSV path this replaced never had them —
-      // unleashed_sales_lines holds sales order lines only.
+      // Sales order lines only — no assembly consumption lives in this table.
+      // The Web filter below is exact; this one is a cheap SUPERSET of it run
+      // in the database, because ~95% of the lines are Shopify orders mirrored
+      // into Unleashed under Web customers and the screen throws them away.
+      // A month is ~14,000 lines before it and ~700 after.
       readAll(
-      supabase, 'aim2026_demand_detail',
-      'id, order_date, order_number, line_guid, sku, customer, quantity, amount, status, warehouse, product_group, customer_type',
-      'order_date', from, to, 'id', (q) => q.eq('type', 'sale')),
+        supabase, 'unleashed_sales_lines',
+        'id, order_date, order_number, product_code, product, customer, quantity, sub_total, status, warehouse, product_group, customer_type',
+        'order_date', from, to, 'id',
+        (q) => q.in('source', ['frozen', 'api'])
+          .or('customer_type.is.null,customer_type.not.ilike.web,customer.ilike.*-onlinesale')),
       readAll(
         supabase, 'shopify_sales_by_variant',
         'order_date, sku, country, quantity, net_aud, taxes_aud, shipping_aud',
@@ -225,6 +242,12 @@ Deno.serve(async (req: Request) => {
       readAll(supabase, 'aim2026_sku_parameters', 'id, sku, product_cost_china', 'sku', null, null, 'id'),
       supabase.from('aim2026_cost_config').select('config_data').eq('config_type', 'landed_cost_rates').maybeSingle(),
     ]);
+
+    // SKUs the catalogue knows. A line whose code is not one of them AND equals
+    // its own description is a charge line: Unleashed gives those no product
+    // code and the sync stores the description in both columns ("B2B flat fee",
+    // "B2B Pickup/Dropship"). Only used to label the audit CSV.
+    const knownSkus = new Set((paramRows as any[]).map((p) => String(p.sku ?? '').trim()));
 
     let droppedWeb = 0;
     const unleashed = uRaw.filter((r: any) => {
@@ -242,13 +265,16 @@ Deno.serve(async (req: Request) => {
         orderDate: r.order_date,
         // Order and Unleashed line id, so any row can be found in Unleashed
         // without guessing by date/customer/SKU/qty — 26 rows in 1-24 Sep
-        // had more than one candidate that way.
+        // had more than one candidate that way. History loaded from the CSV
+        // export (ids 'frozen-N') has neither.
         orderNumber: r.order_number ?? '',
-        lineId: r.line_guid ?? '',
-        product: r.sku ?? '',
+        lineId: String(r.id ?? '').startsWith('frozen-') ? '' : (r.id ?? ''),
+        product: r.product_code ?? '',
+        isCharge: !knownSkus.has(String(r.product_code ?? '').trim()) && (r.product_code ?? '') === (r.product ?? ''),
         customer: r.customer ?? '',
         quantity: num(r.quantity),
-        subTotal: num(r.amount),
+        // AUD, after discounts, signed (credits stay negative), as the CSV had it.
+        subTotal: num(r.sub_total),
         productGroup: r.product_group ?? '',
         channel, brand,
         warehouse: r.warehouse ?? '',
