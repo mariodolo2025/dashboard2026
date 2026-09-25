@@ -32,10 +32,29 @@
 //   - channel/brand are derived from the customer name by the same rules.
 // The numbers must not move. A window that exists in both paths should tie out.
 //
-// oldShopify and costs still come from their CSVs: both are frozen and tiny
-// (0.23 MB and 0.02 MB), old-shopify-sales.csv has no table behind it, and
-// costs.csv is the COGS basis By Channel has always used — swapping it for
-// product_cost_china would silently change every margin on the screen.
+// oldShopify still comes from its CSV: frozen, tiny, and no table stands
+// behind it.
+//
+// COSTS, since 2026-09-25 (Mario, after auditing the B2B COGS download with
+// Codex: "1. si", then "A"). Two things were wrong with the COGS basis:
+//
+//   - It came from costs.csv, a file uploaded on 3-Aug and never touched
+//     again. It predates the 9-Sep clean-up of 882 costs, has no entry for
+//     some SKUs (so they cost $0 without saying so), and carries none of the
+//     12.24% landing uplift that Mario's rule puts in every COGS.
+//   - Every other COGS on the dashboard (AIM tab, margin, GMROI) is
+//     Default Purchase Price x (1 + freight + duty + insurance). By Channel
+//     was the one screen on a different basis.
+//
+// So costs are now read from aim2026_sku_parameters.product_cost_china (the
+// Default Purchase Price the products sync keeps in step with Unleashed) and
+// uplifted with aim2026_cost_config.landed_cost_rates — the same row and the
+// same fallbacks aim2026-calc-kpis-v2 uses, so the two cannot drift apart.
+// The screen stops subtracting the Xero inbound-freight lines, because that
+// freight is now inside this uplift; see App.tsx.
+//
+// A missing or zero Default Purchase Price is NOT sent as a cost. Zero is
+// not free, it is "nobody entered it"; the audit CSV says so per line.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { parse } from 'https://deno.land/std@0.224.0/csv/mod.ts';
@@ -50,6 +69,18 @@ const json = (b: unknown, s = 200) =>
 
 const BUCKET = 'csv-files';
 const PAGE = 1000;   // PostgREST caps every read at 1000 rows and says nothing.
+
+// Lines on a B2B order that are charges, not goods. They carry a price in
+// Unleashed and even a Default Purchase Price (Courier Fee: 18.94), but
+// nothing leaves the shelf, so they have no cost of goods. What the courier
+// bills Dolo for those deliveries is already on screen as
+// "Freight & Courier — Outbound — B2B", from Xero. Mario, 2026-09-25:
+// "quedan fuera". Compared case-insensitively.
+const NOT_PRODUCTS = ['Courier Fee', 'Fee'];
+
+// Same fallbacks as aim2026-calc-kpis-v2, so a missing config row cannot put
+// the two COGS on different bases.
+const RATE_FALLBACK = { freightRate: 0.0592, dutyRate: 0.05, insuranceRate: 0.0132 };
 
 const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const cleanNumber = (v: unknown) => {
@@ -103,12 +134,13 @@ const getChannelAndBrand = (customer: string): { channel: string; brand: string 
 async function readAll(
   supabase: any, table: string, cols: string, dateCol: string,
   from: string | null, to: string | null, keyCol: string | null = null,
+  where: ((q: any) => any) | null = null,
 ): Promise<any[]> {
   const out: any[] = [];
   const bound = (q: any) => {
     if (from) q = q.gte(dateCol, from);
     if (to) q = q.lte(dateCol, to);
-    return q;
+    return where ? where(q) : q;
   };
 
   if (keyCol) {
@@ -171,11 +203,18 @@ Deno.serve(async (req: Request) => {
     // Everything below is independent, so it goes out at once. Run in sequence
     // a four-day window still took ~5s of pure round trips, which is what made
     // changing the period feel broken.
-    const [uRaw, sRaw, mRaw, oldText, costText] = await Promise.all([
+    const [uRaw, sRaw, mRaw, oldText, paramRows, rateRes] = await Promise.all([
+      // type = 'sale' ONLY. This table also holds component_usage: the parts
+      // an assembly (ASM-...) consumed. Those are production, not sales: they
+      // move value from components into a finished product that is costed
+      // again when it is sold. Reading them here, from 24 to 25 Sep, added
+      // 2,719 "Assembly ASM-..." rows to B2B: $0 of sales and $49,790 of COGS
+      // for 1-24 Sep. The CSV path this replaced never had them —
+      // unleashed_sales_lines holds sales order lines only.
       readAll(
       supabase, 'aim2026_demand_detail',
-      'id, order_date, sku, customer, quantity, amount, status, warehouse, product_group, customer_type',
-      'order_date', from, to, 'id'),
+      'id, order_date, order_number, line_guid, sku, customer, quantity, amount, status, warehouse, product_group, customer_type',
+      'order_date', from, to, 'id', (q) => q.eq('type', 'sale')),
       readAll(
         supabase, 'shopify_sales_by_variant',
         'order_date, sku, country, quantity, net_aud, taxes_aud, shipping_aud',
@@ -183,7 +222,8 @@ Deno.serve(async (req: Request) => {
       readAll(
         supabase, 'meta_ads_daily', 'id, date, currency, spend, conversion_value', 'date', from, to, 'id'),
       readCsv('old-shopify-sales.csv'),
-      readCsv('costs.csv'),
+      readAll(supabase, 'aim2026_sku_parameters', 'id, sku, product_cost_china', 'sku', null, null, 'id'),
+      supabase.from('aim2026_cost_config').select('config_data').eq('config_type', 'landed_cost_rates').maybeSingle(),
     ]);
 
     let droppedWeb = 0;
@@ -200,6 +240,11 @@ Deno.serve(async (req: Request) => {
       const { channel, brand } = getChannelAndBrand(String(r.customer ?? ''));
       return {
         orderDate: r.order_date,
+        // Order and Unleashed line id, so any row can be found in Unleashed
+        // without guessing by date/customer/SKU/qty — 26 rows in 1-24 Sep
+        // had more than one candidate that way.
+        orderNumber: r.order_number ?? '',
+        lineId: r.line_guid ?? '',
         product: r.sku ?? '',
         customer: r.customer ?? '',
         quantity: num(r.quantity),
@@ -251,24 +296,43 @@ Deno.serve(async (req: Request) => {
         .filter((r) => (!from || r.date >= from) && (!to || r.date <= to));
     }
 
-    const costs: Record<string, number> = {};
-    if (costText) {
-      const rows: string[][] = parse(costText, { skipFirstRow: false });
-      for (const row of rows.slice(1)) {
-        const sku = String(row[0] ?? '').trim();
-        const c = parseFloat(String(row[1]));
-        if (sku && Number.isFinite(c) && c > 0) costs[sku] = c;
-      }
+    // ── Costs: Default Purchase Price x (1 + landing), per unit, AUD ──
+    if (rateRes.error) throw new Error(`aim2026_cost_config: ${rateRes.error.message}`);
+    const r0 = (rateRes.data?.config_data as any)?.default ?? {};
+    const pick = (v: unknown, fb: number) => (v !== null && v !== undefined && Number.isFinite(Number(v)) ? Number(v) : fb);
+    const rates = {
+      freightRate: pick(r0.freightRate, RATE_FALLBACK.freightRate),
+      dutyRate: pick(r0.dutyRate, RATE_FALLBACK.dutyRate),
+      insuranceRate: pick(r0.insuranceRate, RATE_FALLBACK.insuranceRate),
+    };
+    const landedRate = rates.freightRate + rates.dutyRate + rates.insuranceRate;
+    const notProduct = new Set(NOT_PRODUCTS.map((n) => n.toLowerCase()));
+
+    const costs: Record<string, number> = {};        // landed: what COGS uses
+    const costsChina: Record<string, number> = {};   // bare, for the audit CSV
+    for (const p of paramRows) {
+      const sku = String(p.sku ?? '').trim();
+      const china = Number(p.product_cost_china);
+      if (!sku || notProduct.has(sku.toLowerCase())) continue;
+      if (!Number.isFinite(china) || china <= 0) continue;   // missing, not free
+      costsChina[sku] = china;
+      costs[sku] = china * (1 + landedRate);
     }
 
     console.log(
       `dashboard-data ${from ?? 'all'}..${to ?? 'all'} — unleashed ${unleashed.length} (web dropped ${droppedWeb}), ` +
-      `shopify ${shopify.length}, meta ${meta.length}, oldShopify ${oldShopify.length}, costs ${Object.keys(costs).length}, ` +
+      `shopify ${shopify.length}, meta ${meta.length}, oldShopify ${oldShopify.length}, costs ${Object.keys(costs).length} ` +
+      `(landed +${(landedRate * 100).toFixed(2)}%), ` +
       `${Date.now() - t0}ms`
     );
 
     return json({
-      unleashed, shopify, oldShopify, meta, costs,
+      unleashed, shopify, oldShopify, meta, costs, costsChina,
+      costBasis: {
+        source: 'aim2026_sku_parameters.product_cost_china (Default Purchase Price, Unleashed)',
+        landedRate, rates,
+        notProducts: NOT_PRODUCTS,
+      },
       source: 'database',
       window: { from, to },
       generatedAt: new Date().toISOString(),

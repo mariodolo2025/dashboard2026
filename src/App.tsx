@@ -65,6 +65,8 @@ interface UnleashedRow {
   brand: string;
   warehouse: string;
   status: string;
+  orderNumber?: string;   // SO-xxxxx
+  lineId?: string;        // Unleashed sales order line guid
 }
 
 interface ShopifyRow {
@@ -116,7 +118,14 @@ function App() {
   const [shopifyData, setShopifyData] = useState<ShopifyRow[]>([]);
   const [oldShopifyData, setOldShopifyData] = useState<OldShopifyRow[]>([]);
   const [metaData, setMetaData] = useState<MetaRow[]>([]);
+  // Unit COGS per SKU, AUD: Default Purchase Price x (1 + landing). See
+  // dashboard-data for why it stopped being the 3-Aug costs.csv.
   const [costsData, setCostsData] = useState<Map<string, number>>(new Map());
+  // The same cost without the landing uplift, and how the uplift was built.
+  // Only the audit CSVs read these: they show both so a row can be checked
+  // against Unleashed's Default Purchase Price by eye.
+  const [costsChinaData, setCostsChinaData] = useState<Map<string, number>>(new Map());
+  const [costBasis, setCostBasis] = useState<{ landedRate: number; notProducts: string[] } | null>(null);
   const [xeroData, setXeroData] = useState<XeroData | null>(null);
 
   const [dateRange, setDateRange] = useState<DateRange>({
@@ -360,6 +369,10 @@ function App() {
         costsMap.set(sku, cost as number);
       });
       setCostsData(costsMap);
+      setCostsChinaData(new Map(Object.entries(data.costsChina || {}).map(([k, v]) => [k, v as number])));
+      setCostBasis(data.costBasis
+        ? { landedRate: Number(data.costBasis.landedRate) || 0, notProducts: data.costBasis.notProducts ?? [] }
+        : null);
 
       // Update FX rate display - now using dynamic rates by month
       if (data.fxRate) {
@@ -1242,36 +1255,78 @@ function App() {
     return totalB2BSalesMemo * otherVariableCostB2BPercent;
   }, [totalB2BSalesMemo, otherVariableCostB2BPercent]);
 
+  /**
+   * The Costs-tab snapshot as By Channel must use it: WITHOUT the Xero
+   * inbound-freight lines ("Freight & Courier — Inbound — …").
+   *
+   * COGS here is Default Purchase Price + 12.24%, and 5.92 points of that
+   * 12.24% ARE the freight from China. Subtracting the Xero inbound freight as
+   * well counted the same freight twice. Mario, 2026-09-25, option A: keep the
+   * freight inside COGS, per unit sold, and drop it from variable costs here —
+   * so a month in which a container lands does not spike.
+   *
+   * Only on By Channel (and the estimated revenue built from it). The Cost
+   * distribution card still shows every Xero line: it is a picture of what was
+   * spent, not a margin, and nothing there is netted against COGS.
+   *
+   * Duty needs no such step: the cost profiles already exclude Rates & Taxes
+   * for exactly this reason. Only the split API accounts can be told apart;
+   * the xlsx fallback's single "Freight & Courier" line cannot, and stays.
+   */
+  const INBOUND_FREIGHT_PREFIX = 'Freight & Courier — Inbound';
+  const byChannelCosts = useMemo(() => {
+    if (!costsSnapshot) return null;
+    const inbound = costsSnapshot.items.filter((i) => i.name.startsWith(INBOUND_FREIGHT_PREFIX));
+    const totals = {
+      fixed: { ...costsSnapshot.totals.fixed },
+      variable: { ...costsSnapshot.totals.variable },
+      andrea: { ...costsSnapshot.totals.andrea },
+    };
+    const inCogs = { b2c: 0, b2b: 0 };
+    for (const i of inbound) {
+      totals[i.board].b2c -= i.b2cAmount;
+      totals[i.board].b2b -= i.b2bAmount;
+      inCogs.b2c += i.b2cAmount;
+      inCogs.b2b += i.b2bAmount;
+    }
+    return {
+      snapshot: { ...costsSnapshot, totals, items: costsSnapshot.items.filter((i) => !inbound.includes(i)) } as CostsSnapshot,
+      inCogs,
+    };
+  }, [costsSnapshot]);
+  const bcCosts = byChannelCosts?.snapshot ?? null;
+  const inboundFreightInCogs = byChannelCosts?.inCogs ?? { b2c: 0, b2b: 0 };
+
   // Calculate B2B estimated revenue
   const estimatedRevenueB2B = useMemo(() => {
-    if (costsSource === 'costs' && costsSnapshot) {
+    if (costsSource === 'costs' && bcCosts) {
       let revenue = totalB2BSalesMemo - totalB2BCOGS;
-      revenue -= costsSnapshot.totals.variable.b2b;
-      revenue -= costsSnapshot.totals.fixed.b2b;
+      revenue -= bcCosts.totals.variable.b2b;
+      revenue -= bcCosts.totals.fixed.b2b;
       if (andreaExtraCosts) {
-        revenue -= costsSnapshot.totals.andrea.b2b;
+        revenue -= bcCosts.totals.andrea.b2b;
       }
       return revenue;
     } else {
       return totalB2BSalesMemo - totalB2BCOGS - fixedCostB2B - freightCourierB2B - otherVariableCostsB2B;
     }
-  }, [totalB2BSalesMemo, totalB2BCOGS, fixedCostB2B, freightCourierB2B, otherVariableCostsB2B, costsSource, costsSnapshot, andreaExtraCosts]);
+  }, [totalB2BSalesMemo, totalB2BCOGS, fixedCostB2B, freightCourierB2B, otherVariableCostsB2B, costsSource, bcCosts, andreaExtraCosts]);
 
   // Calculate estimated revenue
   const estimatedRevenue = useMemo(() => {
-    if (costsSource === 'costs' && costsSnapshot) {
+    if (costsSource === 'costs' && bcCosts) {
       let revenue = totalShopifySalesGross - totalShopifyCOGS;
-      revenue -= costsSnapshot.totals.variable.b2c;
-      revenue -= costsSnapshot.totals.fixed.b2c;
+      revenue -= bcCosts.totals.variable.b2c;
+      revenue -= bcCosts.totals.fixed.b2c;
       if (andreaExtraCosts) {
-        revenue -= costsSnapshot.totals.andrea.b2c;
+        revenue -= bcCosts.totals.andrea.b2c;
       }
       return revenue;
     } else {
       const totalMetaSpend = metaSpend.length > 0 ? metaSpend[0].spend : 0;
       return totalShopifySalesGross - totalShopifyCOGS - totalMetaSpend - shippingCost - fixedCost - otherVariableCosts;
     }
-  }, [totalShopifySalesGross, totalShopifyCOGS, metaSpend, shippingCost, fixedCost, otherVariableCosts, costsSource, costsSnapshot, andreaExtraCosts]);
+  }, [totalShopifySalesGross, totalShopifyCOGS, metaSpend, shippingCost, fixedCost, otherVariableCosts, costsSource, bcCosts, andreaExtraCosts]);
 
   // Date Range ROAS calculation
   const dateRangeROAS = useMemo(() => {
@@ -1320,53 +1375,78 @@ function App() {
     return totalMetaConversions / totalMetaSpend;
   }, [totalMetaConversions, metaSpend]);
 
+  /**
+   * Where a line's unit cost comes from, for the audit CSVs. A missing cost is
+   * left BLANK, never 0: zero reads as "free" and hides the gap. Fees are
+   * charges on the order, not goods, and are outside COGS by decision.
+   */
+  const cogsLine = (sku: string, quantity: number) => {
+    const isFee = (costBasis?.notProducts ?? []).some((n) => n.toLowerCase() === sku.trim().toLowerCase());
+    const landed = costsData.get(sku);
+    const china = costsChinaData.get(sku);
+    if (isFee) return { unitCostChina: null, unitCost: null, totalCost: null, costSource: 'Fee — not a product, outside COGS' };
+    if (landed === undefined) return { unitCostChina: null, unitCost: null, totalCost: null, costSource: 'MISSING — no Default Purchase Price in Unleashed' };
+    return {
+      unitCostChina: china ?? null,
+      unitCost: landed,
+      totalCost: landed * quantity,
+      costSource: `Default Purchase Price + ${((costBasis?.landedRate ?? 0) * 100).toFixed(2)}% landing`,
+    };
+  };
+  const money = (v: number | null) => (v === null || v === undefined ? '' : v.toFixed(2));
+
   // Prepare detailed Shopify COGS data for CSV download
   const detailedShopifyCOGSData = useMemo(() => {
     if (!filteredData.shopify || !costsData) return [];
 
-    return filteredData.shopify.map(sale => {
-      const unitCost = costsData.get(sale.sku) || 0;
-      const totalCost = unitCost * sale.quantity;
-      
-      return {
-        date: format(sale.date, 'yyyy-MM-dd'),
-        sku: sale.sku,
-        quantity: sale.quantity,
-        unitCost: unitCost,
-        totalCost: totalCost
-      };
-    }).filter(item => item.totalCost > 0); // Only include items with valid costs
-  }, [filteredData.shopify, costsData]);
+    // Every row, including the ones without a cost: dropping them made the
+    // file sum to the screen while hiding exactly the lines worth checking.
+    return filteredData.shopify.map(sale => ({
+      date: format(sale.date, 'yyyy-MM-dd'),
+      sku: sale.sku,
+      region: sale.region,
+      quantity: sale.quantity,
+      netSales: sale.netSales,
+      ...cogsLine(sale.sku, sale.quantity),
+    }));
+  }, [filteredData.shopify, costsData, costsChinaData, costBasis]);
 
   // Prepare detailed B2B COGS data for CSV download
   const detailedB2BCOGSData = useMemo(() => {
     if (!filteredData.unleashed || !costsData) return [];
 
+    // One row per Unleashed sales order line, with the order and the line id
+    // so each can be found in Unleashed directly. Mario, 2026-09-25: the old
+    // file had neither, and 26 rows in 1-24 Sep matched more than one line by
+    // date/customer/SKU/qty.
     return filteredData.unleashed
       .filter(row => row.channel === 'B2B') // Only B2B sales
-      .map(sale => {
-        const unitCost = costsData.get(sale.product) || 0;
-        const totalCost = unitCost * sale.quantity;
-
-        return {
-          date: sale.orderDate ? format(sale.orderDate, 'yyyy-MM-dd') : '',
-          sku: sale.product,
-          customer: sale.customer,
-          quantity: sale.quantity,
-          unitCost: unitCost,
-          totalCost: totalCost
-        };
-      }); // Include all B2B sales, even those without cost data
-  }, [filteredData.unleashed, costsData]);
+      .map(sale => ({
+        date: sale.orderDate ? format(sale.orderDate, 'yyyy-MM-dd') : '',
+        orderNumber: sale.orderNumber ?? '',
+        lineId: sale.lineId ?? '',
+        status: sale.status,
+        warehouse: sale.warehouse,
+        sku: sale.product,
+        customer: sale.customer,
+        quantity: sale.quantity,
+        saleAmount: sale.subTotal,
+        ...cogsLine(sale.product, sale.quantity),
+      }));
+  }, [filteredData.unleashed, costsData, costsChinaData, costBasis]);
 
   // Handle CSV download for Shopify COGS
   const handleDownloadShopifyCOGS = () => {
     const columns: CSVColumn[] = [
       { header: 'Date', key: 'date' },
       { header: 'SKU', key: 'sku' },
+      { header: 'Region', key: 'region' },
       { header: 'Quantity', key: 'quantity' },
-      { header: 'Unit Cost (AUD)', key: 'unitCost', formatter: (value) => value.toFixed(2) },
-      { header: 'Total Cost (AUD)', key: 'totalCost', formatter: (value) => value.toFixed(2) }
+      { header: 'Net Sales ex tax (AUD)', key: 'netSales', formatter: money },
+      { header: 'Unit Cost China (AUD)', key: 'unitCostChina', formatter: money },
+      { header: 'Unit COGS incl. landing (AUD)', key: 'unitCost', formatter: money },
+      { header: 'Total COGS (AUD)', key: 'totalCost', formatter: money },
+      { header: 'Cost source', key: 'costSource' },
     ];
 
     downloadCSV(detailedShopifyCOGSData, 'shopify_cogs_details.csv', columns);
@@ -1376,11 +1456,18 @@ function App() {
   const handleDownloadB2BCOGS = () => {
     const columns: CSVColumn[] = [
       { header: 'Date', key: 'date' },
+      { header: 'Order', key: 'orderNumber' },
+      { header: 'Line ID', key: 'lineId' },
+      { header: 'Status', key: 'status' },
+      { header: 'Warehouse', key: 'warehouse' },
       { header: 'SKU', key: 'sku' },
       { header: 'Customer', key: 'customer' },
       { header: 'Quantity', key: 'quantity' },
-      { header: 'Unit Cost (AUD)', key: 'unitCost', formatter: (value) => value.toFixed(2) },
-      { header: 'Total Cost (AUD)', key: 'totalCost', formatter: (value) => value.toFixed(2) }
+      { header: 'Sale Amount (AUD)', key: 'saleAmount', formatter: money },
+      { header: 'Unit Cost China (AUD)', key: 'unitCostChina', formatter: money },
+      { header: 'Unit COGS incl. landing (AUD)', key: 'unitCost', formatter: money },
+      { header: 'Total COGS (AUD)', key: 'totalCost', formatter: money },
+      { header: 'Cost source', key: 'costSource' },
     ];
 
     downloadCSV(detailedB2BCOGSData, 'b2b_cogs_details.csv', columns);
@@ -3169,7 +3256,7 @@ function App() {
                           <TableCell
                             className="font-medium cursor-pointer hover:underline text-blue-600"
                             onClick={handleDownloadShopifyCOGS}
-                            title="Click to download detailed COGS breakdown"
+                            title={`Default Purchase Price from Unleashed + ${((costBasis?.landedRate ?? 0) * 100).toFixed(2)}% landing (freight, duty, insurance), per unit sold, AUD. Sales order lines only: assembly consumption is production, not a sale. Courier Fee and Fee are charges, not goods, and are left out. A SKU with no Default Purchase Price counts nothing here; the CSV marks it MISSING. Click to download every line.`}
                           >
                             Total Shopify COGS
                           </TableCell>
@@ -3324,7 +3411,7 @@ function App() {
                             </TableRow>
                           </>
                         )}
-                        {costsSource === 'costs' && costsSnapshot && (
+                        {costsSource === 'costs' && bcCosts && (
                           <>
                             <TableRow
                               className="cursor-pointer hover:bg-gray-50"
@@ -3337,14 +3424,14 @@ function App() {
                                 </div>
                               </TableCell>
                               <TableCell className="text-right">
-                                -${costsSnapshot.totals.variable.b2c.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
+                                -${bcCosts.totals.variable.b2c.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                               </TableCell>
                               <TableCell className="text-right">
-                                {(totalShopifySalesGross === 0 ? 0 : (costsSnapshot.totals.variable.b2c / totalShopifySalesGross) * 100).toFixed(2)}%
+                                {(totalShopifySalesGross === 0 ? 0 : (bcCosts.totals.variable.b2c / totalShopifySalesGross) * 100).toFixed(2)}%
                               </TableCell>
                               {showB2CStandardModel && <TableCell></TableCell>}
                             </TableRow>
-                            {expandedB2CVariableCost && costsSnapshot.items.filter(item => item.board === 'variable').map((item, idx) => (
+                            {expandedB2CVariableCost && bcCosts.items.filter(item => item.board === 'variable').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
                                 <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
                                 <TableCell className="text-right text-sm text-gray-600">
@@ -3356,6 +3443,21 @@ function App() {
                                 {showB2CStandardModel && <TableCell></TableCell>}
                               </TableRow>
                             ))}
+                            {expandedB2CVariableCost && inboundFreightInCogs.b2c > 0 && (
+                              <TableRow className="bg-gray-50">
+                                <TableCell
+                                  className="pl-12 text-sm text-gray-500 italic cursor-help"
+                                  title="The freight from China that Xero books under Freight & Courier — Inbound. It is NOT subtracted here: the COGS line above already carries it, as the freight part of the landing uplift, per unit sold. Subtracting it as well counted the same freight twice."
+                                >
+                                  Freight & Courier — Inbound: inside COGS, not subtracted
+                                </TableCell>
+                                <TableCell className="text-right text-sm text-gray-500 italic">
+                                  (${inboundFreightInCogs.b2c.toLocaleString('en-AU', { minimumFractionDigits: 2 })})
+                                </TableCell>
+                                <TableCell></TableCell>
+                                {showB2CStandardModel && <TableCell></TableCell>}
+                              </TableRow>
+                            )}
                             <TableRow
                               className="cursor-pointer hover:bg-gray-50"
                               onClick={() => setExpandedB2CFixedCost(!expandedB2CFixedCost)}
@@ -3367,14 +3469,14 @@ function App() {
                                 </div>
                               </TableCell>
                               <TableCell className="text-right">
-                                -${costsSnapshot.totals.fixed.b2c.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
+                                -${bcCosts.totals.fixed.b2c.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                               </TableCell>
                               <TableCell className="text-right">
-                                {(totalShopifySalesGross === 0 ? 0 : (costsSnapshot.totals.fixed.b2c / totalShopifySalesGross) * 100).toFixed(2)}%
+                                {(totalShopifySalesGross === 0 ? 0 : (bcCosts.totals.fixed.b2c / totalShopifySalesGross) * 100).toFixed(2)}%
                               </TableCell>
                               {showB2CStandardModel && <TableCell></TableCell>}
                             </TableRow>
-                            {expandedB2CFixedCost && costsSnapshot.items.filter(item => item.board === 'fixed').map((item, idx) => (
+                            {expandedB2CFixedCost && bcCosts.items.filter(item => item.board === 'fixed').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
                                 <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
                                 <TableCell className="text-right text-sm text-gray-600">
@@ -3399,14 +3501,14 @@ function App() {
                                     </div>
                                   </TableCell>
                                   <TableCell className="text-right">
-                                    -${costsSnapshot.totals.andrea.b2c.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
+                                    -${bcCosts.totals.andrea.b2c.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                                   </TableCell>
                                   <TableCell className="text-right">
-                                    {(totalShopifySalesGross === 0 ? 0 : (costsSnapshot.totals.andrea.b2c / totalShopifySalesGross) * 100).toFixed(2)}%
+                                    {(totalShopifySalesGross === 0 ? 0 : (bcCosts.totals.andrea.b2c / totalShopifySalesGross) * 100).toFixed(2)}%
                                   </TableCell>
                                   {showB2CStandardModel && <TableCell></TableCell>}
                                 </TableRow>
-                                {expandedB2CAndreaCost && costsSnapshot.items.filter(item => item.board === 'andrea').map((item, idx) => (
+                                {expandedB2CAndreaCost && bcCosts.items.filter(item => item.board === 'andrea').map((item, idx) => (
                                   <TableRow key={idx} className="bg-gray-50">
                                     <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
                                     <TableCell className="text-right text-sm text-gray-600">
@@ -3474,7 +3576,7 @@ function App() {
                           <TableCell 
                             className="cursor-pointer hover:underline text-blue-600"
                             onClick={handleDownloadB2BCOGS}
-                            title="Click to download detailed B2B COGS breakdown"
+                            title={`Default Purchase Price from Unleashed + ${((costBasis?.landedRate ?? 0) * 100).toFixed(2)}% landing (freight, duty, insurance), per unit sold, AUD. Sales order lines only: assembly consumption is production, not a sale. Courier Fee and Fee are charges, not goods, and are left out. A SKU with no Default Purchase Price counts nothing here; the CSV marks it MISSING. Click to download every line.`}
                           >
                             Total B2B COGS
                           </TableCell>
@@ -3542,7 +3644,7 @@ function App() {
                             </TableRow>
                           </>
                         )}
-                        {costsSource === 'costs' && costsSnapshot && (
+                        {costsSource === 'costs' && bcCosts && (
                           <>
                             <TableRow
                               className="cursor-pointer hover:bg-gray-50"
@@ -3555,13 +3657,13 @@ function App() {
                                 </div>
                               </TableCell>
                               <TableCell className="text-right">
-                                -${costsSnapshot.totals.variable.b2b.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
+                                -${bcCosts.totals.variable.b2b.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                               </TableCell>
                               <TableCell className="text-right">
-                                {(totalB2BSalesMemo === 0 ? 0 : (costsSnapshot.totals.variable.b2b / totalB2BSalesMemo) * 100).toFixed(2)}%
+                                {(totalB2BSalesMemo === 0 ? 0 : (bcCosts.totals.variable.b2b / totalB2BSalesMemo) * 100).toFixed(2)}%
                               </TableCell>
                             </TableRow>
-                            {expandedB2BVariableCost && costsSnapshot.items.filter(item => item.board === 'variable').map((item, idx) => (
+                            {expandedB2BVariableCost && bcCosts.items.filter(item => item.board === 'variable').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
                                 <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
                                 <TableCell className="text-right text-sm text-gray-600">
@@ -3572,6 +3674,20 @@ function App() {
                                 </TableCell>
                               </TableRow>
                             ))}
+                            {expandedB2BVariableCost && inboundFreightInCogs.b2b > 0 && (
+                              <TableRow className="bg-gray-50">
+                                <TableCell
+                                  className="pl-12 text-sm text-gray-500 italic cursor-help"
+                                  title="The freight from China that Xero books under Freight & Courier — Inbound. It is NOT subtracted here: the COGS line above already carries it, as the freight part of the landing uplift, per unit sold. Subtracting it as well counted the same freight twice."
+                                >
+                                  Freight & Courier — Inbound: inside COGS, not subtracted
+                                </TableCell>
+                                <TableCell className="text-right text-sm text-gray-500 italic">
+                                  (${inboundFreightInCogs.b2b.toLocaleString('en-AU', { minimumFractionDigits: 2 })})
+                                </TableCell>
+                                <TableCell></TableCell>
+                              </TableRow>
+                            )}
                             <TableRow
                               className="cursor-pointer hover:bg-gray-50"
                               onClick={() => setExpandedB2BFixedCost(!expandedB2BFixedCost)}
@@ -3583,13 +3699,13 @@ function App() {
                                 </div>
                               </TableCell>
                               <TableCell className="text-right">
-                                -${costsSnapshot.totals.fixed.b2b.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
+                                -${bcCosts.totals.fixed.b2b.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                               </TableCell>
                               <TableCell className="text-right">
-                                {(totalB2BSalesMemo === 0 ? 0 : (costsSnapshot.totals.fixed.b2b / totalB2BSalesMemo) * 100).toFixed(2)}%
+                                {(totalB2BSalesMemo === 0 ? 0 : (bcCosts.totals.fixed.b2b / totalB2BSalesMemo) * 100).toFixed(2)}%
                               </TableCell>
                             </TableRow>
-                            {expandedB2BFixedCost && costsSnapshot.items.filter(item => item.board === 'fixed').map((item, idx) => (
+                            {expandedB2BFixedCost && bcCosts.items.filter(item => item.board === 'fixed').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
                                 <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
                                 <TableCell className="text-right text-sm text-gray-600">
@@ -3613,13 +3729,13 @@ function App() {
                                     </div>
                                   </TableCell>
                                   <TableCell className="text-right">
-                                    -${costsSnapshot.totals.andrea.b2b.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
+                                    -${bcCosts.totals.andrea.b2b.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                                   </TableCell>
                                   <TableCell className="text-right">
-                                    {(totalB2BSalesMemo === 0 ? 0 : (costsSnapshot.totals.andrea.b2b / totalB2BSalesMemo) * 100).toFixed(2)}%
+                                    {(totalB2BSalesMemo === 0 ? 0 : (bcCosts.totals.andrea.b2b / totalB2BSalesMemo) * 100).toFixed(2)}%
                                   </TableCell>
                                 </TableRow>
-                                {expandedB2BAndreaCost && costsSnapshot.items.filter(item => item.board === 'andrea').map((item, idx) => (
+                                {expandedB2BAndreaCost && bcCosts.items.filter(item => item.board === 'andrea').map((item, idx) => (
                                   <TableRow key={idx} className="bg-gray-50">
                                     <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
                                     <TableCell className="text-right text-sm text-gray-600">
