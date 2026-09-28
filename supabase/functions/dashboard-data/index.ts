@@ -49,6 +49,18 @@
 // AUD after discounts, signed; source 'frozen' holds 2024-07 to 2026-06 and
 // 'api' everything since. The mapping is parse-csv-data's, field for field.
 //
+// ONE READ, since 2026-09-28. Mario: "me tiene los huevos al plato este error,
+// hace meses que esta y nunca lo arreglas". 21 of 75 loads had failed in the
+// previous 24 h, all with "unleashed_sales_lines: canceling statement due to
+// statement timeout". This function used to page four tables through PostgREST,
+// ~40 requests per period, each cancelled at 8 s; one slow page took the whole
+// screen down, and a busy database (the 03:00 UTC sync, the 5-minute Shopify
+// sync) made some page slow. Each earlier fix moved the slow spot rather than
+// removing the pattern. Now every table is read by dashboard_data() in ONE
+// statement, on indexes built for it (migration 20260928090000): a month in
+// ~60 ms, a year in ~0.7 s, two years in ~3 s, measured in the database. The
+// mapping below is unchanged, so the numbers are too.
+//
 // oldShopify still comes from its CSV: frozen, tiny, and no table stands
 // behind it.
 //
@@ -85,7 +97,6 @@ const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const BUCKET = 'csv-files';
-const PAGE = 1000;   // PostgREST caps every read at 1000 rows and says nothing.
 
 // Lines on a B2B order that are charges, not goods. They carry a price in
 // Unleashed and even a Default Purchase Price (Courier Fee: 18.94), but
@@ -128,69 +139,28 @@ const getChannelAndBrand = (customer: string): { channel: string; brand: string 
 };
 
 /**
- * Read every row of a date-bounded query, page by page.
- *
- * BY KEY, NOT BY OFFSET, wherever the source has a unique column (`keyCol`).
- * Mario, 2026-09-25: "a veces tambien falla al cargar la primera vez", with a
- * 500 on the front page. The cause was aim2026_demand_detail: 194,754 rows, no
- * index on order_date, so every page was a full scan — and `.range(off, …)`
- * asked for thirteen of them to cover one month. Postgres re-walked and re-
- * sorted the same 12,611 rows once per page, 1.37 s each, and whichever page
- * was unlucky got cut off by the statement timeout. Warm cache: it just fit.
- * Cold: it did not. Hence "sometimes".
- *
- * Paging by key asks for rows after the last id seen, so each page starts
- * where the previous one ended and nothing is walked twice. The index added in
- * 20260925090000 is what makes both halves cheap.
- *
- * Without a keyCol — shopify_sales_by_variant is a GROUP BY view with no
- * unique column, and skipping by a repeated order_date would drop rows — it
- * falls back to offsets. That one is small (2,732 rows for a month) and its
- * base table is indexed on (order_date, sku, country).
+ * One row per load in dashboard_load_log: how long it took, and why it failed
+ * if it did. Mario found the 500s before anyone else did, for months; this is
+ * so the Connections panel shows them first. Never throws — a load must not
+ * fail because its own log line could not be written.
  */
-async function readAll(
-  supabase: any, table: string, cols: string, dateCol: string,
-  from: string | null, to: string | null, keyCol: string | null = null,
-  where: ((q: any) => any) | null = null,
-): Promise<any[]> {
-  const out: any[] = [];
-  const bound = (q: any) => {
-    if (from) q = q.gte(dateCol, from);
-    if (to) q = q.lte(dateCol, to);
-    return where ? where(q) : q;
-  };
-
-  if (keyCol) {
-    let after: number | string | null = null;
-    for (;;) {
-      let q = bound(supabase.from(table).select(cols).order(keyCol, { ascending: true }).limit(PAGE));
-      if (after !== null) q = q.gt(keyCol, after);
-      const { data, error } = await q;
-      if (error) throw new Error(`${table}: ${error.message}`);
-      if (!data || data.length === 0) break;
-      out.push(...data);
-      if (data.length < PAGE) break;
-      after = data[data.length - 1][keyCol];
-      // A page that comes back without its key would loop for ever.
-      if (after === null || after === undefined) throw new Error(`${table}: ${keyCol} missing from the page`);
-    }
-    return out;
-  }
-
-  for (let off = 0; ; off += PAGE) {
-    const { data, error } = await bound(
-      supabase.from(table).select(cols).order(dateCol, { ascending: true }).range(off, off + PAGE - 1));
-    if (error) throw new Error(`${table}: ${error.message}`);
-    if (!data || data.length === 0) break;
-    out.push(...data);
-    if (data.length < PAGE) break;
-  }
-  return out;
+async function logLoad(
+  supabase: any,
+  r: { from: string | null; to: string | null; ok: boolean; ms: number; dbMs?: number; unleashed?: number; shopify?: number; message?: string },
+): Promise<void> {
+  try {
+    await supabase.from('dashboard_load_log').insert({
+      from_day: r.from, to_day: r.to, ok: r.ok, elapsed_ms: r.ms, db_ms: r.dbMs ?? null,
+      rows_unleashed: r.unleashed ?? null, rows_shopify: r.shopify ?? null,
+      message: r.message ? r.message.slice(0, 500) : null,
+    });
+  } catch (_) { /* logging is best-effort */ }
 }
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors });
   const t0 = Date.now();
+  const range: { from: string | null; to: string | null } = { from: null, to: null };
   try {
     const body = await req.json().catch(() => ({}));
     // STORE DAYS in, store days out. The screens send 'yyyy-MM-dd' — the day the
@@ -202,14 +172,9 @@ Deno.serve(async (req: Request) => {
     const day = (v: unknown) => (typeof v === 'string' && v.length >= 10 ? v.slice(0, 10) : null);
     const from = day(body?.startDate);
     const to = day(body?.endDate);
+    range.from = from; range.to = to;
 
     const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-
-    // ── FX: AUD per 1 USD, by month, exactly as the CSV path resolved it ────
-    const { data: fxRows } = await supabase.from('currency_exchange_rates').select('year, month, rate');
-    const rateMap: Record<string, number> = {};
-    for (const r of fxRows ?? []) rateMap[`${r.year}-${r.month}`] = num(r.rate);
-    const rateFor = (d: Date | null) => (d ? rateMap[`${d.getFullYear()}-${d.getMonth() + 1}`] ?? 1.54 : 1.54);
 
     const readCsv = async (name: string): Promise<string | null> => {
       const { data, error } = await supabase.storage.from(BUCKET).download(name);
@@ -217,31 +182,44 @@ Deno.serve(async (req: Request) => {
       return await data.text();
     };
 
-    // Everything below is independent, so it goes out at once. Run in sequence
-    // a four-day window still took ~5s of pure round trips, which is what made
-    // changing the period feel broken.
-    const [uRaw, sRaw, mRaw, oldText, paramRows, rateRes] = await Promise.all([
-      // Sales order lines only — no assembly consumption lives in this table.
-      // The Web filter below is exact; this one is a cheap SUPERSET of it run
-      // in the database, because ~95% of the lines are Shopify orders mirrored
-      // into Unleashed under Web customers and the screen throws them away.
-      // A month is ~14,000 lines before it and ~700 after.
-      readAll(
-        supabase, 'unleashed_sales_lines',
-        'id, order_date, order_number, product_code, product, customer, quantity, sub_total, status, warehouse, product_group, customer_type',
-        'order_date', from, to, 'id',
-        (q) => q.in('source', ['frozen', 'api'])
-          .or('customer_type.is.null,customer_type.not.ilike.web,customer.ilike.*-onlinesale')),
-      readAll(
-        supabase, 'shopify_sales_by_variant',
-        'order_date, sku, country, quantity, net_aud, taxes_aud, shipping_aud',
-        'order_date', from, to),
-      readAll(
-        supabase, 'meta_ads_daily', 'id, date, currency, spend, conversion_value', 'date', from, to, 'id'),
+    // One statement for everything that lives in the database, and the one
+    // small frozen file alongside it. Nothing here pages: dashboard_data()
+    // returns a single JSON value, so PostgREST's 1,000-row cap never applies,
+    // and it carries its own 30 s statement timeout instead of the 8 s default.
+    const tDb = Date.now();
+    let dbMs = 0;
+    const [rpc, oldText] = await Promise.all([
+      supabase.rpc('dashboard_data', { p_from: from, p_to: to }).then((r: any) => { dbMs = Date.now() - tDb; return r; }),
       readCsv('old-shopify-sales.csv'),
-      readAll(supabase, 'aim2026_sku_parameters', 'id, sku, product_cost_china', 'sku', null, null, 'id'),
-      supabase.from('aim2026_cost_config').select('config_data').eq('config_type', 'landed_cost_rates').maybeSingle(),
     ]);
+    if (rpc.error) throw new Error(`dashboard_data: ${rpc.error.message}`);
+    const db = (rpc.data ?? {}) as any;
+    // Rows arrive as ARRAYS (format 'arrays-v1', migration 20260928093000):
+    // column names repeated on 30,000 rows were half of a two-year payload.
+    // The column order below is the contract with that migration. The object
+    // form is still read so a deploy can never meet the other half mid-way.
+    const compact = db.format === 'arrays-v1';
+    // Sales order lines only (no assembly consumption lives in that table).
+    // In the compact form the database has already applied the exact Web rule
+    // and decided is_charge; customer_type and the description do not travel.
+    const uRaw: any[] = compact
+      ? (db.unleashed ?? []).map((a: any[]) => ({
+          id: a[0], order_date: a[1], order_number: a[2], product_code: a[3], is_charge: a[4] === true,
+          customer: a[5], quantity: a[6], sub_total: a[7], status: a[8], warehouse: a[9], product_group: a[10],
+        }))
+      : (db.unleashed ?? []);
+    const sRaw: any[] = compact
+      ? (db.shopify ?? []).map((a: any[]) => ({
+          order_date: a[0], sku: a[1], country: a[2], quantity: a[3], net_aud: a[4], taxes_aud: a[5], shipping_aud: a[6],
+        }))
+      : (db.shopify ?? []);
+    const mRaw: any[] = db.meta ?? [];
+    const paramRows: any[] = db.params ?? [];
+
+    // ── FX: AUD per 1 USD, by month, exactly as the CSV path resolved it ────
+    const rateMap: Record<string, number> = {};
+    for (const r of db.fx ?? []) rateMap[`${r.year}-${r.month}`] = num(r.rate);
+    const rateFor = (d: Date | null) => (d ? rateMap[`${d.getFullYear()}-${d.getMonth() + 1}`] ?? 1.54 : 1.54);
 
     // SKUs the catalogue knows. A line whose code is not one of them AND equals
     // its own description is a charge line: Unleashed gives those no product
@@ -270,7 +248,9 @@ Deno.serve(async (req: Request) => {
         orderNumber: r.order_number ?? '',
         lineId: String(r.id ?? '').startsWith('frozen-') ? '' : (r.id ?? ''),
         product: r.product_code ?? '',
-        isCharge: !knownSkus.has(String(r.product_code ?? '').trim()) && (r.product_code ?? '') === (r.product ?? ''),
+        isCharge: compact
+          ? r.is_charge
+          : !knownSkus.has(String(r.product_code ?? '').trim()) && (r.product_code ?? '') === (r.product ?? ''),
         customer: r.customer ?? '',
         quantity: num(r.quantity),
         // AUD, after discounts, signed (credits stay negative), as the CSV had it.
@@ -323,8 +303,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Costs: Default Purchase Price x (1 + landing), per unit, AUD ──
-    if (rateRes.error) throw new Error(`aim2026_cost_config: ${rateRes.error.message}`);
-    const r0 = (rateRes.data?.config_data as any)?.default ?? {};
+    const r0 = (db.landedRates as any) ?? {};
     const pick = (v: unknown, fb: number) => (v !== null && v !== undefined && Number.isFinite(Number(v)) ? Number(v) : fb);
     const rates = {
       freightRate: pick(r0.freightRate, RATE_FALLBACK.freightRate),
@@ -352,6 +331,8 @@ Deno.serve(async (req: Request) => {
       `${Date.now() - t0}ms`
     );
 
+    await logLoad(supabase, { from, to, ok: true, ms: Date.now() - t0, dbMs, unleashed: unleashed.length, shopify: shopify.length });
+
     return json({
       unleashed, shopify, oldShopify, meta, costs, costsChina,
       costBasis: {
@@ -367,6 +348,9 @@ Deno.serve(async (req: Request) => {
   } catch (e) {
     const message = e instanceof Error ? e.message : 'failed';
     console.error('dashboard-data failed:', message);
+    await logLoad(
+      createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!),
+      { from: range.from, to: range.to, ok: false, ms: Date.now() - t0, message });
     return json({ error: 'dashboard-data failed', details: message }, 500);
   }
 });
