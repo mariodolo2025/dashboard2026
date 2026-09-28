@@ -85,8 +85,18 @@ const fmtDuration = (ms: number) => {
 };
 const shortStep = (name: string) => name.replace(/^Inventory · /, '');
 
+/** Last-24h summary of the front page / By Channel loads (dashboard_load_health). */
+interface DashboardLoads {
+  loads24h: number;
+  failed24h: number;
+  p95Ms24h: number | null;
+  maxMs24h: number | null;
+  lastFailure: { at: string; from: string | null; to: string | null; message: string | null } | null;
+}
+
 export function ConnectionsPanel() {
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [dashboardLoads, setDashboardLoads] = useState<DashboardLoads | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
@@ -103,6 +113,7 @@ export function ConnectionsPanel() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       setConnections(body.connections ?? []);
+      setDashboardLoads(body.dashboardLoads ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load connections');
     } finally {
@@ -230,6 +241,8 @@ export function ConnectionsPanel() {
         </p>
       )}
 
+      {dashboardLoads && renderDashboardLoads(dashboardLoads)}
+
       {connections.map((c) =>
         c.master
           ? renderMaster(c)
@@ -243,6 +256,40 @@ export function ConnectionsPanel() {
       )}
     </div>
   );
+
+  // ---------- front page / By Channel loads ----------
+  // Not a connection, but the thing every connection feeds: if the screens
+  // that read this data fail to load it, it shows here before Mario sees a
+  // popup. Source: dashboard_load_log, one row per dashboard-data call.
+  function renderDashboardLoads(d: DashboardLoads) {
+    const failed = d.failed24h > 0;
+    return (
+      <div
+        className={cn('rounded-md border px-3 py-2 text-xs', failed ? 'border-red-200 bg-red-50' : 'bg-muted/30')}
+        title="Every load of the front page and By Channel in the last 24 hours (dashboard_load_log, written by the dashboard-data function). Slowest = the longest successful load; p95 = 95% of loads were at least this fast."
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-medium">Front page &amp; By Channel loads · 24 h</span>
+          <span className={cn('flex items-center gap-1 font-medium', failed ? 'text-red-700' : 'text-emerald-700')}>
+            {failed ? <AlertTriangle className="h-3.5 w-3.5" /> : null}
+            {failed ? `${d.failed24h} failed` : 'no failures'}
+          </span>
+        </div>
+        <div className="mt-0.5 text-muted-foreground">
+          {d.loads24h} loads
+          {d.p95Ms24h != null && <> · p95 {fmtDuration(d.p95Ms24h)}</>}
+          {d.maxMs24h != null && <> · slowest {fmtDuration(d.maxMs24h)}</>}
+        </div>
+        {d.lastFailure && (
+          <div className="mt-1 text-red-700" title={d.lastFailure.message ?? ''}>
+            Last failure {fmtDateTime(d.lastFailure.at)}
+            {d.lastFailure.from && <> · {d.lastFailure.from} to {d.lastFailure.to}</>}
+            {d.lastFailure.message && <>: {d.lastFailure.message.slice(0, 90)}</>}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // ---------- master auto-refresh card ----------
   function renderMaster(c: ConnectionInfo) {

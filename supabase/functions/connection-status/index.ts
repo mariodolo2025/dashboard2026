@@ -236,7 +236,12 @@ Deno.serve(async (req: Request) => {
         }
         connections.push({ id: def.id, name: def.name, master: def.master ?? false, ...status, cron });
       }
-      return json({ success: true, connections });
+      // How the front page / By Channel loads have gone in the last 24 h
+      // (dashboard_load_log, written by dashboard-data). Mario found those
+      // failures before anyone else for months; now they show here first.
+      // Best-effort: the panel must not break if this read does.
+      const { data: dashboardLoads } = await supabase.rpc('dashboard_load_health');
+      return json({ success: true, connections, dashboardLoads: dashboardLoads ?? null });
     }
 
     if (req.method === 'POST') {
