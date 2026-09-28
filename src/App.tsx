@@ -145,6 +145,18 @@ function App() {
   // zero that means "nothing yet" looks exactly like a zero that means
   // "nothing sold". This says which it is.
   const [hasLoadedOnce, setHasLoadedOnce] = useState<boolean>(false);
+  // WHICH period the arrays in state belong to ('yyyy-MM-dd|yyyy-MM-dd'), and
+  // why the last load failed, if it did. Mario, 2026-09-28: the screen said
+  // "Jun 1 - Jun 30" over the numbers of 1 June alone (B2B $5,779.20, exactly
+  // that one day) because the June load failed and the previous load's rows
+  // simply stayed in state under the new label. Numbers are shown only when
+  // they belong to the period in the picker.
+  const [loadedRangeKey, setLoadedRangeKey] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Every load gets a number; only the newest may write to state. Two loads in
+  // flight (a quick change of mind in the picker) used to land in whatever
+  // order the network chose, and the slower, older one could win.
+  const loadSeqRef = useRef(0);
   const [syncRunning, setSyncRunning] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [selectedChannels, setSelectedChannels] = useState<string[]>(['Shopify', 'B2B', 'Korea']);
@@ -273,6 +285,9 @@ function App() {
   // invocations in dev on top. Concurrent callers for the same window now
   // share one in-flight promise.
   const inflightLoadRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  /** The period as store days — the same strings dashboard-data is sent. */
+  const rangeKeyOf = (r: DateRange) =>
+    `${r.from ? format(r.from, 'yyyy-MM-dd') : ''}|${r.to ? format(r.to, 'yyyy-MM-dd') : ''}`;
   const loadDataFromSupabase = () => {
     const key = `${dateRange.from?.toISOString() ?? ''}|${dateRange.to?.toISOString() ?? ''}`;
     if (inflightLoadRef.current?.key === key) return inflightLoadRef.current.promise;
@@ -283,7 +298,10 @@ function App() {
     return promise;
   };
   const doLoadDataFromSupabase = async () => {
+    const seq = ++loadSeqRef.current;
+    const requestedKey = rangeKeyOf(dateRange);
     setIsLoading(true);
+    setLoadError(null);
     try {
       // The front page and By Channel read the DATABASE, not a rebuilt file.
       //
@@ -301,7 +319,9 @@ function App() {
       //
       // Deliberately NO fallback to the old path: serving a stale snapshot
       // without saying so is the failure being fixed here.
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/dashboard-data`, {
+      // One retry, two seconds apart, before calling it a failure: a single
+      // slow moment in the database should cost a pause, not the screen.
+      const fetchOnce = () => fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/dashboard-data`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
@@ -318,15 +338,26 @@ function App() {
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      const readOnce = async () => {
+        const response = await fetchOnce();
+        const body = await response.json().catch(() => null);
+        if (!response.ok || !body || body.error) {
+          throw new Error(body?.details || body?.error || `HTTP ${response.status}`);
+        }
+        return body;
+      };
+      let data: any;
+      try {
+        data = await readOnce();
+      } catch (first) {
+        console.warn('dashboard-data failed once, retrying:', first);
+        await new Promise((r) => setTimeout(r, 2000));
+        if (seq !== loadSeqRef.current) return;   // the period changed meanwhile
+        data = await readOnce();
       }
-
-      const data = await response.json();
-
-      if (data.error) {
-        throw new Error(data.details || data.error);
-      }
+      // A newer period was asked for while this one was in flight: its rows
+      // must not replace whatever that newer load brings.
+      if (seq !== loadSeqRef.current) return;
 
       // Helper function to convert date strings to Date objects
       const ensureDate = (dateValue: any): Date | null => {
@@ -363,6 +394,7 @@ function App() {
       setShopifyData(processedShopify);
       setOldShopifyData(processedOldShopify);
       setMetaData(processedMeta);
+      setLoadedRangeKey(requestedKey);
 
       // Convert costs object to Map
       const costsMap = new Map<string, number>();
@@ -397,13 +429,16 @@ function App() {
       }
 
     } catch (error) {
+      if (seq !== loadSeqRef.current) return;
       console.error('Error loading data from Supabase:', error);
-      alert(`Failed to load data: ${(error as Error).message}`);
+      // No popup: the screen stays covered and says so, with a Retry, and the
+      // previous period's numbers stay hidden underneath (see dataBlocked).
+      setLoadError((error as Error).message || 'Unknown error');
     } finally {
-      setIsLoading(false);
-      // Also on failure: the alert already says what happened, and staying
-      // blurred for ever would hide it behind a spinner that never stops.
-      setHasLoadedOnce(true);
+      if (seq === loadSeqRef.current) {
+        setIsLoading(false);
+        setHasLoadedOnce(true);
+      }
     }
   };
 
@@ -967,6 +1002,25 @@ function App() {
    *  is being re-read, or nothing has come back at all. Everything that
    *  renders these totals blurs on this, not on isLoading alone. */
   const dataPending = isLoading || !hasLoadedOnce;
+  /** True whenever the numbers must not be read: loading, failed, or holding
+   *  rows from a different period than the one in the picker. */
+  const dataBlocked = dataPending || !!loadError || loadedRangeKey !== rangeKeyOf(dateRange);
+  /** What the cover says: a spinner, or the failure with a way out. */
+  const renderLoadPill = () =>
+    loadError && !isLoading ? (
+      <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-red-200 bg-background/95 px-4 py-2 shadow-sm">
+        <AlertTriangle className="h-4 w-4 text-red-600" />
+        <span className="text-sm font-medium" title={loadError}>Couldn&apos;t load this period.</span>
+        <Button size="sm" variant="outline" className="h-7" onClick={() => { loadDataFromSupabase().catch(() => {}); }}>
+          Retry
+        </Button>
+      </div>
+    ) : (
+      <div className="flex items-center gap-2.5 rounded-full border bg-background/95 px-4 py-2 shadow-sm">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        <span className="text-sm font-medium">Loading this period…</span>
+      </div>
+    );
 
   // Fetch Xero data on mount
   useEffect(() => {
@@ -2573,18 +2627,15 @@ function App() {
           refresh — a real-looking zero, complete with a "data incompleta"
           warning underneath it, while the request was still in flight. */}
       <div className="flex-1 flex flex-col min-w-0 overflow-auto relative">
-        {dataPending && (
+        {dataBlocked && (
           <div className="sticky top-0 z-30 flex justify-center pt-5 -mb-14 pointer-events-none">
-            <div className="flex items-center gap-2.5 rounded-full border bg-background/95 px-4 py-2 shadow-sm">
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-              <span className="text-sm font-medium">Loading this period…</span>
-            </div>
+            {renderLoadPill()}
           </div>
         )}
         <main
           className={cn(
             "flex-1 p-6 space-y-6 overflow-auto",
-            dataPending && "blur-[3px] opacity-60 pointer-events-none select-none",
+            dataBlocked && "blur-[3px] opacity-60 pointer-events-none select-none",
           )}
           aria-busy={dataPending}
         >
@@ -3087,13 +3138,10 @@ function App() {
                 an Estimated Revenue of -$373,272 that looked like a result and
                 was an artefact of the two halves landing at different times.
                 Blurred, dimmed and inert until both are in. */}
-            <div className={`flex gap-4 relative ${dataPending ? 'pointer-events-none select-none' : ''}`} aria-busy={dataPending}>
-              {dataPending && (
+            <div className="flex gap-4 relative" aria-busy={dataPending}>
+              {dataBlocked && (
                 <div className="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-background/60 backdrop-blur-[3px]">
-                  <div className="flex items-center gap-2.5 rounded-full border bg-background/95 px-4 py-2 shadow-sm">
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                    <span className="text-sm font-medium">Loading this period…</span>
-                  </div>
+                  {renderLoadPill()}
                 </div>
               )}
               <Card className="flex-1">
@@ -3777,10 +3825,18 @@ function App() {
             <DialogHeader>
               <DialogTitle>Sales Evolution</DialogTitle>
             </DialogHeader>
-            <div className="mt-4 space-y-4">
+            <div className="mt-4 space-y-4 relative">
             <div className="flex items-center">
               <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
             </div>
+            {/* Same cover as the front page and By Channel: these read the same
+                rows, so after a failed load they would show another period's
+                numbers under this one's dates. The picker above stays usable. */}
+            {dataBlocked && (
+              <div className="absolute inset-x-0 top-12 bottom-0 z-20 flex items-start justify-center pt-16 rounded-lg bg-background/60 backdrop-blur-[3px]">
+                {renderLoadPill()}
+              </div>
+            )}
             <Suspense fallback={<ModalFallback />}>
             <SalesEvolutionContent
               unleashedData={unleashedData}
@@ -3918,10 +3974,18 @@ function App() {
             <DialogHeader>
               <DialogTitle>Sales by Product Group</DialogTitle>
             </DialogHeader>
-            <div className="mt-4 space-y-4">
+            <div className="mt-4 space-y-4 relative">
             <div className="flex items-center">
               <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
             </div>
+            {/* Same cover as the front page and By Channel: these read the same
+                rows, so after a failed load they would show another period's
+                numbers under this one's dates. The picker above stays usable. */}
+            {dataBlocked && (
+              <div className="absolute inset-x-0 top-12 bottom-0 z-20 flex items-start justify-center pt-16 rounded-lg bg-background/60 backdrop-blur-[3px]">
+                {renderLoadPill()}
+              </div>
+            )}
             <Card>
               <CardContent>
                 <Table>
@@ -3960,10 +4024,18 @@ function App() {
               <DialogTitle>Top SKUs Analysis</DialogTitle>
               <DialogDescription>Combined data from Unleashed (B2B/Korea/Web) and Shopify with cost analysis</DialogDescription>
             </DialogHeader>
-            <div className="mt-4 space-y-4">
+            <div className="mt-4 space-y-4 relative">
             <div className="flex items-center">
               <ModalDateRangePicker dateRange={dateRange} setDateRange={setDateRange} />
             </div>
+            {/* Same cover as the front page and By Channel: these read the same
+                rows, so after a failed load they would show another period's
+                numbers under this one's dates. The picker above stays usable. */}
+            {dataBlocked && (
+              <div className="absolute inset-x-0 top-12 bottom-0 z-20 flex items-start justify-center pt-16 rounded-lg bg-background/60 backdrop-blur-[3px]">
+                {renderLoadPill()}
+              </div>
+            )}
                 {/* Filters */}
                 <div className="space-y-4">
                 <div className="flex gap-4 items-center flex-wrap">
