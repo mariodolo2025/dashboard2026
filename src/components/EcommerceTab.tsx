@@ -11,6 +11,7 @@ import { Calendar } from '@/components/ui/calendar';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { DateRangePresets } from '@/components/DateRangePresets';
 import { supabase } from '@/lib/supabase';
+import { yesterday, lastWeek, storeRangeAsDates } from '@/lib/storeDate';
 import { cn } from '@/lib/utils';
 
 // ── design tokens (coffee "espresso terminal": cream/gold in light, espresso in dark) ──
@@ -129,11 +130,15 @@ function frozenFY(): DateRange {
 }
 function presetList(): Array<{ key: string; label: string; range: DateRange }> {
   const now = new Date();
+  // Shortest window first, as in Advertising. Yesterday and Last week use the
+  // store-day definitions shared by every tab (Mario, 2026-09-30).
   return [
-    { key: 'fy', label: 'This FY', range: currentFY() },
-    { key: '3m', label: 'Last 3 mo', range: { from: subMonths(now, 3), to: now } },
-    { key: '30d', label: 'Last 30 days', range: { from: subDays(now, 29), to: now } },
+    { key: 'yday', label: 'Yesterday', range: storeRangeAsDates(yesterday()) },
+    { key: 'lw', label: 'Last week', range: storeRangeAsDates(lastWeek()) },
     { key: '1m', label: 'Last month', range: { from: startOfMonth(subMonths(now, 1)), to: endOfMonth(subMonths(now, 1)) } },
+    { key: '30d', label: 'Last 30 days', range: { from: subDays(now, 29), to: now } },
+    { key: '3m', label: 'Last 3 mo', range: { from: subMonths(now, 3), to: now } },
+    { key: 'fy', label: 'This FY', range: currentFY() },
   ];
 }
 

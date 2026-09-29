@@ -175,6 +175,9 @@ const n2 = (v: number | null | undefined) =>
 // Presets that make sense for a window that starts 1 Aug 2026: the module-wide
 // long presets collapse onto "since launch" anyway.
 const PRESETS: { label: string; range: () => { from: string; to: string } }[] = [
+  // Yesterday and Last week, shared with every other tab (Mario, 2026-09-30).
+  { label: 'Yesterday', range: STORE_DATE_PRESETS.find((p) => p.label === 'Yesterday')!.range },
+  { label: 'Last week', range: STORE_DATE_PRESETS.find((p) => p.label === 'Last week')!.range },
   { label: 'Since ads (22 Aug)', range: () => ({ from: ADS_START, to: storeToday() }) },
   { label: 'From 1 Aug', range: () => ({ from: DDP_START, to: storeToday() }) },
   { label: '30 days', range: STORE_DATE_PRESETS.find((p) => p.label === '30 days')!.range },

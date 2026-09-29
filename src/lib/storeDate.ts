@@ -98,6 +98,18 @@ export function thisFinancialYear(): { from: string; to: string } {
   return { from: `${startYear}-07-01`, to: storeToday() };
 }
 
+/**
+ * A store-day range as local-midnight Dates, for the pickers that work in Date
+ * objects (the calendar popovers, E-commerce). They format days back with
+ * date-fns `format`, which is local, so 'yyyy-MM-dd' survives the round trip
+ * and "Yesterday" / "Last week" mean exactly what they mean in the store-day
+ * pickers (Advertising, B2C Sales Explorer, Web Upgrade, DDP Markets).
+ */
+export function storeRangeAsDates(r: { from: string; to: string }): { from: Date; to: Date } {
+  const at = (s: string) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  return { from: at(r.from), to: at(r.to) };
+}
+
 export const STORE_DATE_PRESETS: {
   label: string;
   range: () => { from: string; to: string };

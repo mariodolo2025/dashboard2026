@@ -1,5 +1,6 @@
-import { startOfWeek, endOfWeek, subWeeks, startOfMonth, endOfMonth, subMonths, subDays } from 'date-fns';
+import { startOfMonth, endOfMonth, subMonths, subDays } from 'date-fns';
 import { Button } from '@/components/ui/button';
+import { yesterday, lastWeek, storeRangeAsDates } from '@/lib/storeDate';
 
 interface DateRange { from?: Date; to?: Date; }
 
@@ -13,7 +14,11 @@ export function DateRangePresets({ onSelect }: { onSelect: (r: DateRange) => voi
   const thisFyFrom = new Date(curFyStartYear, 6, 1);       // Jul 1 (current FY)
 
   const presets: { label: string; range: DateRange }[] = [
-    { label: 'Last week', range: { from: startOfWeek(subWeeks(today, 1), { weekStartsOn: 1 }), to: endOfWeek(subWeeks(today, 1), { weekStartsOn: 1 }) } },
+    // Same store-day definitions as the preset buttons in Advertising, B2C Sales
+    // Explorer, Web Upgrade and DDP Markets (Mario, 2026-09-30: Yesterday and the
+    // week in every tab). Last week = Monday to Sunday of the previous week.
+    { label: 'Yesterday', range: storeRangeAsDates(yesterday()) },
+    { label: 'Last week', range: storeRangeAsDates(lastWeek()) },
     { label: 'Last month', range: { from: startOfMonth(subMonths(today, 1)), to: endOfMonth(subMonths(today, 1)) } },
     { label: 'Last 30 days', range: { from: subDays(today, 29), to: today } },
     // Year to date within the fiscal year, not the calendar one — it is the
