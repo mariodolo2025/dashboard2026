@@ -20,6 +20,7 @@ import { ColumnTooltip } from './ColumnTooltip';
 import type { SKURow, AIM2026Filters, StockStatus } from '@/lib/aim2026/types';
 import { matchesSkuProductSearch } from '@/lib/aim2026/searchFilter';
 import { useState } from 'react';
+import { ProductionPOsDialog } from './ProductionPOsDialog';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -176,6 +177,8 @@ export function InventoryTable({
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'projectedDemand', desc: true },
   ]);
+  // The SKU whose On Prod. purchase orders are open in the popup, if any.
+  const [prodPOsRow, setProdPOsRow] = useState<SKURow | null>(null);
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -467,7 +470,18 @@ export function InventoryTable({
               On Prod.
             </SortHeader>
           ),
-          cell: ({ row }) => (
+          // Click the number to see which purchase orders it is on (Mario,
+          // 2026-10-01). Zero stays plain text: there is nothing to open.
+          cell: ({ row }) => row.original.onProduction > 0 ? (
+            <button
+              type="button"
+              onClick={() => setProdPOsRow(row.original)}
+              title="See the purchase orders this quantity is on"
+              className="text-[13px] tabular-nums text-center block w-full text-purple-600 dark:text-purple-400 hover:underline underline-offset-2 font-medium"
+            >
+              {formatNum(row.original.onProduction)}
+            </button>
+          ) : (
             <span className="text-[13px] tabular-nums text-center block w-full text-purple-600 dark:text-purple-400">
               {formatNum(row.original.onProduction)}
             </span>
@@ -985,6 +999,13 @@ export function InventoryTable({
           })}
         </div>
       </div>
+      <ProductionPOsDialog
+        sku={prodPOsRow?.sku ?? null}
+        product={prodPOsRow?.product}
+        columnValue={prodPOsRow?.onProduction ?? 0}
+        open={prodPOsRow !== null}
+        onOpenChange={(o) => { if (!o) setProdPOsRow(null); }}
+      />
     </div>
   );
 }
