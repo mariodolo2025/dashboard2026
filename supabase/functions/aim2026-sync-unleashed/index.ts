@@ -833,6 +833,9 @@ async function syncPurchaseOrders(
   // rows — so fetching Placed covers the whole in-transit pipeline.
   const statusesToFetch = ["Placed"];
   let allOrders: any[] = [];
+  // True only when the Placed list came back whole. aim2026_inbound_po_lines is
+  // replaced from it, so a failed fetch must not read as "no open POs".
+  let fetchOk = false;
 
   for (const status of statusesToFetch) {
     try {
@@ -845,6 +848,7 @@ async function syncPurchaseOrders(
       );
       console.log(`PurchaseOrders status=${status}: ${orders.length} orders`);
       allOrders = allOrders.concat(orders);
+      fetchOk = true;
     } catch (e) {
       console.warn(`PurchaseOrders status=${status} failed:`, e);
       // Continue with other statuses
@@ -875,6 +879,32 @@ async function syncPurchaseOrders(
   const containerMap = new Map<string, number>();
   const dhlMap = new Map<string, number>();
   const onProdMap = new Map<string, number>();
+  // The PO lines behind each map, kept so the screen can say WHICH order a
+  // quantity is on (Mario, 2026-10-01: "en que PO number esta esa cantidad").
+  // Same stage rule as the maps, line for line, so per SKU and stage they add
+  // up to the pseudo-warehouse figure.
+  const runStamp = new Date().toISOString();
+  const poLines: any[] = [];
+  const keepLine = (order: any, line: any, sku: string, qty: number, stage: string) => {
+    if (!line.Guid) return;
+    poLines.push({
+      line_guid: String(line.Guid),
+      order_number: String(order.OrderNumber ?? ""),
+      order_guid: order.Guid ? String(order.Guid) : null,
+      sku,
+      stage,
+      order_status: order.OrderStatus ?? null,
+      custom_status: order.CustomOrderStatus ?? null,
+      warehouse: order.Warehouse?.WarehouseName ?? order.Warehouse?.WarehouseCode ?? null,
+      supplier: order.Supplier?.SupplierName ?? null,
+      order_date: parseUnleashedDate(order.OrderDate),
+      delivery_date: parseUnleashedDate(line.DeliveryDate ?? order.DeliveryDate),
+      quantity: qty,
+      received_quantity: line.ReceiptQuantity != null ? Number(line.ReceiptQuantity) : null,
+      comments: order.Comments ? String(order.Comments).slice(0, 500) : null,
+      synced_at: runStamp,
+    });
+  };
 
   for (const order of allOrders) {
     // Effective operational status: the custom status when set (CONTAINER,
@@ -899,6 +929,7 @@ async function syncPurchaseOrders(
 
       if (status === "container" || status.includes("container")) {
         containerMap.set(sku, (containerMap.get(sku) ?? 0) + qty);
+        keepLine(order, line, sku, qty, "Container");
       } else if (
         status === "dhl" ||
         status === "dhl inbounds" ||
@@ -906,11 +937,13 @@ async function syncPurchaseOrders(
         status.includes("dhl")
       ) {
         dhlMap.set(sku, (dhlMap.get(sku) ?? 0) + qty);
+        keepLine(order, line, sku, qty, "DHL");
       } else if (
         (status === "production" || status === "placed") &&
         (warehouse.includes("china") || warehouse.includes("factory"))
       ) {
         onProdMap.set(sku, (onProdMap.get(sku) ?? 0) + qty);
+        keepLine(order, line, sku, qty, "On Production");
       }
     }
   }
@@ -984,6 +1017,25 @@ async function syncPurchaseOrders(
         .insert(batch);
       if (error) console.error(`PO SOH insert batch ${i}:`, error);
     }
+  }
+
+  // ── The PO lines themselves ────────────────────────────────────────────
+  // Upsert what this run saw, then drop whatever it did not (stamped earlier):
+  // a PO that left the pipeline leaves the table, and there is no moment where
+  // the popup finds it empty. Skipped entirely when the fetch failed.
+  if (fetchOk) {
+    for (let i = 0; i < poLines.length; i += 200) {
+      const { error } = await supabase
+        .from("aim2026_inbound_po_lines")
+        .upsert(poLines.slice(i, i + 200), { onConflict: "line_guid" });
+      if (error) throw new Error(`aim2026_inbound_po_lines upsert: ${error.message}`);
+    }
+    const { error: delErr } = await supabase
+      .from("aim2026_inbound_po_lines")
+      .delete()
+      .lt("synced_at", runStamp);
+    if (delErr) throw new Error(`aim2026_inbound_po_lines cleanup: ${delErr.message}`);
+    console.log(`PO lines kept: ${poLines.length}`);
   }
 
   return poRows.length;
