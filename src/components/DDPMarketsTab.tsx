@@ -45,14 +45,14 @@ interface Kpis {
    *  not import tax; never part of the reconciliation. Shown so nobody wonders
    *  where Shopify's tax column went. */
   salesTax: number;
-  /** Total Meta spend across every advertising region in the window. */
+  /** Total Meta spend delivered in the markets shown, in the window. */
   adSpend: number;
-  /** One entry per advertising region, each with its OWN ratio. Canada buys its
-   *  own campaign and Europe buys one that names Germany and Denmark together,
-   *  so a single blended MER would divide one region's revenue by another's
-   *  spend. Never sum the mers; sum the spends. */
-  adRegions: {
-    region: string; markets: string[]; spend: number; campaigns: number;
+  /** One entry per market in view, each with its OWN spend and ratio: what Meta
+   *  delivered IN that country (meta_ads_country_daily), from any campaign.
+   *  Never sum the mers; sum the spends. Optional only while an older RPC is
+   *  still answering during a deploy. */
+  adMarkets?: {
+    code: string; name: string; spend: number; campaigns: number;
     firstDay: string | null; revenueSinceAds: number; mer: number | null;
     /** Days Meta actually reported spend on — NOT the calendar span since the
      *  first ad day. Meta's rows lag, and a paused campaign leaves gaps. */
@@ -104,8 +104,8 @@ interface Payload {
   ledgerTotal: number;
   /** The live markets with their policies, from ddp_markets — the tab holds no
    *  list of its own. inAllMarkets=false sits outside the aggregate (USA).
-   *  adRegion null = no MER on this tab. */
-  markets: { code: string; name: string; chargesDuties: boolean; inAllMarkets: boolean; adRegion: string | null; dutiesIncludedFrom: string | null }[];
+   *  showsMer false = no ad spend or MER on this tab (USA). */
+  markets: { code: string; name: string; chargesDuties: boolean; inAllMarkets: boolean; showsMer?: boolean; dutiesIncludedFrom: string | null }[];
   /** Null unless one market with a dated policy change is selected. */
   policyChange: PolicyChange | null;
 }
@@ -358,7 +358,7 @@ export default function DDPMarketsTab() {
         {(data?.markets ?? []).filter((m) => m.inAllMarkets).map(({ code: cc }) => (
           <button key={cc} type="button" onClick={() => setCountry(country === cc ? null : cc)}
             className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px]', country === cc ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
-            title={`Only ${countryName(cc)}: KPIs, component gaps, weekly chart and ledger all narrow to this market. Ad spend and MER follow the market's advertising region, which cannot be split per country.`}>
+            title={`Only ${countryName(cc)}: KPIs, component gaps, weekly chart, ledger, ad spend and MER all narrow to this market. Ad spend is what Meta delivered in ${countryName(cc)}, from any campaign.`}>
             <Flag cc={cc} /> {countryName(cc)}
           </button>
         ))}
@@ -399,27 +399,28 @@ export default function DDPMarketsTab() {
           </div>
         </div>
         <div className="cursor-help rounded-xl border bg-card p-3.5"
-          title={`Meta spend inside the window, AUD (USD campaigns convert at the house monthly rate). Split by advertising region, never blended: each region's MER is ITS markets' merchandise revenue since ITS first ad day, divided by ITS spend. Europe's campaigns name their targets together so they cannot be split per country, and Canada buys separately - dividing one region's revenue by the other's spend would invent a return. Revenue counts only from the first ad day, or a whole month of sales over a few days of spend would flatter the ads. A region with only a few days of spend gives a wild ratio; the day count is shown for that reason. Markets nobody advertises (Sweden) have no MER at all. Blended within a region, not attributed.`}>
+          title={`Meta spend DELIVERED in each market inside the window, from any campaign - Meta's own country breakdown (table meta_ads_country_daily, synced 3x a day), not a guess from the campaign name. AUD; the USD ad account converts at the house monthly rate. One line per market, never blended: each market's MER is ITS merchandise revenue (Shopify subtotal, ddp_shipments) since ITS first ad day in the window, divided by ITS spend. Revenue before the first ad day is left out, or a whole month of sales over a few days of spend would flatter the ads. A market with only a few days of spend gives a wild ratio; the day count is shown for that reason. Spend delivered in countries that are not DDP markets (e.g. Switzerland) is not counted here. Blended within a market, not attributed to orders.`}>
           <div className="text-[13px] text-muted-foreground">Ad spend</div>
           <div className="mt-0.5 text-2xl font-bold tabular-nums">{k ? aud(k.adSpend) : '…'}</div>
           <div className="text-[13px] text-muted-foreground tabular-nums space-y-0.5">
-            {!k ? '' : k.adRegions.filter((r) => r.spend > 0).length === 0
-              ? (country && data?.markets.find((m) => m.code === country)?.adRegion == null
+            {!k ? '' : (k.adMarkets ?? []).filter((r) => r.spend > 0).length === 0
+              ? (country && data?.markets.find((m) => m.code === country)?.showsMer === false
                   ? 'not measured here — this market\'s MER lives in the Advertising tab'
-                  : 'no campaigns in window')
-              : k.adRegions.filter((r) => r.spend > 0).map((r) => {
+                  : 'no ad spend delivered here in the window')
+              : (k.adMarkets ?? []).filter((r) => r.spend > 0).map((r) => {
                 // Days Meta reported spend on, straight from the RPC. Deriving
                 // it from the calendar counted a day Meta had not reported yet.
                 const days = r.daysWithSpend;
                 return (
-                  <div key={r.region} className="flex flex-wrap items-baseline gap-x-1.5">
-                    <span className="font-medium capitalize text-foreground/80">{r.markets.join('+')}</span>
+                  <div key={r.code} className="flex flex-wrap items-baseline gap-x-1.5"
+                    title={`${r.name}: ${aud(r.spend)} delivered by ${r.campaigns} campaign${r.campaigns === 1 ? '' : 's'} on ${days} day${days === 1 ? '' : 's'}; revenue since ${r.firstDay ?? '—'} ${aud(r.revenueSinceAds)}.`}>
+                    <span className="font-medium text-foreground/80">{r.code}</span>
                     <span>{aud(r.spend)}</span>
                     <span>· MER {r.mer ?? '—'}×</span>
                     {/* A ratio built on a handful of days is noise, and 8.38x
                         reads like a triumph unless the card says otherwise. The
                         threshold is on the DAY COUNT, not on a hardcoded market:
-                        Europe looked exactly like this in its first week too. */}
+                        every market looks like this in its first week. */}
                     {days <= 7
                       ? (
                         <span className="text-amber-700 dark:text-amber-500">

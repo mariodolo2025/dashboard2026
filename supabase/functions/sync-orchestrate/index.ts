@@ -105,6 +105,10 @@ const STEPS: { name: string; fn: string; body: unknown; optional?: boolean }[] =
   { name: 'Meta ads', fn: 'meta-ads-sync', body: {} },
   // Advertising: campaign-level Meta detail (claimed vs actual per campaign).
   { name: 'Meta campaigns', fn: 'meta-ads-campaign-sync', body: {} },
+  // Spend by the country Meta delivered it in (trailing 14 days). DDP Markets
+  // reads each market's spend and MER from it — the campaign names were wrong
+  // about where the money went (the "Europe" campaigns spent 60% in the UK).
+  { name: 'Meta by country', fn: 'meta-ads-country-sync', body: {} },
   { name: 'Meta CSV', fn: 'meta-export-csv', body: {} },
   // Per-ad insights, so "which creative is working" is answerable without
   // opening Meta. The old writer (ecommerce-sync-meta) needed an admin JWT and
