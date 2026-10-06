@@ -1,6 +1,21 @@
 # Plan definitivo — Web Upgrade y la base del dashboard (6-oct-2026)
 
-Estado: **solo plan, nada tocado.** Todo lo de abajo se midió con lecturas livianas
+## Estado — 6-oct-2026, ejecutado (Mario: "continúa con las soluciones")
+
+| Paso | Estado | Prueba |
+|---|---|---|
+| C. Vigilante | En marcha desde 6-oct 04:16 UTC (commit b1f4b6b) | 9/9 respuestas del motor del sync resueltas OK; marcó en rojo 3 fallas reales (Xero perdido por la caída, dolo draft, eventos > 16 días) |
+| B. Archivado | Ciclo nuevo exportando (60 páginas de 1.000 filas por hora) | 134.568 filas exportadas en 2 corridas; página vacía 0,15 ms (antes: tabla entera hasta el corte) |
+| A. Visitas en enteros | En uso por el panel (commit 8004244) | 1.499.678 filas iguales en 1.399 grupos; salida JSON idéntica en 7 ventanas; desde lanzamiento 3,18 s de base (antes > 120 s); 3,06-3,37 s con un sync corriendo |
+| A.7 Caché y su job | Borrados | `web_upgrade_perf_cache`, su función y el job ya no existen |
+| D. Small | Hecho por Mario | `shared_buffers` 512 MB |
+
+Pendiente: OK de Mario para cortar la doble escritura y borrar `web_upgrade_sessions_daily`
+(623 MB, mismo contenido que la tabla nueva). Observación de 14 días.
+
+---
+
+Plan original (6-oct, antes de ejecutar). Todo lo de abajo se midió con lecturas livianas
 (catálogo, historial de cron, logs de Supabase) y **una** consulta de prueba de 30 días.
 
 ---
