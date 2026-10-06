@@ -21,10 +21,6 @@ type View = 'daily' | 'modules' | 'products' | 'compat' | 'blocks';
 
 interface Dash {
   params: { from: string; to: string; environment: string };
-  // Present ONLY when the answer came from web_upgrade_perf_cache (the five
-  // presets, recomputed 4×/day). Absent means it was computed live just now.
-  // Surfaced in the header so "these figures are a snapshot" is never silent.
-  cachedAt?: string;
   totals: { exposedSessions: number; totalEvents: number; directOrders: number; directLines: number; directRevenue: number; assistedOrders: number };
   modules: Array<{ module: string; sessions: number; views: number; selects: number; clicks: number; adds: number; ctr: number | null; addsPerSession: number | null; orders: number; revenue: number; aov: number | null }>;
   compatFunnel: { pageViews: number; modelSelect: number; addClicks: number; addSuccess: number; sessions: number; completeKit: number; orders: number } | null;
@@ -361,9 +357,8 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
     if (r.from && r.to) setDateRange?.(r);
   };
 
-  // `fresh` skips the precomputed snapshot and recomputes from the database,
-  // then leaves the result in the cache for whoever opens the panel next. Only
-  // the refresh button passes it: opening the panel must stay instant.
+  // `fresh` is kept for the RPC's signature; since 6-Oct-2026 every call is
+  // computed live (no cache), so the refresh button simply asks again.
   const fetchData = useCallback(async (fresh = false) => {
     if (!range.from || !range.to) return;
     setLoading(true); setError(null);
@@ -1749,20 +1744,16 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
                 <Glossary />
               </DialogContent>
             </Dialog>
-            {/* A cached answer is a snapshot, and saying so is the whole point:
-                the panel used to be live-but-slow, and the trade was made
-                deliberately. `cachedAt` only exists on cached payloads. */}
-            {data?.cachedAt ? (
-              <span
-                className="wu-pill"
-                title={`This range is precomputed after each sync and served instantly. Figures are as of ${data.cachedAt} Brisbane. Pick a custom range to force a live calculation.`}
-              >
-                <span className="wu-live" style={{ background: '#f59e0b' }} />
-                Snapshot · {data.cachedAt}
-              </span>
-            ) : (
-              <span className="wu-pill"><span className="wu-live" />Live from DB</span>
-            )}
+            {/* Always computed when the panel opens. The precomputed snapshot and
+                the job that refreshed it were removed on 6-Oct-2026: the visit
+                counts moved to integer ids and a since-launch window takes ~3 s
+                in the database, so nothing needs to run in the background. */}
+            <span
+              className="wu-pill"
+              title="Computed from the database when the panel opens: every figure is as of now. Visitor counts come from web_upgrade_visits_daily (one row per visitor, module and UTC day)."
+            >
+              <span className="wu-live" />Live from DB
+            </span>
           </div>
         </div>
 
@@ -1835,7 +1826,7 @@ export default function WebUpgradeTab({ dateRange, setDateRange }: WebUpgradeTab
             variant="ghost" size="sm" className="h-8"
             onClick={() => fetchData(true)}
             disabled={loading}
-            title="Recompute this window from the database right now, ignoring the snapshot. Takes a few seconds; the result is kept for the next person who opens the panel."
+            title="Recompute this window from the database right now, to pick up events that arrived since the panel opened. Takes a few seconds."
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           </Button>
