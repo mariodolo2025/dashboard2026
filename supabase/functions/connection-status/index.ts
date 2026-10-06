@@ -241,7 +241,11 @@ Deno.serve(async (req: Request) => {
       // failures before anyone else for months; now they show here first.
       // Best-effort: the panel must not break if this read does.
       const { data: dashboardLoads } = await supabase.rpc('dashboard_load_health');
-      return json({ success: true, connections, dashboardLoads: dashboardLoads ?? null });
+      // Every automatic job's REAL result (ops_watchdog, every 15 min). The
+      // cron screen says "Succeeded" for a job that only queued an HTTP call;
+      // this says whether the function behind it answered OK.
+      const { data: opsHealth } = await supabase.rpc('ops_health');
+      return json({ success: true, connections, dashboardLoads: dashboardLoads ?? null, opsHealth: opsHealth ?? null });
     }
 
     if (req.method === 'POST') {

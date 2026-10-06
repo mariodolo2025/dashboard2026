@@ -94,9 +94,34 @@ interface DashboardLoads {
   lastFailure: { at: string; from: string | null; to: string | null; message: string | null } | null;
 }
 
+/** ops_health(): every automatic job's real result, from the ops watchdog. */
+export interface OpsJob {
+  jobname: string;
+  label: string;
+  kind: 'cron' | 'freshness';
+  optional: boolean;
+  threshold: number;
+  note: string | null;
+  state: 'ok' | 'warn' | 'failing' | 'paused' | 'off' | 'unknown';
+  consecutiveFailures: number;
+  lastOkAt: string | null;
+  lastFailAt: string | null;
+  failingSince: string | null;
+  lastError: string | null;
+  pausedAt: string | null;
+  pausedReason: string | null;
+}
+export interface OpsHealth {
+  checkedAt: string | null;
+  watchdogStale: boolean;
+  failingCount: number;
+  jobs: OpsJob[];
+}
+
 export function ConnectionsPanel() {
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [dashboardLoads, setDashboardLoads] = useState<DashboardLoads | null>(null);
+  const [opsHealth, setOpsHealth] = useState<OpsHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
@@ -114,6 +139,7 @@ export function ConnectionsPanel() {
       const body = await res.json();
       setConnections(body.connections ?? []);
       setDashboardLoads(body.dashboardLoads ?? null);
+      setOpsHealth(body.opsHealth ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load connections');
     } finally {
@@ -241,6 +267,8 @@ export function ConnectionsPanel() {
         </p>
       )}
 
+      {opsHealth && renderOpsHealth(opsHealth)}
+
       {dashboardLoads && renderDashboardLoads(dashboardLoads)}
 
       {connections.map((c) =>
@@ -256,6 +284,71 @@ export function ConnectionsPanel() {
       )}
     </div>
   );
+
+  // ---------- automatic jobs (ops watchdog) ----------
+  // One line per watched job or data check. Problems first. A job that only
+  // queues an HTTP call shows the function's real answer, not pg_cron's
+  // "Succeeded". Source: ops_health(), snapshot written every 15 min.
+  function renderOpsHealth(h: OpsHealth) {
+    const bad = h.watchdogStale || h.failingCount > 0;
+    const dot: Record<OpsJob['state'], string> = {
+      ok: 'bg-emerald-500', warn: 'bg-amber-500', failing: 'bg-red-500',
+      paused: 'bg-red-500', off: 'bg-slate-300', unknown: 'bg-slate-300',
+    };
+    const word: Record<OpsJob['state'], string> = {
+      ok: 'OK', warn: 'failed recently', failing: 'failing', paused: 'paused by watchdog',
+      off: 'off', unknown: 'no result yet',
+    };
+    const when = (s: string | null) => (s ? fmtDateTime(s) : '—');
+    return (
+      <div
+        className={cn('rounded-md border px-3 py-2 text-[13px]', bad ? 'border-red-200 bg-red-50' : 'bg-muted/30')}
+        title="Every automatic job and data check, read by the watchdog (ops_watchdog) every 15 minutes. For jobs that call a function, this is the function's real answer: the Supabase cron screen says Succeeded as soon as the call is queued, even if the function then fails. Optional jobs are paused automatically after their failure limit; business syncs only raise the alarm."
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-medium">Automatic jobs</span>
+          <span className={cn('flex items-center gap-1 font-medium', bad ? 'text-red-700' : 'text-emerald-700')}>
+            {bad && <AlertTriangle className="h-3.5 w-3.5" />}
+            {h.watchdogStale
+              ? 'watchdog not running'
+              : h.failingCount > 0 ? `${h.failingCount} need attention` : 'all OK'}
+          </span>
+        </div>
+        <div className="mt-0.5 text-muted-foreground">Checked {when(h.checkedAt)}</div>
+        <div className="mt-1.5 space-y-1">
+          {h.jobs.map((j) => (
+            <div
+              key={j.jobname}
+              className="cursor-help"
+              title={[
+                j.note,
+                j.kind === 'cron'
+                  ? `Cron job "${j.jobname}". Red after ${j.threshold} failure${j.threshold === 1 ? '' : 's'} in a row${j.optional ? '; paused automatically at that point' : ''}.`
+                  : 'Data check: looks at the data itself, whatever the job reports.',
+                `Last OK: ${when(j.lastOkAt)}. Last failure: ${when(j.lastFailAt)}.`,
+              ].filter(Boolean).join(' ')}
+            >
+              <div className="flex items-center gap-2">
+                <span className={cn('h-2 w-2 shrink-0 rounded-full', dot[j.state])} />
+                <span className="font-medium">{j.label}</span>
+                <span className={cn('ml-auto shrink-0', j.state === 'failing' || j.state === 'paused' ? 'font-medium text-red-700' : j.state === 'warn' ? 'text-amber-700' : 'text-muted-foreground')}>
+                  {word[j.state]}
+                  {(j.state === 'failing' || j.state === 'warn') && j.kind === 'cron' && ` · ${j.consecutiveFailures} in a row`}
+                  {(j.state === 'failing' || j.state === 'paused') && j.failingSince && ` · since ${when(j.failingSince)}`}
+                </span>
+              </div>
+              {(j.state === 'failing' || j.state === 'paused' || j.state === 'warn') && (j.pausedReason || j.lastError) && (
+                <div className="ml-4 truncate text-red-700">{(j.pausedReason ?? j.lastError ?? '').slice(0, 160)}</div>
+              )}
+              {j.kind === 'freshness' && j.state === 'ok' && j.lastError && (
+                <div className="ml-4 truncate text-muted-foreground">{j.lastError}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   // ---------- front page / By Channel loads ----------
   // Not a connection, but the thing every connection feeds: if the screens

@@ -174,6 +174,23 @@ function App() {
 
   // Configuration dialog state
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
+  // Automatic jobs needing attention (ops_watchdog, every 15 min). A red dot on
+  // the gear, so a failing job is seen without opening Config: the 5-Oct-2026
+  // outage ran 20 hours and the event archive 5 weeks with nobody knowing.
+  const [opsAlert, setOpsAlert] = useState<{ count: number; stale: boolean } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      const { data, error } = await supabase.rpc('ops_health');
+      if (cancelled || error || !data) return;
+      const h = data as { failingCount?: number; watchdogStale?: boolean };
+      setOpsAlert({ count: h.failingCount ?? 0, stale: !!h.watchdogStale });
+    };
+    check();
+    const t = setInterval(check, 10 * 60_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+  const opsAlertOn = !!opsAlert && (opsAlert.count > 0 || opsAlert.stale);
 
   // Costs modal state
   const [isCostsModalOpen, setIsCostsModalOpen] = useState<boolean>(false);
@@ -2378,11 +2395,16 @@ function App() {
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 w-8 p-0"
+              className="relative h-8 w-8 p-0"
               onClick={() => setIsConfigOpen(true)}
-              title="Config"
+              title={opsAlertOn
+                ? (opsAlert!.stale
+                    ? 'Config · the job watchdog has not run in 45 minutes — open to see Automatic jobs'
+                    : `Config · ${opsAlert!.count} automatic job${opsAlert!.count === 1 ? '' : 's'} need attention — open to see which`)
+                : 'Config'}
             >
               <Settings className="h-4 w-4 text-muted-foreground" />
+              {opsAlertOn && <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-red-500" />}
             </Button>
 
             <Button
