@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { cn, downloadCSV, CSVColumn } from '@/lib/utils';
 import { signOut } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
-import { XeroData, computeCostsSnapshot, loadCostsConfigFromSupabase, saveCostsConfig, loadCostsConfig, saveCostsConfigToSupabase } from '@/lib/costsCalculator';
+import { XeroData, computeCostsSnapshot, calculateItemAmount, loadCostsConfigFromSupabase, saveCostsConfig, loadCostsConfig, saveCostsConfigToSupabase } from '@/lib/costsCalculator';
 import { CostsSnapshot } from '@/lib/utils';
 import { fetchCostProfiles, profileToConfig, type CostProfile } from '@/lib/costsProfiles';
 // Every module below opens from a pill or a button — none is needed for first
@@ -1346,6 +1346,38 @@ function App() {
    * the xlsx fallback's single "Freight & Courier" line cannot, and stays.
    */
   const INBOUND_FREIGHT_PREFIX = 'Freight & Courier — Inbound';
+
+  /**
+   * Meta inside Xero's "Advertising". Since Sep-2026 Meta is entered as ONE
+   * bill per ad account per month, dated the 1st/2nd of the FOLLOWING month
+   * (verified in Xero 8-Oct-2026: "ads September", dated 1-Oct, A$252,950.46),
+   * so a month's Xero figure carries the previous month's Meta. Before that,
+   * the card charges landed in the month they were spent: Sep-2025..Aug-2026,
+   * Xero tracked same-month Meta within a few thousand dollars.
+   * xero_meta_bills_monthly holds those bills per bill month (xero-sync, step
+   * meta_bills); its first month is the cutover. With the box ticked, By
+   * Channel takes the bills out of Advertising for the selected dates and puts
+   * Meta's actual spend for those dates (meta_ads_daily, the same rows as the
+   * front page) in their place — only for days from the cutover on, so August
+   * and earlier, already booked in-month, are never counted twice.
+   */
+  const ADVERTISING_ACCOUNT = 'Advertising';
+  const [metaBills, setMetaBills] = useState<{ year: number; month: number; amount_aud: number }[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    supabase.from('xero_meta_bills_monthly').select('year,month,amount_aud').then(({ data, error }) => {
+      if (cancelled || error) return;
+      setMetaBills((data ?? []).map((r: any) => ({ year: Number(r.year), month: Number(r.month), amount_aud: Number(r.amount_aud) })));
+    });
+    return () => { cancelled = true; };
+  }, []);
+  const [adsActualMeta, setAdsActualMeta] = useState<boolean>(() => {
+    try { return localStorage.getItem('bc-ads-actual-meta') !== '0'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('bc-ads-actual-meta', adsActualMeta ? '1' : '0'); } catch { /* per-viewer convenience only */ }
+  }, [adsActualMeta]);
+
   const byChannelCosts = useMemo(() => {
     if (!costsSnapshot) return null;
     const inbound = costsSnapshot.items.filter((i) => i.name.startsWith(INBOUND_FREIGHT_PREFIX));
@@ -1361,13 +1393,76 @@ function App() {
       inCogs.b2c += i.b2cAmount;
       inCogs.b2b += i.b2bAmount;
     }
+    let items = costsSnapshot.items.filter((i) => !inbound.includes(i));
+
+    // Meta: swap the bills for the spend in these dates (see ADVERTISING_ACCOUNT).
+    let metaSwap: {
+      mode: 'swapped' | 'off' | 'before-cutover' | 'no-data';
+      xeroB2c: number; billsInPeriod: number; actualInPeriod: number; shownB2c: number; cutover: string | null;
+    } | null = null;
+    const adv = items.find((i) => i.name === ADVERTISING_ACCOUNT);
+    if (adv) {
+      const ym = (y: number, m: number) => y * 12 + m;
+      const base = { xeroB2c: adv.b2cAmount, billsInPeriod: 0, actualInPeriod: 0, shownB2c: adv.b2cAmount, cutover: null as string | null };
+      if (!metaBills || metaBills.length === 0 || !xeroData || !dateRange.from || !dateRange.to) {
+        metaSwap = { mode: 'no-data', ...base };
+      } else {
+        const cut = Math.min(...metaBills.map((b) => ym(b.year, b.month)));
+        const cutLabel = format(new Date(Math.floor((cut - 1) / 12), (cut - 1) % 12, 1), 'MMM yyyy');
+        if (!adsActualMeta) {
+          metaSwap = { mode: 'off', ...base, cutover: cutLabel };
+        } else if (ym(dateRange.to.getFullYear(), dateRange.to.getMonth() + 1) < cut) {
+          metaSwap = { mode: 'before-cutover', ...base, cutover: cutLabel };
+        } else {
+          const billOf = new Map(metaBills.map((b) => [ym(b.year, b.month), b.amount_aud]));
+          const series = xeroData.months.map((m) => (ym(m.year, m.month) >= cut ? billOf.get(ym(m.year, m.month)) ?? 0 : 0));
+          // Same proration as the Xero line itself, so the bills come out of
+          // exactly the share of the month the Advertising figure covers.
+          const billsInPeriod = calculateItemAmount({ name: 'Meta bills', monthly: series }, xeroData.months, dateRange, xeroData.periodEnd);
+          const actualInPeriod = filteredData.meta.reduce((s, r: any) => {
+            const d = typeof r.date === 'string' ? r.date : format(new Date(r.date), 'yyyy-MM-dd');
+            return ym(Number(d.slice(0, 4)), Number(d.slice(5, 7))) >= cut ? s + Number(r.spend || 0) : s;
+          }, 0);
+          const adjPct = loadCostsConfig().adjustments?.[ADVERTISING_ACCOUNT]?.percent ?? 100;
+          const delta = (actualInPeriod - billsInPeriod) * (adjPct / 100);
+          // The profile's B2C/B2B split of the line, applied to the change too.
+          const lineTotal = adv.b2cAmount + adv.b2bAmount;
+          const share = lineTotal ? adv.b2cAmount / lineTotal : 1;
+          const swapped = {
+            ...adv,
+            b2cAmount: adv.b2cAmount + delta * share,
+            b2bAmount: adv.b2bAmount + delta * (1 - share),
+          };
+          totals[adv.board].b2c += delta * share;
+          totals[adv.board].b2b += delta * (1 - share);
+          items = items.map((i) => (i === adv ? swapped : i));
+          metaSwap = { mode: 'swapped', xeroB2c: adv.b2cAmount, billsInPeriod, actualInPeriod, shownB2c: swapped.b2cAmount, cutover: cutLabel };
+        }
+      }
+    }
+
     return {
-      snapshot: { ...costsSnapshot, totals, items: costsSnapshot.items.filter((i) => !inbound.includes(i)) } as CostsSnapshot,
+      snapshot: { ...costsSnapshot, totals, items } as CostsSnapshot,
       inCogs,
+      metaSwap,
     };
-  }, [costsSnapshot]);
+  }, [costsSnapshot, metaBills, adsActualMeta, xeroData, dateRange, filteredData.meta]);
   const bcCosts = byChannelCosts?.snapshot ?? null;
   const inboundFreightInCogs = byChannelCosts?.inCogs ?? { b2c: 0, b2b: 0 };
+  const metaSwap = byChannelCosts?.metaSwap ?? null;
+  const aud2 = (n: number) => `A$${n.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Hover text for the Advertising row: where the number comes from, in the
+  // mode it is shown in.
+  const advertisingTitle = (): string => {
+    const lag = 'Xero account "Advertising". Since Sep 2026 Meta is entered in Xero as one bill per ad account per month, dated the 1st-2nd of the FOLLOWING month, so a month in Xero carries the PREVIOUS month\'s Meta (September shows August\'s ads).';
+    if (!metaSwap) return lag;
+    if (metaSwap.mode === 'swapped') {
+      return `${lag}\n\nShown: Meta's actual spend in the selected dates, ${aud2(metaSwap.actualInPeriod)} (Meta API, USD account at the monthly house rate), plus the rest of Xero's Advertising for these dates (Google and other). Xero booked ${aud2(metaSwap.xeroB2c)} for these dates, of which ${aud2(metaSwap.billsInPeriod)} are Meta bills for the previous month - those are taken out. Days before ${metaSwap.cutover} are left as booked: Meta was recorded in the month it was spent until then.`;
+    }
+    if (metaSwap.mode === 'off') return `${lag}\n\nShown: the figure as booked in Xero. Tick "Advertising: actual Meta spend" above to show what Meta spent in these dates instead.`;
+    if (metaSwap.mode === 'before-cutover') return `${lag}\n\nThese dates are before ${metaSwap.cutover}: Meta was recorded in the month it was spent, so the Xero figure already matches these dates.`;
+    return `${lag}\n\nThe Meta bills from Xero have not loaded, so this is the figure as booked.`;
+  };
 
   // Calculate B2B estimated revenue
   const estimatedRevenueB2B = useMemo(() => {
@@ -3174,6 +3269,26 @@ function App() {
                       <CardDescription>Key financial metrics and costs for B2C (Shopify)</CardDescription>
                     </div>
                     <TooltipProvider>
+                      <div className="flex items-center gap-4">
+                      {costsSource === 'costs' && (
+                        <div className="flex items-center space-x-2">
+                          <Checkbox
+                            id="ads-actual-meta"
+                            checked={adsActualMeta}
+                            onCheckedChange={(checked) => setAdsActualMeta(checked as boolean)}
+                          />
+                          <TooltipComponent>
+                            <TooltipTrigger asChild>
+                              <Label htmlFor="ads-actual-meta" className="cursor-help">
+                                Advertising: actual Meta spend
+                              </Label>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs">
+                              <p>Xero books Meta a month late: one bill per ad account, dated the 1st-2nd of the next month (since Sep 2026). Ticked, the Meta bills inside Advertising are replaced by what Meta actually spent in the selected dates (Meta API, USD at the monthly house rate). Other advertising (Google and the rest) stays as booked in Xero. Unticked, Advertising is the Xero figure as booked.</p>
+                            </TooltipContent>
+                          </TooltipComponent>
+                        </div>
+                      )}
                       <div className="flex items-center space-x-2">
                         <Checkbox
                           id="andrea-costs"
@@ -3190,6 +3305,7 @@ function App() {
                             <p>Includes cleaning, insurance, total motor vehicle expenses, non-deductible expenses, Andrea's taxes, light, gas and power (Andrea), and travel.</p>
                           </TooltipContent>
                         </TooltipComponent>
+                      </div>
                       </div>
                     </TooltipProvider>
                   </div>
@@ -3505,7 +3621,12 @@ function App() {
                             </TableRow>
                             {expandedB2CVariableCost && bcCosts.items.filter(item => item.board === 'variable').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
-                                <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
+                                <TableCell
+                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
+                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                >
+                                  {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
+                                </TableCell>
                                 <TableCell className="text-right text-sm text-gray-600">
                                   -${item.b2cAmount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                                 </TableCell>
@@ -3550,7 +3671,12 @@ function App() {
                             </TableRow>
                             {expandedB2CFixedCost && bcCosts.items.filter(item => item.board === 'fixed').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
-                                <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
+                                <TableCell
+                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
+                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                >
+                                  {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
+                                </TableCell>
                                 <TableCell className="text-right text-sm text-gray-600">
                                   -${item.b2cAmount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                                 </TableCell>
@@ -3582,7 +3708,12 @@ function App() {
                                 </TableRow>
                                 {expandedB2CAndreaCost && bcCosts.items.filter(item => item.board === 'andrea').map((item, idx) => (
                                   <TableRow key={idx} className="bg-gray-50">
-                                    <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
+                                    <TableCell
+                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
+                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                >
+                                  {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
+                                </TableCell>
                                     <TableCell className="text-right text-sm text-gray-600">
                                       -${item.b2cAmount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                                     </TableCell>
@@ -3737,7 +3868,12 @@ function App() {
                             </TableRow>
                             {expandedB2BVariableCost && bcCosts.items.filter(item => item.board === 'variable').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
-                                <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
+                                <TableCell
+                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
+                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                >
+                                  {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
+                                </TableCell>
                                 <TableCell className="text-right text-sm text-gray-600">
                                   -${item.b2bAmount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                                 </TableCell>
@@ -3779,7 +3915,12 @@ function App() {
                             </TableRow>
                             {expandedB2BFixedCost && bcCosts.items.filter(item => item.board === 'fixed').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
-                                <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
+                                <TableCell
+                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
+                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                >
+                                  {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
+                                </TableCell>
                                 <TableCell className="text-right text-sm text-gray-600">
                                   -${item.b2bAmount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                                 </TableCell>
@@ -3809,7 +3950,12 @@ function App() {
                                 </TableRow>
                                 {expandedB2BAndreaCost && bcCosts.items.filter(item => item.board === 'andrea').map((item, idx) => (
                                   <TableRow key={idx} className="bg-gray-50">
-                                    <TableCell className="pl-12 text-sm text-gray-600">{item.name}</TableCell>
+                                    <TableCell
+                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
+                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                >
+                                  {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
+                                </TableCell>
                                     <TableCell className="text-right text-sm text-gray-600">
                                       -${item.b2bAmount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}
                                     </TableCell>

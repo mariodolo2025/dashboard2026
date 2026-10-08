@@ -151,7 +151,7 @@ function parseHeaderCell(title: string): { year: number; month: number } | null 
   return { year, month };
 }
 
-async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: string): Promise<number> {
+async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: string): Promise<{ rows: number; windowErrors: string[] }> {
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
   const now = new Date();
 
@@ -586,6 +586,85 @@ async function syncDetailIncremental(supabase: any, accessToken: string, tenantI
   return { lines: rows.length, boundary, since, done: true };
 }
 
+// ─── Step: Meta bills inside Advertising ─────────────────────────────────────
+// Meta is entered as one bill per ad account per month, dated the 1st/2nd of
+// the FOLLOWING month ("ads September" dated 1-Oct-2026). Xero's Advertising
+// for a month therefore carries the previous month's Meta. This stores, per
+// bill month, the AUD of those bills' Advertising lines, so By Channel can
+// swap them for Meta's actual spend in the selected dates.
+// Bounded: only the Meta contacts' bills (a few a month), filtered in Xero.
+
+// Xero refuses a where-filter on Contact.Name for this organisation
+// ("HighVolumeException": too many invoices to scan), so the bills are asked
+// for by contact id, the filter Xero indexes. The app has no contacts scope to
+// look the ids up, hence the constants (Dolo Ent PTY Ltd, 8-Oct-2026). If Meta
+// is ever billed under another contact, add its id here.
+const META_CONTACT_IDS = [
+  'fa06c8ff-4ec7-4ae6-8db1-ad8f83f19f64', // "facebook" — every Meta bill since 2024
+  '00995607-b070-43c2-88cd-ef2f36fc00c5', // "Meta Platforms, Inc."
+];
+const META_BILLS_SINCE = [2024, 7, 1];
+
+async function syncMetaBills(supabase: any, accessToken: string, tenantId: string): Promise<{ months: number; bills: number }> {
+  const accountsBody = await xeroGet('Accounts', accessToken, tenantId);
+  const advCodes = new Set(
+    (accountsBody?.Accounts ?? [])
+      .filter((a: any) => String(a.Name ?? '').trim() === 'Advertising' && a.Code)
+      .map((a: any) => String(a.Code)),
+  );
+  if (advCodes.size === 0) throw new Error('meta_bills: no "Advertising" account in the chart of accounts');
+
+  const where = `Type=="ACCPAY" AND Date>=DateTime(${META_BILLS_SINCE.join(',')})`;
+  const contactIds = META_CONTACT_IDS.join(',');
+  const byMonth = new Map<string, { year: number; month: number; aud: number; bills: number; detail: any[] }>();
+  let bills = 0;
+  for (let page = 1; page <= 20; page++) {
+    const body = await xeroGet(`Invoices?ContactIDs=${contactIds}&where=${encodeURIComponent(where)}&page=${page}`, accessToken, tenantId);
+    const invs: any[] = body?.Invoices ?? [];
+    for (const inv of invs) {
+      if (inv.Status === 'DELETED' || inv.Status === 'VOIDED') continue;
+      const d = parseXeroDate(inv.DateString ?? inv.Date);
+      if (!d) continue;
+      const inclusive = String(inv.LineAmountTypes ?? '') === 'Inclusive';
+      let aud = 0;
+      for (const line of inv.LineItems ?? []) {
+        if (!advCodes.has(String(line.AccountCode ?? ''))) continue;
+        const net = Number(line.LineAmount ?? 0) - (inclusive ? Number(line.TaxAmount ?? 0) : 0);
+        aud += toAUD(net, inv.CurrencyRate);
+      }
+      if (aud === 0) continue;
+      bills++;
+      const year = Number(d.slice(0, 4)), month = Number(d.slice(5, 7));
+      const k = `${year}-${month}`;
+      const cur = byMonth.get(k) ?? { year, month, aud: 0, bills: 0, detail: [] };
+      cur.aud += aud;
+      cur.bills++;
+      cur.detail.push({ date: d, number: inv.InvoiceNumber ?? null, currency: inv.CurrencyCode ?? 'AUD', total: inv.Total ?? null, aud: Math.round(aud * 100) / 100 });
+      byMonth.set(k, cur);
+    }
+    if (invs.length < 100) break;
+    if (page === 20) throw new Error('meta_bills: more than 20 pages of Meta bills, refusing to store a partial set');
+  }
+
+  const rows = [...byMonth.values()].map((m) => ({
+    year: m.year, month: m.month, amount_aud: Math.round(m.aud * 100) / 100,
+    bills: m.bills, detail: m.detail, synced_at: new Date().toISOString(),
+  }));
+  if (rows.length) {
+    const { error } = await supabase.from('xero_meta_bills_monthly').upsert(rows, { onConflict: 'year,month' });
+    if (error) throw new Error(`meta_bills upsert: ${error.message}`);
+  }
+  // A month whose bills were deleted in Xero must not keep its old total.
+  const keep = new Set(rows.map((r) => `${r.year}-${r.month}`));
+  const { data: existing } = await supabase.from('xero_meta_bills_monthly').select('year,month');
+  for (const e of existing ?? []) {
+    if (keep.has(`${e.year}-${e.month}`)) continue;
+    const { error } = await supabase.from('xero_meta_bills_monthly').delete().eq('year', e.year).eq('month', e.month);
+    if (error) throw new Error(`meta_bills cleanup: ${error.message}`);
+  }
+  return { months: rows.length, bills };
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -614,6 +693,9 @@ Deno.serve(async (req: Request) => {
       }
       if (step === 'detail' || step === 'all') {
         result.detail = await syncDetailIncremental(supabase, accessToken, tenantId);
+      }
+      if (step === 'meta_bills' || step === 'all') {
+        result.metaBills = await syncMetaBills(supabase, accessToken, tenantId);
       }
       if (step === 'transactions') {
         result.transactions = await syncBankTransactions(supabase, accessToken, tenantId);
