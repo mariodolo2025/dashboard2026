@@ -135,6 +135,12 @@ interface SegKpis {
   costAvg: number | null; costMedian: number | null;
   /** Everything paid for those labels, summed — not the average times a count. */
   costTotal: number | null;
+  /** What those same parcels cost to ship BEFORE the rule (each order's band
+   *  baseline, summed). extraTotal = costTotal − beforeTotal. */
+  beforeTotal: number | null;
+  /** What customers paid for shipping on those orders, summed.
+   *  marginTotal = chargedTotal − costTotal. */
+  chargedTotal: number | null;
   chargedAvg: number | null;
   marginPerOrder: number | null; marginTotal: number | null; marginMonthly: number | null;
   freeShipOrders: number; freeShipPct: number | null;
@@ -1052,11 +1058,15 @@ function SegmentView({ code, from, to, marketName }: {
   const slopeMax = Math.max(1, ...bands.flatMap((b) => [b.baseline ?? 0, b.costAvg ?? 0]));
   const slopeY = (v: number) => 16 - (v / slopeMax) * 12;
 
+  // The gap the same orders already had before the rule: what customers paid
+  // minus what those parcels used to cost. The gap today is this plus the extra.
+  const gapBefore = k.chargedTotal !== null && k.beforeTotal !== null ? k.chargedTotal - k.beforeTotal : null;
+
   const T = {
-    hero: `Money already spent, not a forecast. For each ${svc} label: what it cost minus what that same parcel cost to ship before the rule.`,
+    hero: `Money already spent, not a forecast: what the ${k.segOrders} ${svc} labels cost (${aud(k.costTotal, 2)}) minus what those same parcels cost to ship before the rule (${aud(k.beforeTotal, 2)}).`,
     spark: `One bar per label, oldest on the left. The line is zero — a bar below it is a label that came out cheaper than before. Hover a bar to see the order.`,
     spent: `The full price of those labels, everything paid to Australia Post. Not the extra part — that is the big figure on the left.`,
-    gap: `What customers paid for shipping on these orders, minus what the labels cost.`,
+    gap: `Customers paid ${aud(k.chargedTotal, 2)} for shipping and the labels cost ${aud(k.costTotal, 2)}. Negative means Dolo covers the difference. Before the rule this gap was ${aud(gapBefore, 2)}; the rest is the extra on the left.`,
     labels: `Orders placed since the rule that already have a priced label, of any service. The rest are still queued: the label price has to be asked of Starshipit one order at a time.`,
     proj: `A projection, not money spent. The extra per order carried across a full month at the current order rate.`,
     bands: `The same orders split by the shipping rate the customer paid at checkout. Each band keeps its own before-cost, because a one-item parcel and a heavy one never cost the same.`,
@@ -1097,9 +1107,10 @@ function SegmentView({ code, from, to, marketName }: {
             <span className="translate-y-[-0.08em] text-[0.44em] font-medium text-muted-foreground">A$</span>
             {money(k.extraTotal)}
           </div>
-          <div className="mt-1.5 cursor-help text-[13px] text-muted-foreground"
-            title="It grows as the remaining labels come in.">
-            across <b className="font-medium text-foreground/80">{k.segOrders}</b> {svc} label{k.segOrders === 1 ? '' : 's'}
+          {/* The subtraction itself, in numbers: Mario redoes these by hand,
+              and a difference shown without its two operands can't be checked. */}
+          <div className="mt-1.5 cursor-help text-[13px] text-muted-foreground" title={T.hero}>
+            {aud(k.costTotal, 2)} now − {aud(k.beforeTotal, 2)} before the rule
           </div>
         </div>
 
@@ -1148,6 +1159,9 @@ function SegmentView({ code, from, to, marketName }: {
               {(k.marginTotal ?? 0) < 0 ? '−' : ''}
               <span className="text-[0.68em] font-medium text-muted-foreground">A$</span>
               {money(k.marginTotal)}
+            </div>
+            <div className="cursor-help text-[12.5px] text-muted-foreground/80" title={T.gap}>
+              {aud(k.chargedTotal, 2)} paid − {aud(k.costTotal, 2)} labels
             </div>
           </div>
 
