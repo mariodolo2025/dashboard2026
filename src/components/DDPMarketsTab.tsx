@@ -358,6 +358,11 @@ export default function DDPMarketsTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segment]);
 
+  // Bumped after a Refresh so the segment view refetches. Refresh used to
+  // reload only the market payload, and the IC13 view - which fetches on its
+  // own - kept showing what it had loaded when the chip was clicked.
+  const [segRefresh, setSegRefresh] = useState(0);
+
   const runSync = useCallback(async () => {
     setSyncing(true); setSyncNote(null);
     try {
@@ -368,19 +373,26 @@ export default function DDPMarketsTab() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.session?.access_token ?? import.meta.env.VITE_SUPABASE_ANON_KEY}`,
         },
-        body: JSON.stringify({}),
+        // On a segment the question is "did the labels I just printed come in":
+        // the freight pass with the last two days of Shopify answers it in
+        // seconds. The full window since 1-Aug plus the ZONOS walk is what the
+        // market view needs, and it is far too slow to wait for here.
+        body: JSON.stringify(segment ? { only: 'freight' } : {}),
       });
       const j = await res.json();
-      setSyncNote(j?.success
-        ? `Synced — ${j.shopify?.ddpOrders ?? 0} orders · freight +${j.starshipit?.matched ?? 0} · ZONOS +${j.zonos?.matched ?? 0}`
-        : `Sync failed: ${j?.message ?? res.status}`);
-      await load(from, to, country, ledgerLimit);
+      setSyncNote(!j?.success
+        ? `Sync failed: ${j?.message ?? res.status}`
+        : segment
+          ? `Synced — ${j.starshipit?.matched ?? 0} new label price${j.starshipit?.matched === 1 ? '' : 's'}`
+          : `Synced — ${j.shopify?.ddpOrders ?? 0} orders · freight +${j.starshipit?.matched ?? 0} · ZONOS +${j.zonos?.matched ?? 0}`);
+      if (segment) setSegRefresh((n) => n + 1);
+      else await load(from, to, country, ledgerLimit);
     } catch (e) {
       setSyncNote(`Sync failed: ${String(e)}`);
     } finally {
       setSyncing(false);
     }
-  }, [from, to, country, load]);
+  }, [from, to, country, load, segment, ledgerLimit]);
 
   const k = data?.kpis;
   // "Nothing added at checkout" has two different reasons, and they tell
@@ -526,7 +538,7 @@ export default function DDPMarketsTab() {
 
       {segment && (
         <SegmentView
-          code={segment} from={from} to={to}
+          code={segment} from={from} to={to} refreshKey={segRefresh}
           marketName={(cc: string) => countryName(cc)}
         />
       )}
@@ -1006,8 +1018,10 @@ export default function DDPMarketsTab() {
 // The order ledger stays fully on the page, never behind a toggle: it is how
 // Mario cross-checks every figure above it against Shopify and Starshipit.
 // =============================================================================
-function SegmentView({ code, from, to, marketName }: {
+function SegmentView({ code, from, to, marketName, refreshKey }: {
   code: string; from: string; to: string; marketName: (cc: string) => string;
+  /** Changes after the Refresh button finishes a sync: refetch. */
+  refreshKey: number;
 }) {
   const [data, setData] = useState<SegPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1025,7 +1039,7 @@ function SegmentView({ code, from, to, marketName }: {
         setLoading(false);
       });
     return () => { live = false; };
-  }, [code, from, to, ledgerLimit]);
+  }, [code, from, to, ledgerLimit, refreshKey]);
 
   if (error) return <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-[13px]">{error}</div>;
   if (!data?.segment) return <div className="text-[13px] text-muted-foreground">Loading…</div>;

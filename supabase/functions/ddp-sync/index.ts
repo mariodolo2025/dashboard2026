@@ -51,14 +51,19 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors });
   try {
     const body = await req.json().catch(() => ({}));
-    // {"only":"freight"} — skip the Shopify scan and the ZONOS walk and spend
-    // the WHOLE budget asking Starshipit what each label cost. That pass is one
-    // HTTP call per order with no bulk alternative, so sharing a 140s run with
-    // the other two passes left it ~45 orders; the queue grew faster than it
-    // drained and the tab showed 8 of 86 orders priced. Run on its own it does
-    // several hundred. The orchestrator still calls the full sync 3x a day.
+    // {"only":"freight"} — skip the ZONOS walk and spend the budget asking
+    // Starshipit what each label cost. That pass is one HTTP call per order with
+    // no bulk alternative, so sharing a 140s run with the other two passes left
+    // it ~45 orders; the queue grew faster than it drained and the tab showed 8
+    // of 86 orders priced. The orchestrator still calls the full sync 3x a day.
+    //
+    // It DOES still read the last 2 days of Shopify (a handful of pages). First
+    // it skipped Shopify entirely, which meant an order placed after the
+    // orchestrator's last run did not exist here until the next one - up to
+    // nine hours - and an order that does not exist here cannot be priced, so a
+    // label printed at 07:00 could not reach the tab until 13:00.
     const freightOnly = body?.only === 'freight';
-    const days = Number(body?.days);
+    const days = Number(body?.days) || (freightOnly ? 2 : NaN);
     const rolling = Number.isFinite(days) && days > 0
       ? new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10)
       : null;
@@ -109,7 +114,7 @@ Deno.serve(async (req: Request) => {
     type ShopRow = Record<string, unknown>;
     const shopifyRows: ShopRow[] = [];
     let scanned = 0;
-    if (!freightOnly) {
+    {
     const { data: creds } = await supabase
       .from('api_credentials').select('store_url, access_token').eq('provider', 'shopify').maybeSingle();
     if (!creds?.access_token) return json({ success: false, message: 'no shopify creds' }, 400);
@@ -186,7 +191,7 @@ Deno.serve(async (req: Request) => {
     // Starshipit) fall back to the per-order search, still within budget.
     const ssKey = Deno.env.get('STARSHIPIT_API_KEY');
     const ssSub = Deno.env.get('STARSHIPIT_SUBSCRIPTION_KEY');
-    let freightMatched = 0, freightMissing = 0, freightRemaining = 0, ssPages = 0, pendingTotal = 0, serviceBackfilled = 0;
+    let freightMatched = 0, freightMissing = 0, freightRemaining = 0, ssPages = 0, pendingTotal = 0, serviceBackfilled = 0, watched = 0, watchHit = 0;
     if (ssKey && ssSub) {
       const ssHeaders = { 'StarShipIT-Api-Key': ssKey, 'Ocp-Apim-Subscription-Key': ssSub };
       const ssGet = async (url: string): Promise<Response> => {
@@ -296,19 +301,42 @@ Deno.serve(async (req: Request) => {
       const pending = [...(shipped.data ?? []), ...(unshipped.data ?? [])];
       const pendingByName = new Map(pending.map((p) => [String(p.order_name), p]));
 
+      // WATCH LIST — recent orders we asked about inside the last 6 hours and
+      // that had no label then. The 6-hour wait exists so an order Starshipit
+      // knows nothing about does not cost a call every run; but it also meant a
+      // label printed one hour after we asked stayed invisible for five more.
+      // Measured 15-Oct-2026: 53 US orders asked at 03:40-04:20 Brisbane, before
+      // they were packed, could not come back before 09:40, while Mario was
+      // printing their labels and watching the IC13 figure not move.
+      //
+      // These cost nothing extra: they are only acted on when they turn up in
+      // the shipped list the walk below already reads in bulk. Turning up there
+      // means a label exists, so the one detail call they then get is never a
+      // wasted one. Bounded to the last 7 days of orders.
+      const watchFloor = new Date(Date.now() - 7 * 86400_000).toISOString();
+      const { data: watchRows } = await supabase.from('ddp_shipments').select(pendingSel)
+        .is('freight_cost_aud', null)
+        .gte('freight_checked_at', retryBefore)
+        .gte('order_date', watchFloor)
+        .limit(1000);
+      const watch = watchRows ?? [];
+      const watchByName = new Map(watch.map((w) => [String(w.order_name), w]));
+      watched = watch.length;
+
       // (1) bulk discovery: order_number -> { order_id, tracking, carrier }
       type Hit = {
         order_id: number; tracking: string | null; carrier: string | null; price: number;
         service: string | null; serviceName: string | null;
       };
       const found = new Map<string, Hit>();
-      if (pending.length) {
+      const lookFor = [...pending, ...watch];
+      if (lookFor.length) {
         // The real oldest pending DATE. Taking the last element would have done
         // when the list was sorted by date; it is now sorted by how long since
         // we asked, so the minimum has to be computed.
-        const oldestPending = pending.reduce(
+        const oldestPending = lookFor.reduce(
           (min, p) => { const d = String(p.order_date ?? '').slice(0, 10); return d && d < min ? d : min; },
-          String(pending[0]?.order_date ?? since).slice(0, 10)
+          String(lookFor[0]?.order_date ?? since).slice(0, 10)
         );
         // The API does not promise to honour limit=250 or even `page` - the
         // first runs came back with one short page and the old rule "stop when a
@@ -331,7 +359,7 @@ Deno.serve(async (req: Request) => {
             const name = String(o?.order_number ?? '');
             const when = String(o?.order_date ?? o?.shipped_date ?? '').slice(0, 10);
             if (when && when < oldestOnPage) oldestOnPage = when;
-            if (pendingByName.has(name) && !found.has(name)) {
+            if ((pendingByName.has(name) || watchByName.has(name)) && !found.has(name)) {
               found.set(name, {
                 order_id: o.order_id,
                 tracking: o.tracking_number ?? null,
@@ -346,15 +374,21 @@ Deno.serve(async (req: Request) => {
           // Every pending order has been located: reading further buys nothing
           // and the seconds are worth more to the detail calls below, which are
           // what actually produce a price.
-          if (found.size >= pending.length) break;
+          if (found.size >= lookFor.length) break;
           // the list is newest-first: once a whole page predates our oldest
           // pending order there is nothing further back worth reading
           if (fresh === 0 || (oldestOnPage !== '9999' && oldestOnPage < oldestPending)) break;
         }
       }
 
-      // (2) detail calls, newest first, inside the budget
-      for (const local of pending) {
+      // (2) detail calls, inside the budget. Watched orders that just showed up
+      // as shipped go FIRST: they are the freshest labels, the ones someone is
+      // looking at the screen waiting for, and every one of them has a price.
+      // A watched order NOT on the shipped list is skipped - no search call -
+      // and waits out its 6 hours like before.
+      const watchHits = watch.filter((w) => found.has(String(w.order_name)));
+      watchHit = watchHits.length;
+      for (const local of [...watchHits, ...pending]) {
         // Leave ZONOS a real slice: it has its own budget below, and a run that
         // spends everything on freight starves the pass that closes the orders.
         if (timeLeft() < (freightOnly ? 6_000 : 45_000)) { freightRemaining++; continue; }
@@ -497,7 +531,7 @@ Deno.serve(async (req: Request) => {
       mode: freightOnly ? 'freight-only' : 'full',
       window: { since },
       shopify: { scanned, ddpOrders: shopifyRows.length },
-      starshipit: { matched: freightMatched, failed: freightMissing, remaining: freightRemaining, pendingTotal, pages: ssPages, serviceBackfilled, connected: !!(ssKey && ssSub) },
+      starshipit: { matched: freightMatched, failed: freightMissing, remaining: freightRemaining, pendingTotal, pages: ssPages, serviceBackfilled, watched, watchHit, connected: !!(ssKey && ssSub) },
       zonos: { matched: zonosMatched, unmatched: zonosUnmatched, truncated: zonosTruncated, connected: !!zKey },
       elapsedMs: Date.now() - t0,
     });
