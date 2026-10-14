@@ -106,8 +106,98 @@ interface Payload {
    *  list of its own. inAllMarkets=false sits outside the aggregate (USA).
    *  showsMer false = no ad spend or MER on this tab (USA). */
   markets: { code: string; name: string; chargesDuties: boolean; inAllMarkets: boolean; showsMer?: boolean; dutiesIncludedFrom: string | null }[];
+  /** Service segments of a market (ddp_service_segments) — a slice of ONE
+   *  market by the service on the label, e.g. United States · IC13. Optional
+   *  only while an older RPC is still answering during a deploy. */
+  segments?: SegmentRef[];
   /** Null unless one market with a dated policy change is selected. */
   policyChange: PolicyChange | null;
+}
+
+/** A segment as the chip row needs it. */
+interface SegmentRef { code: string; name: string; country: string; serviceCode: string; ruleFrom: string }
+
+// ── the segment view (ddp_service_segment_dashboard) ─────────────────────────
+interface SegKpis {
+  /** Orders in the window whose label carries the segment's service. */
+  segOrders: number;
+  /** Label cost minus the frozen baseline OF EACH ORDER'S OWN RATE BAND,
+   *  weighted by how many orders each band carries — not by how many labels
+   *  happen to have arrived. A single early label in a 51-order band must not
+   *  count as much as the band of 1,458. */
+  extraPerOrder: number | null; extraTotal: number | null;
+  /** The plain average over the labels themselves. Kept so nobody has to guess
+   *  which of the two they are reading; the weighted one is the headline. */
+  extraPerOrderRaw: number | null; marginPerOrderRaw: number | null;
+  /** Share of orders sitting in bands that already have a label of this
+   *  service. The weighted figures above cover only those. */
+  bandsCoveredPct: number | null;
+  costAvg: number | null; costMedian: number | null;
+  /** Everything paid for those labels, summed — not the average times a count. */
+  costTotal: number | null;
+  chargedAvg: number | null;
+  marginPerOrder: number | null; marginTotal: number | null; marginMonthly: number | null;
+  freeShipOrders: number; freeShipPct: number | null;
+  /** Orders a day over the last 28 whole store days — the rate behind the
+   *  monthly projection, not something the selected window produces. */
+  ordersPerDay: number | null; projMonthly: number | null;
+  firstSeenAt: string | null; firstOrderAt: string | null;
+  adherence: {
+    orders: number; labelled: number; segment: number;
+    /** Share of LABELLED orders that got the service. Read off the label. */
+    pct: number | null;
+    /** Share of orders that have a label at all. Low = not readable yet. */
+    coveragePct: number | null;
+  };
+}
+interface SegService { code: string; name: string | null; orders: number; pct: number | null; costAvg: number | null; isSegment: boolean }
+/** One Shopify rate band of the market — read off what the customer was
+ *  actually charged, not re-derived from the cart total (discounts move the
+ *  total, never the charge). Each band carries its OWN frozen baseline. */
+interface SegBand {
+  key: string; label: string; chargedUsd: number | null;
+  orders: number; labelled: number; segment: number;
+  baseline: number; baselineIsBand: boolean;
+  chargedAvg: number | null; costAvg: number | null;
+  /** Null until a label of this service lands in this band. Null is the honest
+   *  answer there — never read it as zero. */
+  extraPerOrder: number | null; marginPerOrder: number | null;
+  extraMonthly: number | null; marginMonthly: number | null;
+  /** Money ALREADY SPENT above the old service in this band — not a rate, not a
+   *  projection. Null while no label of the service has landed here. */
+  extraSoFar: number | null;
+}
+/** One priced label since the rule, oldest first — the hero sparkline. */
+interface SegLabelPoint { order: string; extra: number | null; cost: number | null; band: string; service: string | null }
+interface SegDay {
+  day: string; orders: number; labelled: number; segment: number; segmentPct: number | null;
+  chargedAvg: number | null; costAvg: number | null; extraPerOrder: number | null;
+}
+interface SegLedgerRow {
+  order: string; date: string; service: string | null; serviceName: string | null;
+  isSegment: boolean; labelled: boolean;
+  /** Merchandise subtotal — what decides which rate band the order falls in. */
+  subtotal: number | null;
+  /** Shipping charged in the currency the customer actually paid (USD here),
+   *  beside the AUD figure, so the row can be checked against Shopify directly. */
+  chargedUsd: number | null;
+  charged: number; freight: number | null; baseline: number;
+  extra: number | null; margin: number | null;
+  tracking: string | null; carrier: string | null; freightChecked: boolean;
+}
+interface SegPayload {
+  segment: {
+    code: string; name: string; country: string; serviceCode: string; ruleFrom: string; note: string | null;
+    baseline: {
+      costAud: number; medianAud: number | null; chargedAud: number | null;
+      orders: number | null; from: string; to: string; note: string | null;
+    };
+  } | null;
+  kpis: SegKpis; bands: SegBand[]; labelSeries: SegLabelPoint[];
+  services: SegService[]; daily: SegDay[];
+  ledger: SegLedgerRow[]; ledgerTotal: number;
+  markets: Payload['markets']; segments: SegmentRef[];
+  window: { from: string; to: string };
 }
 
 // Names come from the RPC. Only the flags stay in code — they are drawn, and
@@ -224,6 +314,18 @@ export default function DDPMarketsTab() {
   const [ledgerLimit, setLedgerLimit] = useState(300);
   // Country filter: narrows every figure server-side (p_country). null = all.
   const [country, setCountry] = useState<string | null>(null);
+  // A service segment of a market (United States · IC13). It answers a
+  // different question from the markets - what one shipping rule costs, not
+  // whether checkout covers the landed cost - so it has its own RPC and its own
+  // body below. While one is selected the market query is NOT re-run: the DB is
+  // small, and two heavy reads for one screen is how the front page got slow.
+  const [segment, setSegment] = useState<string | null>(null);
+
+  // The window a segment opens on: the day its rule started, in store days.
+  // Mario, 14-Oct-2026: "cada vez que entro quiero que la fecha de arranque sea
+  // el 14 de octubre". Anything before it belongs to the market, not the rule.
+  const segmentStart = (sg: SegmentRef) =>
+    clampFrom(new Date(sg.ruleFrom).toLocaleDateString('en-CA', { timeZone: 'Australia/Brisbane' }));
 
   const load = useCallback(async (f: string, t: string, c: string | null, lim: number) => {
     setLoading(true); setError(null);
@@ -232,7 +334,23 @@ export default function DDPMarketsTab() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { void load(from, to, country, ledgerLimit); }, [load, from, to, country, ledgerLimit]);
+  useEffect(() => {
+    if (segment) return;
+    void load(from, to, country, ledgerLimit);
+  }, [load, from, to, country, ledgerLimit, segment]);
+
+  // Entering a segment always resets the window to the day its rule started —
+  // including when the tab remounts with one already selected, which is how it
+  // kept opening on the module-wide "Since ads" preset.
+  useEffect(() => {
+    if (!segment) return;
+    const sg = (data?.segments ?? []).find((x) => x.code === segment);
+    if (!sg) return;
+    setPreset('');
+    setFrom(segmentStart(sg));
+    setTo(storeToday());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segment]);
 
   const runSync = useCallback(async () => {
     setSyncing(true); setSyncNote(null);
@@ -350,14 +468,14 @@ export default function DDPMarketsTab() {
 
       {/* ── country filter: every figure below narrows server-side ───────── */}
       <div className="flex flex-wrap items-center gap-1.5">
-        <button type="button" onClick={() => setCountry(null)}
-          className={cn('rounded-full border px-3 py-1 text-[13px]', country === null ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
+        <button type="button" onClick={() => { setSegment(null); setCountry(null); }}
+          className={cn('rounded-full border px-3 py-1 text-[13px]', country === null && !segment ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
           title="Every DDP market together - the ones that charge duties and taxes to the customer. Markets that absorb them (the USA) sit outside this total: at forty times the next market's volume, folding it in would make the total read as that one market.">
           All DDP markets
         </button>
         {(data?.markets ?? []).filter((m) => m.inAllMarkets).map(({ code: cc }) => (
-          <button key={cc} type="button" onClick={() => setCountry(country === cc ? null : cc)}
-            className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px]', country === cc ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
+          <button key={cc} type="button" onClick={() => { setSegment(null); setCountry(country === cc ? null : cc); }}
+            className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px]', country === cc && !segment ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
             title={`Only ${countryName(cc)}: KPIs, component gaps, weekly chart, ledger, ad spend and MER all narrow to this market. Ad spend is what Meta delivered in ${countryName(cc)}, from any campaign.`}>
             <Flag cc={cc} /> {countryName(cc)}
           </button>
@@ -366,13 +484,33 @@ export default function DDPMarketsTab() {
           <span className="mx-1 h-5 w-px bg-border" aria-hidden />
         )}
         {(data?.markets ?? []).filter((m) => !m.inAllMarkets).map(({ code: cc, chargesDuties }) => (
-          <button key={cc} type="button" onClick={() => setCountry(country === cc ? null : cc)}
-            className={cn('flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-[13px]', country === cc ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
+          <button key={cc} type="button" onClick={() => { setSegment(null); setCountry(country === cc ? null : cc); }}
+            className={cn('flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-[13px]', country === cc && !segment ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
             title={`${countryName(cc)} on its own. Outside the "All DDP markets" total.${chargesDuties ? '' : ' Dolo absorbs every duty and tax here by policy - nothing is charged to the customer - so the gap you will see is intended, not a calibration fault.'} No MER on this tab: it lives in Advertising / E-commerce.`}>
             <Flag cc={cc} /> {countryName(cc)}
           </button>
         ))}
-        {country && (
+        {/* Service segments: the same market, read through the service on the
+            label. Not a market of its own — ddp_markets is keyed by country and
+            every one of these orders is still 'US'. */}
+        {(data?.segments ?? []).map((sg) => (
+          <button key={sg.code} type="button"
+            onClick={() => {
+              const next = segment === sg.code ? null : sg.code;
+              setSegment(next);
+              if (next) {
+                setCountry(null);
+                setPreset('');
+                setFrom(segmentStart(sg));
+                setTo(storeToday());
+              }
+            }}
+            className={cn('flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-[13px]', segment === sg.code ? 'border-foreground bg-foreground font-semibold text-background' : 'bg-card text-muted-foreground hover:text-foreground')}
+            title={`${sg.name}: the same ${countryName(sg.country)} orders, read through the service on the label. Only the parcels that shipped on ${sg.serviceCode} count towards the money; what the rule was meant to catch — orders placed since it started — is what adherence is measured over. Nothing about duties, taxes or ZONOS here: that question lives on the ${countryName(sg.country)} chip.`}>
+            <Flag cc={sg.country} /> {sg.name}
+          </button>
+        ))}
+        {country && !segment && (
           <span className="text-[13px] text-muted-foreground">
             viewing {countryName(country)} only
             {k?.chargesDuties === false && <> · <b className="font-medium text-amber-700 dark:text-amber-500">duties + taxes {notChargedWhy}</b></>}
@@ -380,6 +518,14 @@ export default function DDPMarketsTab() {
         )}
       </div>
 
+      {segment && (
+        <SegmentView
+          code={segment} from={from} to={to}
+          marketName={(cc: string) => countryName(cc)}
+        />
+      )}
+
+      {!segment && (<>
       {/* ── KPI strip ────────────────────────────────────────────────────── */}
       {/* ── row A: the whole window, every order ─────────────────────────── */}
       <div className="grid grid-cols-3 gap-3">
@@ -823,8 +969,396 @@ export default function DDPMarketsTab() {
           </div>
         )}
       </div>
+      </>)}
 
-      {loading && <div className="text-[13px] text-muted-foreground">Loading…</div>}
+      {loading && !segment && <div className="text-[13px] text-muted-foreground">Loading…</div>}
+    </div>
+  );
+}
+
+
+// =============================================================================
+// A service segment of a market — today: United States · IC13.
+//
+// Mario, 14-Oct-2026: a Starshipit rule ships EVERY United States order on IC13
+// (Australia Post Express, 5-6 days) whatever the customer paid, because the US
+// parcel rules change around 25-Oct and IC13 is outside them for now.
+//
+// The screen answers one question first: HOW MUCH HAVE WE ALREADY SPENT. Mario
+// rejected the earlier version for leading with the monthly figure — "eso no
+// deja de ser una proyección; lo que me interesa es cuánto llevo gastado de
+// diferencia". So the hero is cash already out the door, over the labels that
+// really exist, and the projection sits to the right, smaller and muted.
+//
+// Design E (app-native): no cards, no fills, no shadows, no uppercase labels.
+// Hierarchy is weight and size; hairlines separate. Colour appears once, a
+// desaturated pine on the sign of a number — the previous attempt was rejected
+// as "too much red". Every figure, column header and dash carries its
+// definition in a title= tooltip; the page itself holds no prose, because
+// explanations sitting on the page are what made it unreadable.
+//
+// The order ledger stays fully on the page, never behind a toggle: it is how
+// Mario cross-checks every figure above it against Shopify and Starshipit.
+// =============================================================================
+function SegmentView({ code, from, to, marketName }: {
+  code: string; from: string; to: string; marketName: (cc: string) => string;
+}) {
+  const [data, setData] = useState<SegPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [ledgerLimit, setLedgerLimit] = useState(60);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true); setError(null);
+    void supabase
+      .rpc('ddp_service_segment_dashboard', { p_code: code, p_from: from, p_to: to, p_ledger_limit: ledgerLimit })
+      .then(({ data: d, error: e }) => {
+        if (!live) return;
+        if (e) setError(e.message); else setData(d as unknown as SegPayload);
+        setLoading(false);
+      });
+    return () => { live = false; };
+  }, [code, from, to, ledgerLimit]);
+
+  if (error) return <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-[13px]">{error}</div>;
+  if (!data?.segment) return <div className="text-[13px] text-muted-foreground">Loading…</div>;
+
+  const seg = data.segment;
+  const k = data.kpis;
+  const ad = k.adherence;
+  const svc = seg.serviceCode;
+  const bands = data.bands ?? [];
+  const series = data.labelSeries ?? [];
+  const ruleLabel = new Date(seg.ruleFrom).toLocaleDateString('en-AU', {
+    timeZone: 'Australia/Brisbane', day: 'numeric', month: 'short', year: 'numeric',
+  });
+  const money = (v: number | null | undefined, dec = 2) =>
+    v === null || v === undefined ? '—' : Math.abs(v).toLocaleString('en-AU', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  const signed = (v: number | null | undefined, dec = 2) =>
+    v === null || v === undefined ? '—' : `${v < 0 ? '−' : '+'}${money(v, dec)}`;
+
+  // Sparkline geometry. One bar per priced label, oldest first, on a shared
+  // scale with a real zero line — a label that came in CHEAPER than the old
+  // service has to be able to sit below it.
+  const sw = 150, sh = 38, gap = 2;
+  const exs = series.map((s) => s.extra ?? 0);
+  const hi = Math.max(0.01, ...exs), lo = Math.min(0, ...exs);
+  const zeroY = (hi / (hi - lo)) * (sh - 4) + 2;
+  const barW = series.length ? Math.max(2, (sw - gap * (series.length - 1)) / series.length) : 0;
+
+  // "Was → now" slope, one shared scale across the bands so the four are
+  // comparable at a glance.
+  const slopeMax = Math.max(1, ...bands.flatMap((b) => [b.baseline ?? 0, b.costAvg ?? 0]));
+  const slopeY = (v: number) => 16 - (v / slopeMax) * 12;
+
+  const T = {
+    hero: `Money already spent, not a forecast. For each ${svc} label: what it cost minus what that same parcel cost to ship before the rule.`,
+    spark: `One bar per label, oldest on the left. The line is zero — a bar below it is a label that came out cheaper than before. Hover a bar to see the order.`,
+    spent: `The full price of those labels, everything paid to Australia Post. Not the extra part — that is the big figure on the left.`,
+    gap: `What customers paid for shipping on these orders, minus what the labels cost.`,
+    labels: `Orders placed since the rule that already have a priced label, of any service. The rest are still queued: the label price has to be asked of Starshipit one order at a time.`,
+    proj: `A projection, not money spent. The extra per order carried across a full month at the current order rate.`,
+    bands: `The same orders split by the shipping rate the customer paid at checkout. Each band keeps its own before-cost, because a one-item parcel and a heavy one never cost the same.`,
+    was: `What this same parcel cost to ship before the rule. Frozen per band on the day the rule started, and never recalculated.`,
+    adherence: `Read off the service printed on the label, not off the rule. Over the orders placed since the rule that already have a label.`,
+    ledger: `One row per order since the rule. Shopify on the left, Starshipit on the right, the two calculated columns last. This is where every figure above can be checked.`,
+  };
+
+  const th = 'border-b border-border/70 pb-[7px] text-left text-[13px] font-medium text-foreground/80 whitespace-nowrap';
+  const td = 'border-b border-border/40 py-[7px] whitespace-nowrap';
+
+  return (
+    <div className="text-[14px] tabular-nums">
+      {/* ── header ──────────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-baseline gap-x-3.5 gap-y-1 pb-4">
+        <h2 className="text-[19px] font-semibold leading-tight tracking-[-0.015em]"
+          title={seg.note ?? `Cost of the Starshipit rule that forces every ${marketName(seg.country)} order onto ${svc}.`}>
+          {seg.name}
+        </h2>
+        <span className="cursor-help text-[13px] text-muted-foreground"
+          title={`Every ${marketName(seg.country)} order has shipped on ${svc} since ${ruleLabel}, whatever shipping the customer paid.`}>
+          Australia Post Express 5–6 d · rule from {ruleLabel}
+        </span>
+        <span className="ml-auto cursor-help text-[13px] text-muted-foreground"
+          title="Orders and what was charged come from Shopify. The service and the label price come from Starshipit.">
+          Source <b className="font-medium text-foreground/80">Shopify + Starshipit</b>
+        </span>
+      </div>
+
+      {/* ── hero: cash already spent, then the supporting figures ───────── */}
+      <div className="flex flex-wrap items-end gap-y-5 border-t border-border/70 pt-5">
+        <div className="pr-8">
+          <div className="cursor-help text-[13px] font-medium text-foreground/80" title={T.hero}>
+            Extra actually spent since the rule
+          </div>
+          <div className="mt-1.5 flex items-baseline gap-[3px] text-[50px] font-semibold leading-[1.02] tracking-[-0.03em]"
+            title={T.hero}>
+            <span className="translate-y-[-0.08em] text-[0.44em] font-medium text-muted-foreground">A$</span>
+            {money(k.extraTotal)}
+          </div>
+          <div className="mt-1.5 cursor-help text-[13px] text-muted-foreground"
+            title="It grows as the remaining labels come in.">
+            across <b className="font-medium text-foreground/80">{k.segOrders}</b> {svc} label{k.segOrders === 1 ? '' : 's'}
+          </div>
+        </div>
+
+        {series.length > 1 && (
+          <div className="self-end border-l border-border/60 pb-1 pl-7">
+            <div className="cursor-help text-[13px] font-medium text-foreground/80" title={T.spark}>Extra per label</div>
+            <svg width={sw} height={sh} className="mt-2 block" role="img" aria-label="Extra cost per label, oldest to newest">
+              {series.map((s, i) => {
+                const v = s.extra ?? 0;
+                const h = Math.abs(v) / (hi - lo) * (sh - 4);
+                return (
+                  <rect key={`${s.order}-${i}`} x={i * (barW + gap)} width={barW}
+                    y={v >= 0 ? zeroY - h : zeroY} height={Math.max(1.5, h)}
+                    className={v < 0 ? 'fill-emerald-800/55' : 'fill-muted-foreground/35'}>
+                    <title>{`${s.order} · ${s.service ?? '—'} · extra ${signed(s.extra)}`}</title>
+                  </rect>
+                );
+              })}
+              <line x1={0} y1={zeroY} x2={sw} y2={zeroY} className="stroke-border" strokeWidth={1} />
+            </svg>
+            <div className="mt-1 flex justify-between text-[12.5px] text-muted-foreground/80" style={{ width: sw }}>
+              <span title="Oldest priced label.">{series[0]?.order?.replace(/^\D+/, '')}</span>
+              <span title="Newest priced label.">{series[series.length - 1]?.order?.replace(/^\D+/, '')}</span>
+            </div>
+          </div>
+        )}
+
+        <div className="ml-auto flex flex-wrap items-end gap-y-4 self-end pb-1">
+          <div className="min-w-[132px] pl-0">
+            <div className="cursor-help text-[13px] font-medium text-foreground/80" title={T.spent}>
+              Total label cost
+            </div>
+            <div className="mt-1 text-[21px] font-semibold tracking-[-0.018em]" title={T.spent}>
+              <span className="text-[0.68em] font-medium text-muted-foreground">A$</span>
+              {money(k.costTotal)}
+            </div>
+            <div className="text-[12.5px] text-muted-foreground/80">
+              {k.segOrders} {svc} label{k.segOrders === 1 ? '' : 's'} · A${money(k.costAvg)} each
+            </div>
+          </div>
+
+          <div className="ml-7 min-w-[132px] border-l border-border/60 pl-7">
+            <div className="cursor-help text-[13px] font-medium text-foreground/80" title={T.gap}>Shipping gap so far</div>
+            <div className={cn('mt-1 text-[21px] font-semibold tracking-[-0.018em]',
+              (k.marginTotal ?? 0) < 0 && 'text-emerald-800 dark:text-emerald-500')} title={T.gap}>
+              {(k.marginTotal ?? 0) < 0 ? '−' : ''}
+              <span className="text-[0.68em] font-medium text-muted-foreground">A$</span>
+              {money(k.marginTotal)}
+            </div>
+          </div>
+
+          <div className="ml-7 min-w-[132px] border-l border-border/60 pl-7">
+            <div className="cursor-help text-[13px] font-medium text-foreground/80" title={T.labels}>Orders priced</div>
+            <div className="mt-1 text-[21px] font-semibold tracking-[-0.018em]" title={T.labels}>
+              {ad.labelled}
+              <span className="ml-1 text-[0.76em] font-normal text-muted-foreground">/ {ad.orders}</span>
+            </div>
+            <svg width={120} height={5} className="mt-[7px] block" role="img" aria-label={`${ad.labelled} of ${ad.orders} orders labelled`}>
+              <rect x={0} y={0} width={120} height={5} rx={2.5} className="fill-border" />
+              <rect x={0} y={0} width={Math.max(2, (120 * (ad.coveragePct ?? 0)) / 100)} height={5} rx={2.5} className="fill-foreground/70" />
+            </svg>
+            <div className="mt-[3px] cursor-help text-[12.5px] text-muted-foreground/80"
+              title="A job runs every 20 minutes pulling the pending label prices, so this fills in on its own.">
+              queue clearing on its own
+            </div>
+          </div>
+
+          {/* The projection: deliberately the smallest and the only muted block
+              on the row, because it is the number Mario did NOT want led with. */}
+          <div className="ml-7 min-w-[132px] border-l border-border/60 pl-7">
+            <div className="cursor-help text-[13px] text-muted-foreground" title={T.proj}>Projection · per month</div>
+            <div className="mt-1 text-[17px] font-medium tracking-[-0.01em] text-muted-foreground" title={T.proj}>
+              ≈<span className="text-[0.68em]">A$</span>{k.projMonthly === null ? '—' : Math.abs(k.projMonthly).toLocaleString('en-AU')}
+            </div>
+            <div className="mt-[3px] text-[12.5px] text-muted-foreground/80">
+              at {k.ordersPerDay ?? '—'} {marketName(seg.country) === 'United States' ? 'US' : ''} orders/day
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── bands + adherence ───────────────────────────────────────────── */}
+      <div className="mt-8 grid grid-cols-1 gap-x-12 gap-y-8 lg:grid-cols-[1fr_330px]">
+        <section>
+          <div className="mb-2 flex items-baseline gap-2.5">
+            <h3 className="cursor-help text-[13.5px] font-semibold" title={T.bands}>By Shopify rate band</h3>
+            <span className="ml-auto cursor-help text-[13px] text-muted-foreground"
+              title={`Only the ${svc} labels. The "Orders priced" figure above counts labels of ANY service, so it is larger.`}>
+              {k.segOrders} {svc} label{k.segOrders === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] border-collapse">
+              <thead>
+                <tr>
+                  <th className={cn(th, 'cursor-help')} title="The shipping rate the customer paid, and the cart size that unlocks it.">Rate band</th>
+                  <th className={cn(th, 'cursor-help text-right')} title={`${svc} labels priced in this band so far. Labels of other services are not counted here.`}>{svc} labels</th>
+                  <th className={cn(th, 'cursor-help border-l border-border/50 pl-4 text-right')} title="Money already spent above the old service, summed over this band's labels. AUD.">Extra so far</th>
+                  <th className={cn(th, 'cursor-help pl-[18px]')} title="Left dot: what it cost before. Right dot: what it costs now. All four bands share one scale.">Was → now</th>
+                  <th className={cn(th, 'cursor-help text-right')} title={`Average ${svc} label cost in this band. Source: Starshipit, AUD.`}>{svc} label avg</th>
+                  <th className={cn(th, 'cursor-help text-right')} title={T.was}>Was</th>
+                  <th className={cn(th, 'cursor-help text-right')} title="Average shipping charged to the customer in this band, in AUD.">Customer paid</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bands.map((b) => (
+                  <tr key={b.key} className={cn('hover:bg-muted/40', b.segment === 0 && 'text-muted-foreground')}
+                    title={b.segment === 0
+                      ? `No ${svc} label has landed in this band yet — its cost is unknown, not zero.`
+                      : `${b.orders.toLocaleString('en-AU')} orders in the window, ${b.labelled} with a label, ${b.segment} of them ${svc}.`}>
+                    <td className={td}>
+                      <span className="font-medium text-foreground">{b.label.split('·')[0].trim()}</span>
+                      <span className="text-muted-foreground"> · {b.label.split('·').slice(1).join('·').trim()}</span>
+                    </td>
+                    <td className={cn(td, 'text-right')}>{b.segment}</td>
+                    <td className={cn(td, 'border-l border-border/40 pl-4 text-right font-medium',
+                      (b.extraSoFar ?? 0) < 0 && 'text-emerald-800 dark:text-emerald-500')}>
+                      {b.extraSoFar === null || b.extraSoFar === undefined ? '—' : signed(b.extraSoFar)}
+                    </td>
+                    <td className={cn(td, 'pl-[18px]')}>
+                      {b.costAvg === null ? (
+                        <span className="text-muted-foreground/60">—</span>
+                      ) : (
+                        <svg width={72} height={18} role="img"
+                          aria-label={`was ${b.baseline}, now ${b.costAvg}`}>
+                          <line x1={6} y1={slopeY(b.baseline)} x2={66} y2={slopeY(b.costAvg)}
+                            className="stroke-foreground/50" strokeWidth={1.25} />
+                          <circle cx={6} cy={slopeY(b.baseline)} r={2} className="fill-muted-foreground/50" />
+                          <circle cx={66} cy={slopeY(b.costAvg)} r={2.3} className="fill-foreground" />
+                        </svg>
+                      )}
+                    </td>
+                    <td className={cn(td, 'text-right')}>{money(b.costAvg)}</td>
+                    <td className={cn(td, 'text-right text-muted-foreground')}>{money(b.baseline)}</td>
+                    <td className={cn(td, 'text-right text-muted-foreground')}>{money(b.chargedAvg)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section>
+          <div className="mb-2 flex items-baseline gap-2.5">
+            <h3 className="cursor-help text-[13.5px] font-semibold" title={T.adherence}>Rule adherence</h3>
+          </div>
+          <div className="flex items-baseline justify-between text-[13px] text-foreground/80">
+            <span title={`Orders that really left on ${svc}.`}>{svc}</span>
+            <span title="Orders the rule did not catch.">
+              {(data.services ?? []).find((s) => !s.isSegment)?.code ?? 'other'}
+            </span>
+          </div>
+          <div className="mt-1 flex items-baseline justify-between">
+            <b className="text-[21px] font-semibold tracking-[-0.018em]">{ad.pct === null ? '—' : `${ad.pct}%`}</b>
+            <b className="text-[21px] font-semibold tracking-[-0.018em] text-muted-foreground">
+              {ad.pct === null ? '—' : `${Math.round((100 - ad.pct) * 10) / 10}%`}
+            </b>
+          </div>
+          <div className="mb-2 mt-3 flex h-[7px] overflow-hidden rounded-full bg-border" title={T.adherence}>
+            <div className="bg-foreground/75" style={{ width: `${ad.pct ?? 0}%` }} />
+          </div>
+          <div className="mt-4 border-t border-border/50">
+            {(data.services ?? []).filter((s) => !s.isSegment && s.costAvg !== null).slice(0, 2).map((s) => (
+              <div key={s.code} className="flex items-baseline justify-between border-b border-border/40 py-[7px] text-[13px] text-foreground/80"
+                title={`${s.orders} labelled orders since the rule left on ${s.code}${s.name ? ` (${s.name})` : ''}. Each one is money not spent, and a parcel outside the new US rules.`}>
+                <span>{s.code} label cost</span>
+                <b className="text-[14px] font-semibold text-foreground">A${money(s.costAvg)}</b>
+              </div>
+            ))}
+            <div className="flex items-baseline justify-between border-b border-border/40 py-[7px] text-[13px] text-foreground/80"
+              title={`Average ${svc} label cost over every band.`}>
+              <span>{svc} label avg</span>
+              <b className="text-[14px] font-semibold text-foreground">A${money(k.costAvg)}</b>
+            </div>
+            <div className="flex items-baseline justify-between border-b border-border/40 py-[7px] text-[13px] text-foreground/80"
+              title={`What the rule adds on an average order, weighting each band by how many orders it carries. Covers ${k.bandsCoveredPct ?? '—'}% of orders.`}>
+              <span>Per parcel difference</span>
+              <b className="text-[14px] font-semibold text-foreground">{signed(k.extraPerOrder)}</b>
+            </div>
+            <div className="flex items-baseline justify-between py-[7px] text-[13px] text-foreground/80"
+              title={`${marketName(seg.country)} orders placed since the rule started, labelled or not.`}>
+              <span>Orders since the rule</span>
+              <b className="text-[14px] font-semibold text-foreground">{ad.orders}</b>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      {/* ── order ledger: always on the page, never behind a toggle ─────── */}
+      <section className="mt-8">
+        <div className="mb-2 flex items-baseline gap-2.5">
+          <h3 className="cursor-help text-[13.5px] font-semibold" title={T.ledger}>Order ledger</h3>
+          <span className="ml-auto text-[13px] text-muted-foreground">
+            {data.ledger.length} of {data.ledgerTotal} orders since the rule
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[920px] border-collapse">
+            <thead className="sticky top-0 z-10 bg-background">
+              <tr>
+                <th className={cn(th, 'cursor-help')} title="The Shopify order name.">Order</th>
+                <th className={cn(th, 'cursor-help')} title="Tracking number. One click selects it whole, to paste into Starshipit or ZONOS.">Tracking</th>
+                <th className={cn(th, 'cursor-help text-right')} title="What the customer spent on products, in AUD. It decides which shipping rate they got.">Cart subtotal</th>
+                <th className={cn(th, 'cursor-help text-right')} title="What the customer paid for shipping, in the currency they were charged.">Customer paid USD</th>
+                <th className={cn(th, 'cursor-help text-right')} title="The same shipping charge, converted to AUD.">Charged A$</th>
+                <th className={cn(th, 'cursor-help border-l border-border/50 pl-4')} title="The service printed on the label. Blank until the label exists.">Service</th>
+                <th className={cn(th, 'cursor-help text-right')} title="What the label cost, in AUD.">Label A$</th>
+                <th className={cn(th, 'cursor-help text-right')} title={T.was}>Was A$</th>
+                <th className={cn(th, 'cursor-help text-right')} title="Label cost minus what this parcel cost before the rule. What the rule added on this order.">Extra A$</th>
+                <th className={cn(th, 'cursor-help text-right')} title="What the customer paid for shipping minus what the label cost. Negative means Dolo covers the difference.">Gap A$</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.ledger.map((r) => (
+                <tr key={r.order} className={cn('hover:bg-muted/40', !r.labelled && 'text-muted-foreground')}>
+                  <td className={cn(td, 'font-medium text-foreground')}>{r.order}</td>
+                  <td className={cn(td, 'select-all text-[12.5px] tracking-[-0.015em] text-muted-foreground')}>
+                    {r.tracking ?? <span className="italic text-muted-foreground/70">no tracking yet</span>}
+                  </td>
+                  <td className={cn(td, 'text-right text-muted-foreground')}>{money(r.subtotal)}</td>
+                  <td className={cn(td, 'text-right text-muted-foreground')}>{money(r.chargedUsd)}</td>
+                  <td className={cn(td, 'text-right')}>{money(r.charged)}</td>
+                  <td className={cn(td, 'border-l border-border/40 pl-4 text-[13px]')}>
+                    {r.service
+                      ? <span className={cn(r.isSegment ? 'font-medium text-foreground' : 'text-amber-700 dark:text-amber-500')}
+                          title={r.serviceName ?? r.carrier ?? ''}>{r.service}</span>
+                      : <span className="italic text-muted-foreground/70"
+                          title={r.freightChecked
+                            ? 'Starshipit was asked and has no label for this order yet.'
+                            : 'The sync has not reached this order yet. Labels are fetched a few dozen per run.'}>
+                          {r.freightChecked ? 'no label' : 'awaiting'}
+                        </span>}
+                  </td>
+                  <td className={cn(td, 'text-right')}>{money(r.freight)}</td>
+                  <td className={cn(td, 'text-right text-muted-foreground')}>{money(r.baseline)}</td>
+                  <td className={cn(td, 'text-right font-medium',
+                    r.extra !== null && r.extra < 0 && 'text-emerald-800 dark:text-emerald-500')}>
+                    {r.extra === null ? <span className="text-muted-foreground/60" title="No label of this service on this order.">—</span> : signed(r.extra)}
+                  </td>
+                  <td className={cn(td, 'text-right text-[13.5px] text-foreground/80',
+                    r.margin !== null && r.margin < 0 && 'text-emerald-800 dark:text-emerald-500')}>
+                    {r.margin === null ? <span className="text-muted-foreground/60">—</span> : signed(r.margin)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {data.ledgerTotal > data.ledger.length && (
+          <div className="mt-3 flex items-center gap-3 text-[13px] text-muted-foreground">
+            <span>Showing the newest {data.ledger.length} of {data.ledgerTotal}.</span>
+            <Button size="sm" variant="outline" onClick={() => setLedgerLimit((l) => Math.min(l * 4, data.ledgerTotal))}>
+              Load more
+            </Button>
+          </div>
+        )}
+      </section>
+
+      {loading && <div className="mt-3 text-[13px] text-muted-foreground">Loading…</div>}
     </div>
   );
 }
