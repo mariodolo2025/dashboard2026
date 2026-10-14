@@ -51,6 +51,13 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors });
   try {
     const body = await req.json().catch(() => ({}));
+    // {"only":"freight"} — skip the Shopify scan and the ZONOS walk and spend
+    // the WHOLE budget asking Starshipit what each label cost. That pass is one
+    // HTTP call per order with no bulk alternative, so sharing a 140s run with
+    // the other two passes left it ~45 orders; the queue grew faster than it
+    // drained and the tab showed 8 of 86 orders priced. Run on its own it does
+    // several hundred. The orchestrator still calls the full sync 3x a day.
+    const freightOnly = body?.only === 'freight';
     const days = Number(body?.days);
     const rolling = Number.isFinite(days) && days > 0
       ? new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10)
@@ -99,6 +106,10 @@ Deno.serve(async (req: Request) => {
     const usdToAud = (isoDate: string): number => fxByMonth.get(isoDate.slice(0, 7)) || FX_FALLBACK;
 
     // ════════════════════════════ 1. SHOPIFY ════════════════════════════════
+    type ShopRow = Record<string, unknown>;
+    const shopifyRows: ShopRow[] = [];
+    let scanned = 0;
+    if (!freightOnly) {
     const { data: creds } = await supabase
       .from('api_credentials').select('store_url, access_token').eq('provider', 'shopify').maybeSingle();
     if (!creds?.access_token) return json({ success: false, message: 'no shopify creds' }, 400);
@@ -106,9 +117,6 @@ Deno.serve(async (req: Request) => {
     if (!store.includes('.')) store += '.myshopify.com';
     const shopifyHeaders = { 'X-Shopify-Access-Token': creds.access_token as string, 'Content-Type': 'application/json' };
 
-    type ShopRow = Record<string, unknown>;
-    const shopifyRows: ShopRow[] = [];
-    let scanned = 0;
     let url: string | null =
       `https://${store}/admin/api/2024-01/orders.json?status=any&limit=250` +
       `&created_at_min=${since}T00:00:00Z` +
@@ -159,6 +167,7 @@ Deno.serve(async (req: Request) => {
         .upsert(shopifyRows.slice(i, i + 500), { onConflict: 'shopify_order_id' });
       if (error) return json({ success: false, message: `upsert: ${error.message}` }, 500);
     }
+    }
 
     // ════════════════════════════ 2. STARSHIPIT ═════════════════════════════
     // Two facts shape this pass. (a) The bulk list /api/orders/shipped does NOT
@@ -177,7 +186,7 @@ Deno.serve(async (req: Request) => {
     // Starshipit) fall back to the per-order search, still within budget.
     const ssKey = Deno.env.get('STARSHIPIT_API_KEY');
     const ssSub = Deno.env.get('STARSHIPIT_SUBSCRIPTION_KEY');
-    let freightMatched = 0, freightMissing = 0, freightRemaining = 0, ssPages = 0, pendingTotal = 0;
+    let freightMatched = 0, freightMissing = 0, freightRemaining = 0, ssPages = 0, pendingTotal = 0, serviceBackfilled = 0;
     if (ssKey && ssSub) {
       const ssHeaders = { 'StarShipIT-Api-Key': ssKey, 'Ocp-Apim-Subscription-Key': ssSub };
       const ssGet = async (url: string): Promise<Response> => {
@@ -190,6 +199,17 @@ Deno.serve(async (req: Request) => {
         return res;
       };
 
+      // The SERVICE on the label, not just the carrier. Everything in the US
+      // was "Australia Post" either way, so an IC13 express label and a
+      // standard one were the same row and the IC13 rule (14-Oct-2026) could
+      // not be measured at all. Starshipit names it carrier_service_code
+      // ("IC13"); the other spellings are read too because the bulk list and
+      // the detail endpoint do not always use the same key.
+      const svcCode = (o: any): string | null =>
+        o?.carrier_service_code ?? o?.service_code ?? o?.product_code ?? null;
+      const svcName = (o: any): string | null =>
+        o?.carrier_service_name ?? o?.service_name ?? o?.carrier_service ?? null;
+
       // Newest 1,000 pending per run (the drain order), plus the true backlog
       // size so the caller can tell how far it has to go.
       // Record that Starshipit was ASKED and had nothing (not found, or no label
@@ -199,25 +219,97 @@ Deno.serve(async (req: Request) => {
         .update({ freight_checked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq('shopify_order_id', id);
 
+      // Orders whose label we already priced before the service was being
+      // recorded, inside the reach of a live service rule. Bounded on purpose:
+      // a fixed 30 per run, and only while the budget is still untouched, so it
+      // can never be the reason the main drain below starves. It empties by
+      // itself - from now on freight and service are written together.
+      const { data: segRows } = await supabase
+        .from('ddp_service_segments').select('rule_from').eq('active', true);
+      const ruleFloor = (segRows ?? [])
+        .map((r) => String(r.rule_from))
+        .sort()[0] ?? null;
+      if (ruleFloor && timeLeft() > 110_000) {
+        const { data: noSvc } = await supabase.from('ddp_shipments')
+          .select('shopify_order_id, ss_order_id, order_name')
+          .not('freight_cost_aud', 'is', null)
+          .is('ss_service_code', null)
+          .gte('order_date', ruleFloor)
+          .order('order_date', { ascending: false })
+          .limit(30);
+        for (const row of noSvc ?? []) {
+          if (timeLeft() < 95_000) break;
+          if (!row.ss_order_id) continue;
+          const dRes = await ssGet(`https://api.starshipit.com/api/orders?order_id=${row.ss_order_id}`);
+          if (!dRes.ok) continue;
+          const detail = (await dRes.json())?.order;
+          const code = svcCode(detail);
+          if (!code) continue;
+          await supabase.from('ddp_shipments')
+            .update({ ss_service_code: code, ss_service_name: svcName(detail), updated_at: new Date().toISOString() })
+            .eq('shopify_order_id', row.shopify_order_id);
+          serviceBackfilled++;
+        }
+      }
+
       const { count: pendingCount } = await supabase.from('ddp_shipments')
         .select('shopify_order_id', { count: 'exact', head: true })
         .is('freight_cost_aud', null);
       pendingTotal = pendingCount ?? 0;
       const retryBefore = new Date(Date.now() - 6 * 3600_000).toISOString();
-      const { data: pendingRows } = await supabase.from('ddp_shipments')
-        .select('shopify_order_id, order_name, tracking_number, order_date')
-        .is('freight_cost_aud', null)
-        .or(`freight_checked_at.is.null,freight_checked_at.lt.${retryBefore}`)
-        .order('order_date', { ascending: false })
-        .limit(1000);
-      const pending = pendingRows ?? [];
+
+      // DRAIN ORDER — the single thing that decides whether this pass is useful.
+      //
+      // It used to be order_date DESC: newest first. That is backwards. An order
+      // placed today has not been packed yet, so Starshipit has no label price
+      // to give; an order that has been waiting is precisely the one whose label
+      // now exists. Every day's fresh orders piled onto the head of the queue
+      // and ate the whole budget (~20-25 detail calls fit in a run), so the ones
+      // that DID have a price were never reached. Measured 2026-09-11:
+      // PSD#70657 sat at position 28 of 62 with its label sitting in Starshipit
+      // since the 9th, last looked at on the 9th, showing "no label" ever since,
+      // while the run before it spent every second on 10-Sep orders that had not
+      // even shipped.
+      //
+      // Now, in order:
+      //   1. orders that already carry a tracking number — they shipped, so a
+      //      label exists and the call will come back with a price;
+      //   2. within that, the ones longest since we last asked (never asked
+      //      first), so nothing can starve however long the queue gets.
+      // Orders with no tracking are still asked about, after the rest: a label
+      // can exist in Starshipit before Shopify shows the tracking. They simply
+      // stop being the reason the useful ones wait.
+      const pendingSel = 'shopify_order_id, order_name, tracking_number, order_date, freight_checked_at';
+      const notYet = `freight_checked_at.is.null,freight_checked_at.lt.${retryBefore}`;
+      const [shipped, unshipped] = await Promise.all([
+        supabase.from('ddp_shipments').select(pendingSel)
+          .is('freight_cost_aud', null).not('tracking_number', 'is', null)
+          .or(notYet)
+          .order('freight_checked_at', { ascending: true, nullsFirst: true })
+          .limit(1000),
+        supabase.from('ddp_shipments').select(pendingSel)
+          .is('freight_cost_aud', null).is('tracking_number', null)
+          .or(notYet)
+          .order('freight_checked_at', { ascending: true, nullsFirst: true })
+          .limit(1000),
+      ]);
+      const pending = [...(shipped.data ?? []), ...(unshipped.data ?? [])];
       const pendingByName = new Map(pending.map((p) => [String(p.order_name), p]));
 
       // (1) bulk discovery: order_number -> { order_id, tracking, carrier }
-      type Hit = { order_id: number; tracking: string | null; carrier: string | null; price: number };
+      type Hit = {
+        order_id: number; tracking: string | null; carrier: string | null; price: number;
+        service: string | null; serviceName: string | null;
+      };
       const found = new Map<string, Hit>();
       if (pending.length) {
-        const oldestPending = String(pending[pending.length - 1]?.order_date ?? since).slice(0, 10);
+        // The real oldest pending DATE. Taking the last element would have done
+        // when the list was sorted by date; it is now sorted by how long since
+        // we asked, so the minimum has to be computed.
+        const oldestPending = pending.reduce(
+          (min, p) => { const d = String(p.order_date ?? '').slice(0, 10); return d && d < min ? d : min; },
+          String(pending[0]?.order_date ?? since).slice(0, 10)
+        );
         // The API does not promise to honour limit=250 or even `page` - the
         // first runs came back with one short page and the old rule "stop when a
         // page has fewer than 250" ended the walk there, sending every order
@@ -225,7 +317,7 @@ Deno.serve(async (req: Request) => {
         // that adds no order_id we have not seen (the API repeating itself), or
         // when the page is older than anything still pending. Never on size.
         const seenIds = new Set<string>();
-        for (let page = 1; page <= 60 && timeLeft() > 70_000; page++) {
+        for (let page = 1; page <= 60 && timeLeft() > (freightOnly ? 30_000 : 70_000); page++) {
           const res = await ssGet(`https://api.starshipit.com/api/orders/shipped?limit=250&page=${page}`);
           if (!res.ok) break;
           const list: any[] = (await res.json())?.orders ?? [];
@@ -244,11 +336,17 @@ Deno.serve(async (req: Request) => {
                 order_id: o.order_id,
                 tracking: o.tracking_number ?? null,
                 carrier: o.carrier_name ?? o.carrier ?? null,
+                service: svcCode(o),
+                serviceName: svcName(o),
                 // if the list ever starts carrying the price, use it and skip the detail call
                 price: num(o?.total_shipping_price),
               });
             }
           }
+          // Every pending order has been located: reading further buys nothing
+          // and the seconds are worth more to the detail calls below, which are
+          // what actually produce a price.
+          if (found.size >= pending.length) break;
           // the list is newest-first: once a whole page predates our oldest
           // pending order there is nothing further back worth reading
           if (fresh === 0 || (oldestOnPage !== '9999' && oldestOnPage < oldestPending)) break;
@@ -259,7 +357,7 @@ Deno.serve(async (req: Request) => {
       for (const local of pending) {
         // Leave ZONOS a real slice: it has its own budget below, and a run that
         // spends everything on freight starves the pass that closes the orders.
-        if (timeLeft() < 45_000) { freightRemaining++; continue; }
+        if (timeLeft() < (freightOnly ? 6_000 : 45_000)) { freightRemaining++; continue; }
         const name = String(local.order_name);
         let hit = found.get(name);
         if (!hit) {
@@ -270,7 +368,11 @@ Deno.serve(async (req: Request) => {
           if (!sRes.ok) { freightMissing++; continue; }
           const so = ((await sRes.json())?.orders ?? []).find((x: any) => x?.order_number === name);
           if (!so) { freightMissing++; await markChecked(local.shopify_order_id); continue; }
-          hit = { order_id: so.order_id, tracking: so.tracking_number ?? null, carrier: so.carrier_name ?? so.carrier ?? null, price: 0 };
+          hit = {
+            order_id: so.order_id, tracking: so.tracking_number ?? null,
+            carrier: so.carrier_name ?? so.carrier ?? null,
+            service: svcCode(so), serviceName: svcName(so), price: 0,
+          };
         }
         let cost = hit.price;
         if (!(cost > 0)) {
@@ -279,12 +381,19 @@ Deno.serve(async (req: Request) => {
           const detail = (await dRes.json())?.order;
           cost = num(detail?.total_shipping_price);      // AUD (label price)
           if (!hit.tracking) hit.tracking = detail?.tracking_number ?? null;
+          // The detail is the authority on the service: the bulk list does not
+          // always carry it.
+          hit.service = svcCode(detail) ?? hit.service;
+          hit.serviceName = svcName(detail) ?? hit.serviceName;
         }
         if (!(cost > 0)) { freightMissing++; await markChecked(local.shopify_order_id); continue; }  // no label yet - stay pending, but say we looked
         const { error } = await supabase.from('ddp_shipments').update({
           freight_cost_aud: cost,
           ss_order_id: hit.order_id,
           ss_carrier: hit.carrier,
+          // Only when we actually learnt it — writing null here would erase a
+          // service a previous run had already recorded.
+          ...(hit.service ? { ss_service_code: hit.service, ss_service_name: hit.serviceName } : {}),
           freight_matched_at: new Date().toISOString(),
           // Starshipit fills the tracking gap when Shopify had none
           ...(local.tracking_number ? {} : { tracking_number: hit.tracking }),
@@ -297,7 +406,7 @@ Deno.serve(async (req: Request) => {
     // ════════════════════════════ 3. ZONOS ══════════════════════════════════
     const zKey = Deno.env.get('ZONOS_API_KEY');
     let zonosMatched = 0, zonosUnmatched = 0, zonosTruncated = false;
-    if (zKey) {
+    if (zKey && !freightOnly) {
       const rows = await readAll<{ shopify_order_id: number; tracking_number: string; zonos_matched_at: string | null }>(
         (from, to) => supabase.from('ddp_shipments')
           .select('shopify_order_id, tracking_number, zonos_matched_at')
@@ -385,9 +494,10 @@ Deno.serve(async (req: Request) => {
 
     return json({
       success: true,
+      mode: freightOnly ? 'freight-only' : 'full',
       window: { since },
       shopify: { scanned, ddpOrders: shopifyRows.length },
-      starshipit: { matched: freightMatched, failed: freightMissing, remaining: freightRemaining, pendingTotal, pages: ssPages, connected: !!(ssKey && ssSub) },
+      starshipit: { matched: freightMatched, failed: freightMissing, remaining: freightRemaining, pendingTotal, pages: ssPages, serviceBackfilled, connected: !!(ssKey && ssSub) },
       zonos: { matched: zonosMatched, unmatched: zonosUnmatched, truncated: zonosTruncated, connected: !!zKey },
       elapsedMs: Date.now() - t0,
     });
