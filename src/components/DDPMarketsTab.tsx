@@ -203,23 +203,6 @@ interface SegLedgerRow {
   extra: number | null; margin: number | null;
   tracking: string | null; carrier: string | null; freightChecked: boolean;
 }
-/** One side of a rate card change. AUD unless the name says USD. */
-interface RateSide {
-  orders: number; ordersPerDay: number | null;
-  paidPerOrder: number | null; freePct: number | null; medianCartUsd: number | null;
-  share100to130: number | null; share130to160: number | null;
-  /** IC13 labels on card orders on this side, and what they cost / left open. */
-  labelled: number; labelPerOrder: number | null; gapPerOrder: number | null;
-  /** Meta spend delivered in the market per full day. Null until a full day. */
-  spendPerDay: number | null;
-}
-/** Equal windows either side of the cutover, as long as the time since it
- *  (capped at 28 days), independent of the date range. */
-interface RateChange {
-  cutAt: string; labelBefore: string; labelNow: string;
-  windowHours: number; spendDays: number;
-  before: RateSide | null; after: RateSide | null;
-}
 interface SegPayload {
   segment: {
     code: string; name: string; country: string; serviceCode: string; ruleFrom: string; note: string | null;
@@ -231,9 +214,6 @@ interface SegPayload {
     };
   } | null;
   kpis: SegKpis; bands: SegBand[]; labelSeries: SegLabelPoint[];
-  /** Before / after the last rate card change. Null when the market has had
-   *  only one card. */
-  rateChange: RateChange | null;
   services: SegService[]; daily?: SegDay[];
   ledger: SegLedgerRow[]; ledgerTotal: number;
   markets: Payload['markets']; segments: SegmentRef[];
@@ -1377,131 +1357,6 @@ function SegmentView({ code, from, to, marketName, refreshKey }: {
           </div>
         </section>
       </div>
-
-      {/* ── before / after the rate card change ─────────────────────────────
-          Mario, 15-Oct-2026: one flat US$15 under US$130, free from US$130,
-          replacing US$20 / US$10 / free from US$100. The question it has to
-          answer: does the new price cover IC13, and what does it cost in
-          orders. Equal windows either side, independent of the date range -
-          same design as Canada's duties block. */}
-      {data.rateChange && (() => {
-        const rc = data.rateChange;
-        const b = rc.before, a = rc.after;
-        const cutLabel = new Date(rc.cutAt).toLocaleString('en-AU', {
-          timeZone: 'Australia/Brisbane', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
-        });
-        const span = rc.windowHours >= 48 ? `${Math.round(rc.windowHours / 24)} days` : `${rc.windowHours} h`;
-        // Under a full day either side, orders per day is mostly hour-of-day:
-        // a window that covers a lunchtime peak on one side and not the other
-        // reads as a price effect. Shown only once each side holds a full day.
-        const fullDay = rc.windowHours >= 24;
-        const diff = (x: number | null | undefined, y: number | null | undefined, unit: 'aud' | 'pts' | 'usd' | 'n') => {
-          if (x == null || y == null) return '—';
-          const d = y - x;
-          const sign = d > 0 ? '+' : d < 0 ? '−' : '';
-          if (unit === 'pts') return `${sign}${Math.abs(d).toFixed(1)} pts`;
-          if (unit === 'usd') return `${sign}US$${Math.abs(d).toFixed(2)}`;
-          if (unit === 'n') return `${sign}${Math.abs(d).toFixed(1)}`;
-          return `${sign}A$${Math.abs(d).toFixed(2)}`;
-        };
-        const pct = (v: number | null | undefined) => (v == null ? '—' : `${v}%`);
-        const rows: { label: string; tip: string; before: ReactNode; after: ReactNode; change: string; key?: boolean }[] = [
-          {
-            label: 'Orders per day',
-            tip: 'Orders placed per day on each side. Needs a full day either side: below that it mostly measures the hour of day, not the price.',
-            before: fullDay ? (b?.ordersPerDay ?? '—') : <span className="text-muted-foreground/60">—</span>,
-            after: fullDay ? (a?.ordersPerDay ?? '—') : <span className="text-muted-foreground/60">—</span>,
-            change: fullDay ? diff(b?.ordersPerDay, a?.ordersPerDay, 'n') : '—',
-          },
-          {
-            label: `Meta spend in ${marketName(seg.country)} per day`,
-            tip: `What Meta delivered in ${marketName(seg.country)} per full day, AUD, equal day counts either side, today left out. So a move in orders is not blamed on the price when it was the ads - in Canada spend tripled across the change.`,
-            before: aud(b?.spendPerDay), after: aud(a?.spendPerDay),
-            change: diff(b?.spendPerDay, a?.spendPerDay, 'aud'),
-          },
-          {
-            label: 'Shipping paid per order',
-            tip: 'What customers paid for shipping, per order, AUD. Card orders only - the live carrier quote is left out.',
-            before: aud(b?.paidPerOrder, 2), after: aud(a?.paidPerOrder, 2),
-            change: diff(b?.paidPerOrder, a?.paidPerOrder, 'aud'),
-          },
-          {
-            label: 'Shipped free',
-            tip: 'Share of card orders charged nothing for shipping. The free threshold moved from US$100 to US$130.',
-            before: pct(b?.freePct), after: pct(a?.freePct),
-            change: diff(b?.freePct, a?.freePct, 'pts'),
-          },
-          {
-            label: 'Median cart',
-            tip: 'The middle order\'s product subtotal, USD. If the US$130 threshold pulls carts up, it shows here first.',
-            before: b?.medianCartUsd == null ? '—' : `US$${b.medianCartUsd.toFixed(2)}`,
-            after: a?.medianCartUsd == null ? '—' : `US$${a.medianCartUsd.toFixed(2)}`,
-            change: diff(b?.medianCartUsd, a?.medianCartUsd, 'usd'),
-          },
-          {
-            label: 'Carts US$100 – 129.99',
-            tip: 'Share of orders in the band that used to ship free and now pays US$15.',
-            before: pct(b?.share100to130), after: pct(a?.share100to130),
-            change: diff(b?.share100to130, a?.share100to130, 'pts'),
-          },
-          {
-            label: 'Carts US$130 – 159.99',
-            tip: 'Share of orders just over the new free threshold: customers topping up to reach it.',
-            before: pct(b?.share130to160), after: pct(a?.share130to160),
-            change: diff(b?.share130to160, a?.share130to160, 'pts'),
-          },
-          {
-            label: `${svc} label per order`,
-            tip: `Average ${svc} label on card orders. The "before" side only has the hours between the ${svc} rule and the card change: the only time ${svc} ran on the old prices.`,
-            before: <>{aud(b?.labelPerOrder, 2)}<span className="ml-1 text-[12px] text-muted-foreground">({b?.labelled ?? 0})</span></>,
-            after: <>{aud(a?.labelPerOrder, 2)}<span className="ml-1 text-[12px] text-muted-foreground">({a?.labelled ?? 0})</span></>,
-            change: diff(b?.labelPerOrder, a?.labelPerOrder, 'aud'),
-          },
-          {
-            label: 'Gap per order',
-            tip: `Shipping paid minus the ${svc} label, per order, on the same card orders. The number this change exists to move: near zero means the new price covers the express label.`,
-            before: aud(b?.gapPerOrder, 2), after: aud(a?.gapPerOrder, 2),
-            change: diff(b?.gapPerOrder, a?.gapPerOrder, 'aud'),
-            key: true,
-          },
-        ];
-        return (
-          <section className="mt-8">
-            <div className="mb-2 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-              <h3 className="cursor-help text-[13.5px] font-semibold"
-                title={`The rate card changed on ${cutLabel} (Brisbane), read off the orders: the last one charged on the old card and the first on the new. Two windows of equal length either side, independent of the date range above; they grow together up to 28 days.`}>
-                Rate card change
-              </h3>
-              <span className="text-[13px] text-muted-foreground">{cutLabel} · {span} each side</span>
-              <span className="basis-full text-[13px] text-muted-foreground">
-                {rc.labelBefore} <span className="text-foreground/60">→</span> <span className="text-foreground/80">{rc.labelNow}</span>
-              </span>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] border-collapse">
-                <thead>
-                  <tr>
-                    <th className={th} />
-                    <th className={cn(th, 'cursor-help text-right')} title={rc.labelBefore}>Before</th>
-                    <th className={cn(th, 'cursor-help text-right')} title={rc.labelNow}>After</th>
-                    <th className={cn(th, 'cursor-help border-l border-border/50 pl-4 text-right')} title="After minus before.">Change</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.label} className="hover:bg-muted/40">
-                      <td className={cn(td, 'cursor-help', r.key ? 'font-medium text-foreground' : 'text-foreground/80')} title={r.tip}>{r.label}</td>
-                      <td className={cn(td, 'text-right text-muted-foreground')}>{r.before}</td>
-                      <td className={cn(td, 'text-right', r.key ? 'font-semibold' : '')}>{r.after}</td>
-                      <td className={cn(td, 'border-l border-border/40 pl-4 text-right text-muted-foreground')}>{r.change}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        );
-      })()}
 
       {/* ── order ledger: always on the page, never behind a toggle ─────── */}
       <section className="mt-8">
