@@ -157,11 +157,18 @@ interface SegKpis {
   };
 }
 interface SegService { code: string; name: string | null; orders: number; pct: number | null; costAvg: number | null; isSegment: boolean }
-/** One Shopify rate band of the market — read off what the customer was
- *  actually charged, not re-derived from the cart total (discounts move the
- *  total, never the charge). Each band carries its OWN frozen baseline. */
+/** One cart-size band of the market. The before-cost is a property of the
+ *  PARCEL, and the cart size is what tracks the parcel; what the customer was
+ *  charged stopped doing that the day one flat rate covered every cart under
+ *  US$130 (15-Oct-2026). Each band carries its OWN frozen before-cost. */
 interface SegBand {
-  key: string; label: string; chargedUsd: number | null;
+  key: string; label: string;
+  /** USD this cart size is charged under the card in force, and the one before.
+   *  Null for the live quote, which has no card price. */
+  paysNowUsd: number | null; paysBeforeUsd: number | null;
+  /** IC13 labels under the card IN FORCE, and their gap (paid − label). Never
+   *  blended across a card change: that would be a number neither card made. */
+  labelsNow: number; gapNow: number | null;
   orders: number; labelled: number; segment: number;
   baseline: number; baselineIsBand: boolean;
   chargedAvg: number | null; costAvg: number | null;
@@ -182,8 +189,13 @@ interface SegDay {
 interface SegLedgerRow {
   order: string; date: string; service: string | null; serviceName: string | null;
   isSegment: boolean; labelled: boolean;
-  /** Merchandise subtotal — what decides which rate band the order falls in. */
+  /** Merchandise subtotal, AUD. */
   subtotal: number | null;
+  /** The same, in USD: what the customer saw, and what the rate card's limits
+   *  are written in. */
+  cartUsd: number | null;
+  /** The rate card the order was placed under. */
+  card: string | null;
   /** Shipping charged in the currency the customer actually paid (USD here),
    *  beside the AUD figure, so the row can be checked against Shopify directly. */
   chargedUsd: number | null;
@@ -191,16 +203,38 @@ interface SegLedgerRow {
   extra: number | null; margin: number | null;
   tracking: string | null; carrier: string | null; freightChecked: boolean;
 }
+/** One side of a rate card change. AUD unless the name says USD. */
+interface RateSide {
+  orders: number; ordersPerDay: number | null;
+  paidPerOrder: number | null; freePct: number | null; medianCartUsd: number | null;
+  share100to130: number | null; share130to160: number | null;
+  /** IC13 labels on card orders on this side, and what they cost / left open. */
+  labelled: number; labelPerOrder: number | null; gapPerOrder: number | null;
+  /** Meta spend delivered in the market per full day. Null until a full day. */
+  spendPerDay: number | null;
+}
+/** Equal windows either side of the cutover, as long as the time since it
+ *  (capped at 28 days), independent of the date range. */
+interface RateChange {
+  cutAt: string; labelBefore: string; labelNow: string;
+  windowHours: number; spendDays: number;
+  before: RateSide | null; after: RateSide | null;
+}
 interface SegPayload {
   segment: {
     code: string; name: string; country: string; serviceCode: string; ruleFrom: string; note: string | null;
+    /** The shipping rate card in force for this market. */
+    rateCard: { label: string; from: string } | null;
     baseline: {
       costAud: number; medianAud: number | null; chargedAud: number | null;
       orders: number | null; from: string; to: string; note: string | null;
     };
   } | null;
   kpis: SegKpis; bands: SegBand[]; labelSeries: SegLabelPoint[];
-  services: SegService[]; daily: SegDay[];
+  /** Before / after the last rate card change. Null when the market has had
+   *  only one card. */
+  rateChange: RateChange | null;
+  services: SegService[]; daily?: SegDay[];
   ledger: SegLedgerRow[]; ledgerTotal: number;
   markets: Payload['markets']; segments: SegmentRef[];
   window: { from: string; to: string };
@@ -1049,6 +1083,9 @@ function SegmentView({ code, from, to, marketName, refreshKey }: {
   const ad = k.adherence;
   const svc = seg.serviceCode;
   const bands = data.bands ?? [];
+  // The band carrying the most orders — the one decisions turn on. Its name is
+  // set in medium weight so the eye lands there first.
+  const mainBand = bands.reduce<SegBand | null>((a, b) => (!a || b.orders > a.orders ? b : a), null);
   const series = data.labelSeries ?? [];
   const ruleLabel = new Date(seg.ruleFrom).toLocaleDateString('en-AU', {
     timeZone: 'Australia/Brisbane', day: 'numeric', month: 'short', year: 'numeric',
@@ -1083,8 +1120,9 @@ function SegmentView({ code, from, to, marketName, refreshKey }: {
     gap: `Customers paid ${aud(k.chargedTotal, 2)} for shipping and the labels cost ${aud(k.costTotal, 2)}. Negative means Dolo covers the difference. Before the rule this gap was ${aud(gapBefore, 2)}; the rest is the extra on the left.`,
     labels: `Orders placed since the rule that already have a priced label, of any service. The rest are still queued: the label price has to be asked of Starshipit one order at a time.`,
     proj: `A projection, not money spent. The extra per order carried across a full month at the current order rate.`,
-    bands: `The same orders split by the shipping rate the customer paid at checkout. Each band keeps its own before-cost, because a one-item parcel and a heavy one never cost the same.`,
-    was: `What this same parcel cost to ship before the rule. Frozen per band on the day the rule started, and never recalculated.`,
+    bands: `The same orders split by cart size, in USD. Cart size is what tracks the parcel - a one-item box and a heavy one never cost the same - so each band keeps its own before-cost. Split by what the customer paid this no longer works: one flat rate covers every cart under US$130.`,
+    was: `What this same parcel cost to ship before the rule: standard Australia Post labels on orders of this cart size placed between the 21-Sep rate change and the rule. Frozen, never recalculated.`,
+    card: `Shipping rate card in force for ${marketName(seg.country)}. The start time is read off the orders: the last one charged on the old card and the first on the new.`,
     adherence: `Read off the service printed on the label, not off the rule. Over the orders placed since the rule that already have a label.`,
     ledger: `One row per order since the rule. Shopify on the left, Starshipit on the right, the two calculated columns last. This is where every figure above can be checked.`,
   };
@@ -1104,6 +1142,14 @@ function SegmentView({ code, from, to, marketName, refreshKey }: {
           title={`Every ${marketName(seg.country)} order has shipped on ${svc} since ${ruleLabel}, whatever shipping the customer paid.`}>
           Australia Post Express 5–6 d · rule from {ruleLabel}
         </span>
+        {seg.rateCard && (
+          <span className="cursor-help text-[13px] text-muted-foreground" title={T.card}>
+            · {seg.rateCard.label} since{' '}
+            {new Date(seg.rateCard.from).toLocaleString('en-AU', {
+              timeZone: 'Australia/Brisbane', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+            })}
+          </span>
+        )}
         <span className="ml-auto cursor-help text-[13px] text-muted-foreground"
           title="Orders and what was charged come from Shopify. The service and the label price come from Starshipit.">
           Source <b className="font-medium text-foreground/80">Shopify + Starshipit</b>
@@ -1213,58 +1259,74 @@ function SegmentView({ code, from, to, marketName, refreshKey }: {
       <div className="mt-8 grid grid-cols-1 gap-x-12 gap-y-8 lg:grid-cols-[1fr_330px]">
         <section>
           <div className="mb-2 flex items-baseline gap-2.5">
-            <h3 className="cursor-help text-[13.5px] font-semibold" title={T.bands}>By Shopify rate band</h3>
+            <h3 className="cursor-help text-[13.5px] font-semibold" title={T.bands}>By cart size</h3>
             <span className="ml-auto cursor-help text-[13px] text-muted-foreground"
               title={`Only the ${svc} labels. The "Orders priced" figure above counts labels of ANY service, so it is larger.`}>
               {k.segOrders} {svc} label{k.segOrders === 1 ? '' : 's'}
             </span>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] border-collapse">
+            <table className="w-full min-w-[700px] border-collapse">
               <thead>
                 <tr>
-                  <th className={cn(th, 'cursor-help')} title="The shipping rate the customer paid, and the cart size that unlocks it.">Rate band</th>
+                  <th className={cn(th, 'cursor-help')} title="What the customer spent on products, in USD - the figure the rate card's limits are written in.">Cart size</th>
+                  <th className={cn(th, 'cursor-help text-right')} title="What this cart size is charged for shipping: under the previous rate card, then under the one in force.">Pays</th>
                   <th className={cn(th, 'cursor-help text-right')} title={`${svc} labels priced in this band so far. Labels of other services are not counted here.`}>{svc} labels</th>
-                  <th className={cn(th, 'cursor-help border-l border-border/50 pl-4 text-right')} title="Money already spent above the old service, summed over this band's labels. AUD.">Extra so far</th>
-                  <th className={cn(th, 'cursor-help pl-[18px]')} title="Left dot: what it cost before. Right dot: what it costs now. All four bands share one scale.">Was → now</th>
-                  <th className={cn(th, 'cursor-help text-right')} title={`Average ${svc} label cost in this band. Source: Starshipit, AUD.`}>{svc} label avg</th>
+                  <th className={cn(th, 'cursor-help border-l border-border/50 pl-4 text-right')} title="Money already spent above what these parcels cost before the rule, summed over this band's labels. AUD.">Extra so far</th>
+                  <th className={cn(th, 'cursor-help pl-[18px]')} title="Left dot: what it cost before. Right dot: what it costs now. All bands share one scale.">Was → now</th>
+                  <th className={cn(th, 'cursor-help text-right')} title={`Average ${svc} label cost in this band, AUD.`}>{svc} label avg</th>
                   <th className={cn(th, 'cursor-help text-right')} title={T.was}>Was</th>
-                  <th className={cn(th, 'cursor-help text-right')} title="Average shipping charged to the customer in this band, in AUD.">Customer paid</th>
+                  <th className={cn(th, 'cursor-help border-l border-border/50 pl-4 text-right')}
+                    title={`What the customer paid for shipping minus the ${svc} label, per order, counting ONLY orders under the rate card in force. Blank until those labels come in.`}>Gap / order now</th>
                 </tr>
               </thead>
               <tbody>
-                {bands.map((b) => (
-                  <tr key={b.key} className={cn('hover:bg-muted/40', b.segment === 0 && 'text-muted-foreground')}
-                    title={b.segment === 0
-                      ? `No ${svc} label has landed in this band yet — its cost is unknown, not zero.`
-                      : `${b.orders.toLocaleString('en-AU')} orders in the window, ${b.labelled} with a label, ${b.segment} of them ${svc}.`}>
-                    <td className={td}>
-                      <span className="font-medium text-foreground">{b.label.split('·')[0].trim()}</span>
-                      <span className="text-muted-foreground"> · {b.label.split('·').slice(1).join('·').trim()}</span>
-                    </td>
-                    <td className={cn(td, 'text-right')}>{b.segment}</td>
-                    <td className={cn(td, 'border-l border-border/40 pl-4 text-right font-medium',
-                      (b.extraSoFar ?? 0) < 0 && 'text-emerald-800 dark:text-emerald-500')}>
-                      {b.extraSoFar === null || b.extraSoFar === undefined ? '—' : signed(b.extraSoFar)}
-                    </td>
-                    <td className={cn(td, 'pl-[18px]')}>
-                      {b.costAvg === null ? (
-                        <span className="text-muted-foreground/60">—</span>
-                      ) : (
-                        <svg width={72} height={18} role="img"
-                          aria-label={`was ${b.baseline}, now ${b.costAvg}`}>
-                          <line x1={6} y1={slopeY(b.baseline)} x2={66} y2={slopeY(b.costAvg)}
-                            className="stroke-foreground/50" strokeWidth={1.25} />
-                          <circle cx={6} cy={slopeY(b.baseline)} r={2} className="fill-muted-foreground/50" />
-                          <circle cx={66} cy={slopeY(b.costAvg)} r={2.3} className="fill-foreground" />
-                        </svg>
-                      )}
-                    </td>
-                    <td className={cn(td, 'text-right')}>{money(b.costAvg)}</td>
-                    <td className={cn(td, 'text-right text-muted-foreground')}>{money(b.baseline)}</td>
-                    <td className={cn(td, 'text-right text-muted-foreground')}>{money(b.chargedAvg)}</td>
-                  </tr>
-                ))}
+                {bands.map((b) => {
+                  const usd = (v: number | null) => (v === null ? null : v === 0 ? 'free' : `US$${v}`);
+                  const before = usd(b.paysBeforeUsd), now = usd(b.paysNowUsd);
+                  return (
+                    <tr key={b.key} className={cn('hover:bg-muted/40', b.segment === 0 && 'text-muted-foreground')}
+                      title={b.segment === 0
+                        ? `No ${svc} label has landed in this band yet — its cost is unknown, not zero.`
+                        : `${b.orders.toLocaleString('en-AU')} orders in the window, ${b.labelled} with a label, ${b.segment} of them ${svc}.`}>
+                      <td className={cn(td, b.key === mainBand?.key ? 'font-medium text-foreground' : '')}>{b.label}</td>
+                      <td className={cn(td, 'text-right text-[13px]')}>
+                        {now === null
+                          ? <span className="text-muted-foreground">live quote</span>
+                          : before === null || before === now
+                            ? now
+                            : <><span className="text-muted-foreground">{before} →</span> <b className="font-medium text-foreground">{now}</b></>}
+                      </td>
+                      <td className={cn(td, 'text-right')}>{b.segment}</td>
+                      <td className={cn(td, 'border-l border-border/40 pl-4 text-right font-medium',
+                        (b.extraSoFar ?? 0) < 0 && 'text-emerald-800 dark:text-emerald-500')}>
+                        {b.extraSoFar === null || b.extraSoFar === undefined ? '—' : signed(b.extraSoFar)}
+                      </td>
+                      <td className={cn(td, 'pl-[18px]')}>
+                        {b.costAvg === null ? (
+                          <span className="text-muted-foreground/60">—</span>
+                        ) : (
+                          <svg width={72} height={18} role="img"
+                            aria-label={`was ${b.baseline}, now ${b.costAvg}`}>
+                            <line x1={6} y1={slopeY(b.baseline)} x2={66} y2={slopeY(b.costAvg)}
+                              className="stroke-foreground/50" strokeWidth={1.25} />
+                            <circle cx={6} cy={slopeY(b.baseline)} r={2} className="fill-muted-foreground/50" />
+                            <circle cx={66} cy={slopeY(b.costAvg)} r={2.3} className="fill-foreground" />
+                          </svg>
+                        )}
+                      </td>
+                      <td className={cn(td, 'text-right')}>{money(b.costAvg)}</td>
+                      <td className={cn(td, 'text-right text-muted-foreground')}>{money(b.baseline)}</td>
+                      <td className={cn(td, 'border-l border-border/40 pl-4 text-right',
+                        b.gapNow !== null && b.gapNow < 0 && 'text-emerald-800 dark:text-emerald-500')}
+                        title={b.gapNow === null ? 'No label under the rate card in force yet.' : `${b.labelsNow} label${b.labelsNow === 1 ? '' : 's'} under the rate card in force.`}>
+                        {b.gapNow === null
+                          ? <span className="text-muted-foreground/60">—</span>
+                          : <>{signed(b.gapNow)}<span className="ml-1 text-[12px] text-muted-foreground">({b.labelsNow})</span></>}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1316,6 +1378,131 @@ function SegmentView({ code, from, to, marketName, refreshKey }: {
         </section>
       </div>
 
+      {/* ── before / after the rate card change ─────────────────────────────
+          Mario, 15-Oct-2026: one flat US$15 under US$130, free from US$130,
+          replacing US$20 / US$10 / free from US$100. The question it has to
+          answer: does the new price cover IC13, and what does it cost in
+          orders. Equal windows either side, independent of the date range -
+          same design as Canada's duties block. */}
+      {data.rateChange && (() => {
+        const rc = data.rateChange;
+        const b = rc.before, a = rc.after;
+        const cutLabel = new Date(rc.cutAt).toLocaleString('en-AU', {
+          timeZone: 'Australia/Brisbane', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+        });
+        const span = rc.windowHours >= 48 ? `${Math.round(rc.windowHours / 24)} days` : `${rc.windowHours} h`;
+        // Under a full day either side, orders per day is mostly hour-of-day:
+        // a window that covers a lunchtime peak on one side and not the other
+        // reads as a price effect. Shown only once each side holds a full day.
+        const fullDay = rc.windowHours >= 24;
+        const diff = (x: number | null | undefined, y: number | null | undefined, unit: 'aud' | 'pts' | 'usd' | 'n') => {
+          if (x == null || y == null) return '—';
+          const d = y - x;
+          const sign = d > 0 ? '+' : d < 0 ? '−' : '';
+          if (unit === 'pts') return `${sign}${Math.abs(d).toFixed(1)} pts`;
+          if (unit === 'usd') return `${sign}US$${Math.abs(d).toFixed(2)}`;
+          if (unit === 'n') return `${sign}${Math.abs(d).toFixed(1)}`;
+          return `${sign}A$${Math.abs(d).toFixed(2)}`;
+        };
+        const pct = (v: number | null | undefined) => (v == null ? '—' : `${v}%`);
+        const rows: { label: string; tip: string; before: ReactNode; after: ReactNode; change: string; key?: boolean }[] = [
+          {
+            label: 'Orders per day',
+            tip: 'Orders placed per day on each side. Needs a full day either side: below that it mostly measures the hour of day, not the price.',
+            before: fullDay ? (b?.ordersPerDay ?? '—') : <span className="text-muted-foreground/60">—</span>,
+            after: fullDay ? (a?.ordersPerDay ?? '—') : <span className="text-muted-foreground/60">—</span>,
+            change: fullDay ? diff(b?.ordersPerDay, a?.ordersPerDay, 'n') : '—',
+          },
+          {
+            label: `Meta spend in ${marketName(seg.country)} per day`,
+            tip: `What Meta delivered in ${marketName(seg.country)} per full day, AUD, equal day counts either side, today left out. So a move in orders is not blamed on the price when it was the ads - in Canada spend tripled across the change.`,
+            before: aud(b?.spendPerDay), after: aud(a?.spendPerDay),
+            change: diff(b?.spendPerDay, a?.spendPerDay, 'aud'),
+          },
+          {
+            label: 'Shipping paid per order',
+            tip: 'What customers paid for shipping, per order, AUD. Card orders only - the live carrier quote is left out.',
+            before: aud(b?.paidPerOrder, 2), after: aud(a?.paidPerOrder, 2),
+            change: diff(b?.paidPerOrder, a?.paidPerOrder, 'aud'),
+          },
+          {
+            label: 'Shipped free',
+            tip: 'Share of card orders charged nothing for shipping. The free threshold moved from US$100 to US$130.',
+            before: pct(b?.freePct), after: pct(a?.freePct),
+            change: diff(b?.freePct, a?.freePct, 'pts'),
+          },
+          {
+            label: 'Median cart',
+            tip: 'The middle order\'s product subtotal, USD. If the US$130 threshold pulls carts up, it shows here first.',
+            before: b?.medianCartUsd == null ? '—' : `US$${b.medianCartUsd.toFixed(2)}`,
+            after: a?.medianCartUsd == null ? '—' : `US$${a.medianCartUsd.toFixed(2)}`,
+            change: diff(b?.medianCartUsd, a?.medianCartUsd, 'usd'),
+          },
+          {
+            label: 'Carts US$100 – 129.99',
+            tip: 'Share of orders in the band that used to ship free and now pays US$15.',
+            before: pct(b?.share100to130), after: pct(a?.share100to130),
+            change: diff(b?.share100to130, a?.share100to130, 'pts'),
+          },
+          {
+            label: 'Carts US$130 – 159.99',
+            tip: 'Share of orders just over the new free threshold: customers topping up to reach it.',
+            before: pct(b?.share130to160), after: pct(a?.share130to160),
+            change: diff(b?.share130to160, a?.share130to160, 'pts'),
+          },
+          {
+            label: `${svc} label per order`,
+            tip: `Average ${svc} label on card orders. The "before" side only has the hours between the ${svc} rule and the card change: the only time ${svc} ran on the old prices.`,
+            before: <>{aud(b?.labelPerOrder, 2)}<span className="ml-1 text-[12px] text-muted-foreground">({b?.labelled ?? 0})</span></>,
+            after: <>{aud(a?.labelPerOrder, 2)}<span className="ml-1 text-[12px] text-muted-foreground">({a?.labelled ?? 0})</span></>,
+            change: diff(b?.labelPerOrder, a?.labelPerOrder, 'aud'),
+          },
+          {
+            label: 'Gap per order',
+            tip: `Shipping paid minus the ${svc} label, per order, on the same card orders. The number this change exists to move: near zero means the new price covers the express label.`,
+            before: aud(b?.gapPerOrder, 2), after: aud(a?.gapPerOrder, 2),
+            change: diff(b?.gapPerOrder, a?.gapPerOrder, 'aud'),
+            key: true,
+          },
+        ];
+        return (
+          <section className="mt-8">
+            <div className="mb-2 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+              <h3 className="cursor-help text-[13.5px] font-semibold"
+                title={`The rate card changed on ${cutLabel} (Brisbane), read off the orders: the last one charged on the old card and the first on the new. Two windows of equal length either side, independent of the date range above; they grow together up to 28 days.`}>
+                Rate card change
+              </h3>
+              <span className="text-[13px] text-muted-foreground">{cutLabel} · {span} each side</span>
+              <span className="basis-full text-[13px] text-muted-foreground">
+                {rc.labelBefore} <span className="text-foreground/60">→</span> <span className="text-foreground/80">{rc.labelNow}</span>
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] border-collapse">
+                <thead>
+                  <tr>
+                    <th className={th} />
+                    <th className={cn(th, 'cursor-help text-right')} title={rc.labelBefore}>Before</th>
+                    <th className={cn(th, 'cursor-help text-right')} title={rc.labelNow}>After</th>
+                    <th className={cn(th, 'cursor-help border-l border-border/50 pl-4 text-right')} title="After minus before.">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.label} className="hover:bg-muted/40">
+                      <td className={cn(td, 'cursor-help', r.key ? 'font-medium text-foreground' : 'text-foreground/80')} title={r.tip}>{r.label}</td>
+                      <td className={cn(td, 'text-right text-muted-foreground')}>{r.before}</td>
+                      <td className={cn(td, 'text-right', r.key ? 'font-semibold' : '')}>{r.after}</td>
+                      <td className={cn(td, 'border-l border-border/40 pl-4 text-right text-muted-foreground')}>{r.change}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        );
+      })()}
+
       {/* ── order ledger: always on the page, never behind a toggle ─────── */}
       <section className="mt-8">
         <div className="mb-2 flex items-baseline gap-2.5">
@@ -1330,7 +1517,7 @@ function SegmentView({ code, from, to, marketName, refreshKey }: {
               <tr>
                 <th className={cn(th, 'cursor-help')} title="The Shopify order name.">Order</th>
                 <th className={cn(th, 'cursor-help')} title="Tracking number. One click selects it whole, to paste into Starshipit or ZONOS.">Tracking</th>
-                <th className={cn(th, 'cursor-help text-right')} title="What the customer spent on products, in AUD. It decides which shipping rate they got.">Cart subtotal</th>
+                <th className={cn(th, 'cursor-help text-right')} title="What the customer spent on products, in USD - the currency they saw and the one the rate card's limits are written in.">Cart US$</th>
                 <th className={cn(th, 'cursor-help text-right')} title="What the customer paid for shipping, in the currency they were charged.">Customer paid USD</th>
                 <th className={cn(th, 'cursor-help text-right')} title="The same shipping charge, converted to AUD.">Charged A$</th>
                 <th className={cn(th, 'cursor-help border-l border-border/50 pl-4')} title="The service printed on the label. Blank until the label exists.">Service</th>
@@ -1347,7 +1534,7 @@ function SegmentView({ code, from, to, marketName, refreshKey }: {
                   <td className={cn(td, 'select-all text-[12.5px] tracking-[-0.015em] text-muted-foreground')}>
                     {r.tracking ?? <span className="italic text-muted-foreground/70">no tracking yet</span>}
                   </td>
-                  <td className={cn(td, 'text-right text-muted-foreground')}>{money(r.subtotal)}</td>
+                  <td className={cn(td, 'text-right text-muted-foreground')} title={r.card ? `Rate card: ${r.card}` : undefined}>{money(r.cartUsd)}</td>
                   <td className={cn(td, 'text-right text-muted-foreground')}>{money(r.chargedUsd)}</td>
                   <td className={cn(td, 'text-right')}>{money(r.charged)}</td>
                   <td className={cn(td, 'border-l border-border/40 pl-4 text-[13px]')}>
