@@ -16,6 +16,8 @@
 //   POST {}                          → incremental from the updated_at watermark
 //   POST { updatedSince }            → explicit updated_at floor (ISO)
 //   POST { mode:'freeze', boundary } → build shopify.frozen.csv from the manual CSV (<= boundary)
+//   POST { backfill:{ from, to } }   → re-read orders created in [from, to] (no watermark move)
+//   POST { mode:'count_check' }      → orders per month vs Shopify's count (watchdog)
 // Service-role only.
 // =============================================================================
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -73,6 +75,45 @@ Deno.serve(async (req: Request) => {
     store = store.replace(/^https?:\/\//, '').split('/')[0];
     const token = creds.access_token as string;
 
+    // ── Mode: count check (plan Fase 4b, S3) ──────────────────────────────
+    // Orders per month in shopify_sales_lines vs Shopify's own count (every
+    // status, created in the month, Brisbane days) for the previous month and
+    // the current one up to yesterday. Stored in shopify_sales_sync_state.
+    // count_check; the watchdog's "Shopify · orders = Shopify" turns red on any
+    // difference. Daily cron shopify-count-check.
+    if (body?.mode === 'count_check') {
+      const today = new Date(Date.now() + 10 * 3600e3).toISOString().slice(0, 10); // Brisbane, no DST
+      const shiftMonth = (d: string, n: number) => {
+        const [y, m] = d.split('-').map(Number);
+        return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 10);
+      };
+      const dayBefore = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - 86400e3).toISOString().slice(0, 10);
+      const current = `${today.slice(0, 7)}-01`;
+      const months: { month: string; through: string; shopify: number; db: number; diff: number }[] = [];
+      for (const from of [shiftMonth(current, -1), current]) {
+        const next = shiftMonth(from, 1);
+        const to = next < today ? next : today; // exclusive: today is still being written
+        if (to <= from) continue;
+        const last = dayBefore(to);
+        const q = new URLSearchParams({ status: 'any', created_at_min: `${from}T00:00:00+10:00`, created_at_max: `${last}T23:59:59+10:00` });
+        const res = await fetch(`https://${store}/admin/api/2024-01/orders/count.json?${q}`, {
+          headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!res.ok) throw new Error(`Shopify count ${res.status}`);
+        const shopify = Number((await res.json())?.count);
+        if (!Number.isFinite(shopify)) throw new Error('Shopify count: no number in the answer');
+        const { data: dbCount, error } = await supabase.rpc('shopify_orders_count', { p_from: from, p_to: to });
+        if (error) throw new Error(`database count: ${error.message}`);
+        const db = Number(dbCount);
+        months.push({ month: from.slice(0, 7), through: last, shopify, db, diff: db - shopify });
+      }
+      const value = { checkedAt: new Date().toISOString(), months };
+      const { error: stErr } = await supabase.from('shopify_sales_sync_state').update({ count_check: value }).eq('id', 1);
+      if (stErr) throw new Error(`count_check state: ${stErr.message}`);
+      return json({ success: true, mode: 'count_check', ...value });
+    }
+
     // ── Mode: incremental by updated_at, or a historical backfill chunk by created_at ──
     // backfill { from, to } re-pulls a created_at window (e.g. one month) with native
     // amounts so the whole history is on the same market basis — the dashboard then
@@ -91,15 +132,28 @@ Deno.serve(async (req: Request) => {
     let updatedSince: string = body.updatedSince ?? storedWm ?? `${LIVE_BOUNDARY}T00:00:00Z`;
 
     // ── Market FX: month → AUD→USD (currency_exchange_rates holds USD→AUD) ─
+    // A month with no rate yet (the current one until the 1st's 13:00 load)
+    // uses the latest earlier month that has one, and the answer lists it in
+    // fxFallback. Until 27-Oct-2026 it used a fixed 1.54 (plan Fase 4b, S4).
     const { data: rateRows } = await supabase.from('currency_exchange_rates').select('year, month, rate');
+    const rates = (rateRows ?? [])
+      .filter((r: any) => num(r.rate) > 0)
+      .map((r: any) => ({ key: `${r.year}-${String(r.month).padStart(2, '0')}`, rate: num(r.rate) }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+    const fxFallback = new Map<string, string>(); // month → month whose rate it used
     const audToUsd = (yyyymm: string) => {
-      const [y, m] = yyyymm.split('-').map(Number);
-      const row = (rateRows ?? []).find((r: any) => r.year === y && r.month === m);
-      const usdToAud = row ? num(row.rate) : 1.54;
-      return usdToAud ? 1 / usdToAud : 1 / 1.54;
+      const exact = rates.find((r) => r.key === yyyymm);
+      if (exact) return 1 / exact.rate;
+      const prior = [...rates].reverse().find((r) => r.key < yyyymm) ?? rates[rates.length - 1];
+      if (!prior) throw new Error('currency_exchange_rates has no USD→AUD rate: cannot value AUD orders');
+      fxFallback.set(yyyymm, prior.key);
+      return 1 / prior.rate;
     };
     const toUsd = (cur: string, month: string, pres: number, shop: number) =>
       cur === 'USD' ? pres : cur === 'AUD' ? pres * audToUsd(month) : shop;
+
+    // Rows written after this instant (e.g. by the 5-minute cron) are never pruned.
+    const readStarted = new Date().toISOString();
 
     // ── Pull orders by updated_at ─────────────────────────────────────────
     const base = `https://${store}/admin/api/2024-01/orders.json`;
@@ -111,18 +165,19 @@ Deno.serve(async (req: Request) => {
       ? `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'created_at asc', created_at_min: `${dShift(backfill.from, -1)}T00:00:00Z`, created_at_max: `${dShift(backfill.to, 1)}T23:59:59Z` })}`
       : `${base}?${new URLSearchParams({ limit: '250', status: 'any', order: 'updated_at asc', updated_at_min: updatedSince })}`;
 
-    const rows: any[] = [];
-
-    // One row per refund event; written alongside the sales lines below.
-
-    const refundRows: any[] = [];
+    // Rows are collected PER ORDER and only the newest version of each order is
+    // written. A run of more than one page can get the same order twice when
+    // Shopify updates it while we page (e.g. a batch of fulfilments moves it to
+    // a later page); until 27-Oct-2026 both copies went to one upsert, which
+    // failed ("ON CONFLICT DO UPDATE command cannot affect row a second time")
+    // after every order of the run had been deleted (plan Fase 4b, S1).
+    // Each order: sales rows, one row per refund event, and the Web Upgrade
+    // attribution (captured additively without touching the sales pipeline;
+    // Shopify returns properties/note_attributes as arrays of {name, value}).
+    const byOrder = new Map<string, { upd: string; rows: any[]; refunds: any[]; upgrades: any[] }>();
+    let duplicatesInRun = 0;
     // Refund transactions with no amount_set — reported so a silent gap is visible.
     let refundTxSkipped = 0;
-    const orderIds = new Set<string>();
-    // Web Upgrade performance: order-side attribution, captured additively without
-    // touching the sales pipeline. Shopify returns properties/note_attributes as
-    // arrays of {name, value}.
-    const upgradeRows: any[] = [];
     // Robust to both the Admin API array form [{name,value}] and a plain object;
     // never throws, so it can't affect the sales pipeline.
     const propsToObj = (v: any): Record<string, any> => {
@@ -150,7 +205,7 @@ Deno.serve(async (req: Request) => {
         // any past order bumps its updated_at, so it's re-pulled and its row replaced.
         orderCount++;
         const oid = String(o.id);
-        orderIds.add(oid);
+        const oRows: any[] = [], oRefunds: any[] = [], oUpgrades: any[] = [];
         const cur = o.presentment_currency || o.currency || 'USD';
         const month = day.slice(0, 7);
         const country = norm2(o.shipping_address?.country_code ?? o.billing_address?.country_code ?? 'NA');
@@ -164,7 +219,7 @@ Deno.serve(async (req: Request) => {
         for (const li of (o.line_items || [])) {
           const pp = propsToObj(li.properties);
           if (!pp['_pesado_source']) continue;
-          upgradeRows.push({
+          oUpgrades.push({
             order_id: oid, order_date: day, sku: li.sku || '(no sku)', quantity: li.quantity || 0,
             pesado_source: pp['_pesado_source'] ?? null,
             pesado_attribution_id: pp['_pesado_attribution_id'] ?? null,
@@ -256,7 +311,7 @@ Deno.serve(async (req: Request) => {
 
           const rfDay = String(rf.created_at ?? o.created_at ?? '').slice(0, 10);
           if (rf.id && rfDay) {
-            refundRows.push({
+            oRefunds.push({
               order_id: oid, refund_id: String(rf.id),
               order_date: day, refund_date: rfDay, currency: cur,
               refunded_qty: r2(rfQty), goods_usd: r2(rfGoods), tax_usd: r2(rfTax),
@@ -277,7 +332,7 @@ Deno.serve(async (req: Request) => {
         for (const [sku, a] of entries) {
           const net = a.gross - a.disc - a.returns;
           const share = totNet !== 0 ? net / totNet : (entries.length ? 1 / entries.length : 0);
-          rows.push({
+          oRows.push({
             order_id: oid, order_date: day, order_updated_at: o.updated_at ?? null, sku,
             product_title: a.product || null, variant_title: a.variant || null, country, currency: cur,
             quantity: r2(a.qty), gross_usd: r2(a.gross), discounts_usd: r2(a.disc), returns_usd: r2(a.returns),
@@ -285,6 +340,9 @@ Deno.serve(async (req: Request) => {
             net_native: r2(a.native), net_usd_orderrate: r2(a.orderUsd), source: 'api',
           });
         }
+        const prev = byOrder.get(oid);
+        if (prev) duplicatesInRun++;
+        if (!prev || upd >= prev.upd) byOrder.set(oid, { upd, rows: oRows, refunds: oRefunds, upgrades: oUpgrades });
       }
       pages++;
       const link = res.headers.get('Link');
@@ -292,15 +350,31 @@ Deno.serve(async (req: Request) => {
       if (link) { const mm = link.match(/<([^>]+)>;\s*rel="next"/); if (mm) nextUrl = mm[1]; }
     }
 
-    // ── Replace each re-pulled order's rows wholesale (delete-by-order, then insert) ──
-    const ids = [...orderIds];
+    // ── Replace each re-pulled order's rows wholesale: 200 orders per call,
+    //    DELETE + INSERT in one transaction (shopify_lines_replace_orders). A
+    //    failed call keeps that chunk's old rows and the run fails, so the
+    //    watermark does not move and the next run reads them again. ──
+    const ids = [...byOrder.keys()];
+    const rows = [...byOrder.values()].flatMap((v) => v.rows);
+    const refundRows = [...byOrder.values()].flatMap((v) => v.refunds);
+    const upgradeRows = [...byOrder.values()].flatMap((v) => v.upgrades);
     for (let i = 0; i < ids.length; i += 200) {
-      const { error } = await supabase.from('shopify_sales_lines').delete().eq('source', 'api').in('order_id', ids.slice(i, i + 200));
-      if (error) throw new Error(`delete: ${error.message}`); // never advance the watermark on a failed delete
+      const chunk = ids.slice(i, i + 200);
+      const { error } = await supabase.rpc('shopify_lines_replace_orders', {
+        p_order_ids: chunk, p_rows: chunk.flatMap((id) => byOrder.get(id)!.rows),
+      });
+      if (error) throw new Error(`replace: ${error.message}`);
     }
-    for (let i = 0; i < rows.length; i += 500) {
-      const { error } = await supabase.from('shopify_sales_lines').upsert(rows.slice(i, i + 500), { onConflict: 'order_id,sku,country' });
-      if (error) throw new Error(`insert: ${error.message}`);
+
+    // ── A backfill reads a whole window: orders of that window Shopify no
+    //    longer returns were deleted there, and leave the live table (moved to
+    //    backup.shopify_sales_lines_pruned). Only when the read finished; the
+    //    RPC refuses to remove more than 2% of the window. ──
+    let pruned: unknown = null;
+    if (backfill && !capped) {
+      const { data, error } = await supabase.rpc('shopify_lines_prune_window', { p_from: backfill.from, p_to: backfill.to, p_keep: ids, p_read_started: readStarted });
+      if (error) throw new Error(`prune: ${error.message}`);
+      pruned = data;
     }
 
     // ── Refunds — same replace-by-order shape as the sales lines, so a refund
@@ -341,7 +415,7 @@ Deno.serve(async (req: Request) => {
       ...(backfill ? {} : { last_modified_watermark: maxUpdated }),
     });
 
-    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, upgradeAttributed: upgradeRows.length, upgradeErr, refundsCaptured: refundRows.length, refundTxSkipped, refundErr, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
+    return json({ success: !capped, mode: backfill ? 'backfill' : 'incremental', ordersProcessed: orderCount, duplicatesInRun, fxFallback: Object.fromEntries(fxFallback), pruned, skippedFrozen, pages, capped, rowsUpserted: rows.length, ordersReplaced: ids.length, liveRowsTotal: liveRows ?? null, upgradeAttributed: upgradeRows.length, upgradeErr, refundsCaptured: refundRows.length, refundTxSkipped, refundErr, cursorTo: backfill ? `${backfill.from}..${backfill.to}` : maxUpdated });
   } catch (e) {
     // Mark the run failed so shopify-export-csv won't publish a partial CSV.
     try {
