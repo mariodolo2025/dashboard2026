@@ -1,6 +1,29 @@
 # Plan de acción v2 — detalle de cuentas de Xero
 
-Fecha: 27-oct-2026 · Estado: **para aprobación de Mario, nada ejecutado**
+Fecha: 27-oct-2026 · Estado: **aprobado por Mario el 27-oct-2026; en ejecución** (ver §0)
+
+## 0. Estado de ejecución (27-oct-2026)
+
+| Paso | Estado | Evidencia |
+|---|---|---|
+| Fase 0–1 (seguridad, P0 P&L mes por mes) | Hecho | 610b179. Mar y may-2026 = Xero al centavo; MRD `xero_costs` = P&L. |
+| Fase 2–3 (lectura completa, neto de GST, reemplazo por documento, credit notes, cuentas por código, reread, reconcile nocturno) | Hecho | ab3e6a1. Jul–oct, ambas cuentas = P&L (máx −0,01). 11 documentos de la auditoría presentes. AusPost sep = 50.418,35. Corte forzado (`maxPages=1`) → `partial`, la corrida siguiente retomó y terminó. "all" completo: 17 s. MRD: dependencias iguales, `xero_costs` = P&L jul–oct. |
+| P5 vigilante | Hecho | ba28be5. Chequeo "Xero · freight & rates = P&L"; prueba con A$5 de más en agosto + 3 cortes → rojo con ambas razones (revertida). |
+| P6 By Channel sin escalado | **Código listo, sin publicar** | Espera validación visual de Mario (login). Hoy sólo may-2026 tiene diferencia: líneas A$1.862,59 por encima del P&L. |
+| P7 verificación mensual independiente | Hecho | 556f108 + tarea agendada `xero-monthly-verification` (día 2, 08:00). Primera corrida 2-nov. |
+| 4b S1 | Hecho | Ver corrección abajo. Prueba negativa: reemplazo con fila duplicada → error y la orden conserva sus filas. |
+| 4b S2 re-lectura jul-2025 → oct-2026 | Hecho | Órdenes por mes = `ordersCount` de Shopify (todas las órdenes, días Brisbane) en los 16 meses. Recuperadas: jul-25 14, ago-25 39, sep-25 31, oct-25 31, nov-25 35, dic-25 133, ene-26 89, feb-26 90, ago-26 3, sep-26 69, oct-26 16+. |
+| 4b poda (agregado) | Hecho | 4 órdenes **borradas en Shopify** seguían en la base (ago 2, sep 1, oct 1; A$80,70 neto en total): movidas a `backup.shopify_sales_lines_pruned`. Una re-lectura completa de una ventana poda sólo lo que Shopify ya no devuelve, escrito antes de la lectura, y como máximo 2% de la ventana. |
+| 4b S3 cuadre diario | Hecho | Cron `shopify-count-check` 06:40 Brisbane + chequeo "Shopify · orders = Shopify". Prueba: una orden menos → rojo (revertida). |
+| 4b S4 tipo de cambio | Hecho | Vista y función usan la última tasa cargada; el card avisa "no USD→AUD rate for this month yet". Vista: mismas columnas, 36 ms vs 33 ms en un mes, dependencias MRD iguales. |
+
+**Corrección a S1.** La causa no son "dos líneas del mismo SKU" en una orden: dentro de una
+orden las filas ya se agrupaban por SKU. Es **la misma orden dos veces en una corrida** de más de
+una página, cuando Shopify la actualiza mientras se pagina (p. ej. un lote de despachos). Error
+real visto el 26-oct 23:30 UTC en el cron rápido. Sumar las dos copias, como decía este plan,
+habría duplicado montos; se guarda la versión más nueva de cada orden. El cron rápido (cada 5 min,
+ventana de 2 h) explica por qué lo perdido no volvía: la próxima corrida buena ya no veía órdenes
+cuyo último cambio había salido de la ventana.
 Reemplaza a `PLAN-XERO-DETAIL-SYNC-2026-10-27.md` (v1). Incorpora completa la auditoría externa
 `AUDIT-XERO-SYNC-2026-10-27.md`. Donde la v1 y la auditoría difieren, manda la auditoría.
 
