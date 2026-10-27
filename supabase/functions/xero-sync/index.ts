@@ -20,6 +20,7 @@
 // =============================================================================
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { getXeroAccessToken } from '../_shared/doloXeroToken.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -27,7 +28,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
 };
 
-const TOKEN_URL = 'https://identity.xero.com/connect/token';
 const API_BASE = 'https://api.xero.com/api.xro/2.0';
 
 /** Accounts whose transaction lines we persist for breakdown rules. */
@@ -51,47 +51,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 async function getAccessToken(supabase: any): Promise<{ accessToken: string; tenantId: string }> {
-  const clientId = Deno.env.get('XERO_CLIENT_ID')!;
-  const clientSecret = Deno.env.get('XERO_CLIENT_SECRET')!;
-
-  const { data: row, error } = await supabase
-    .from('xero_oauth_tokens')
-    .select('*')
-    .eq('id', 1)
-    .maybeSingle();
-  if (error || !row) {
-    throw new Error('Xero is not connected yet — run the xero-oauth flow first.');
-  }
-
-  const basic = btoa(`${clientId}:${clientSecret}`);
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${basic}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: row.refresh_token,
-    }),
-  });
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Xero token refresh failed (HTTP ${res.status}): ${detail.slice(0, 200)}`);
-  }
-  const tokens = await res.json();
-
-  // Rotating refresh token: persist the new one IMMEDIATELY.
-  const { error: upErr } = await supabase
-    .from('xero_oauth_tokens')
-    .update({ refresh_token: tokens.refresh_token, updated_at: new Date().toISOString() })
-    .eq('id', 1);
-  if (upErr) {
-    // If this fails we'd lose the session on next run — surface loudly.
-    throw new Error(`CRITICAL: could not persist rotated refresh token: ${upErr.message}`);
-  }
-
-  return { accessToken: tokens.access_token, tenantId: row.tenant_id };
+  return getXeroAccessToken(supabase);
 }
 
 async function xeroGet(path: string, accessToken: string, tenantId: string, extraHeaders: Record<string, string> = {}, attempt = 0): Promise<any> {
@@ -151,93 +111,32 @@ function parseHeaderCell(title: string): { year: number; month: number } | null 
   return { year, month };
 }
 
-async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: string): Promise<{ rows: number; windowErrors: string[] }> {
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+// P&L month by month (docs/PLAN-XERO-DETAIL-SYNC-2026-10-27-v2.md, P0).
+//
+// Until 27-Oct-2026 this asked for ONE report ending at the end of the current
+// month with periods=11. Xero builds the earlier columns on the same day of the
+// month as toDate, so when the current month had 30 days every 31st elsewhere
+// was cut off (seen 28-Sep: xero_pl_monthly off exactly in the 31-day months).
+// Now: one single-period report per month, 1st to last day, from the start of
+// the closed fiscal year to the current month (~16 calls). Each response must
+// say it is that month, or the step fails. Each month is replaced whole in one
+// transaction (xero_pl_replace_month), so an account Xero omits because it is
+// zero that month does not keep a stale amount. The MRD reads xero_pl_monthly:
+// same table, same columns.
+async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: string): Promise<{ months: number; rows: number; failed: string[] }> {
+  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const now = new Date();
-
-  const collect = (rep: any, upserts: any[]) => {
-    const headerRow = rep.Rows?.find((r: any) => r.RowType === 'Header');
-    const periods: ({ year: number; month: number } | null)[] = (headerRow?.Cells ?? [])
-      .map((c: any) => parseHeaderCell(String(c?.Value ?? '')));
-    const walk = (rows: any[], section: string) => {
-      for (const row of rows ?? []) {
-        if (row.RowType === 'Section') {
-          walk(row.Rows, String(row.Title ?? section ?? '').trim());
-          continue;
-        }
-        if (row.RowType !== 'Row') continue; // skip SummaryRow (totals)
-        const cells = row.Cells ?? [];
-        const accountName = String(cells[0]?.Value ?? '').trim();
-        if (!accountName) continue;
-        for (let i = 1; i < cells.length; i++) {
-          const period = periods[i];
-          if (!period) continue;
-          const amount = parseFloat(String(cells[i]?.Value ?? '0')) || 0;
-          upserts.push({
-            account_name: accountName,
-            year: period.year,
-            month: period.month,
-            amount,
-            section: section || null,
-            synced_at: new Date().toISOString(),
-          });
-        }
-      }
-    };
-    walk(rep.Rows, '');
-  };
-
-  // Single-period report (one value column): assign every account row to a
-  // KNOWN (year, month) instead of parsing the header.
-  const collectSingleMonth = (rep: any, year: number, month: number, out: any[]) => {
-    const walk = (rows: any[], section: string) => {
-      for (const row of rows ?? []) {
-        if (row.RowType === 'Section') {
-          walk(row.Rows, String(row.Title ?? section ?? '').trim());
-          continue;
-        }
-        if (row.RowType !== 'Row') continue;
-        const cells = row.Cells ?? [];
-        const accountName = String(cells[0]?.Value ?? '').trim();
-        if (!accountName) continue;
-        const amount = parseFloat(String(cells[cells.length - 1]?.Value ?? '0')) || 0;
-        out.push({ account_name: accountName, year, month, amount, section: section || null, synced_at: new Date().toISOString() });
-      }
-    };
-    walk(rep.Rows, '');
-  };
-
-  // Xero caps monthly P&L at 11 periods (12 columns), and rejects a past
-  // toDate with periods ("fromDate must be before toDate"). So:
-  //  A) rolling 12 months ending this month (toDate + periods=11), then
-  //  B) fetch each still-missing month of the closed FY as a single-period
-  //     report (fromDate..toDate for that one month), which is accepted.
-  const upserts: any[] = [];
-  const windowErrors: string[] = [];
-  const toDate = new Date(now.getFullYear(), now.getMonth() + 1, 0); // end of this month
-
-  const reportA = await xeroGet(
-    `Reports/ProfitAndLoss?toDate=${fmt(toDate)}&periods=11&timeframe=MONTH&standardLayout=true`,
-    accessToken,
-    tenantId,
-  );
-  const repA = reportA?.Reports?.[0];
-  if (!repA) throw new Error('Unexpected P&L response shape');
-  collect(repA, upserts);
-  const have = new Set(upserts.map((u) => `${u.year}-${u.month}`));
-
-  // CLOSED fiscal year (the one that ended most recently): 1 Jul .. 30 Jun.
-  // now = Jul 2026 → current FY start 2026 → closed FY start 2025. Fetch any of
-  // its months window A didn't cover — normally just July of that year.
+  // From 1 July of the closed fiscal year (Jul 2025 while now is Jul 2026 - Jun 2027).
   const currentFYStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
-  const closedFYStartYear = currentFYStartYear - 1;
-  const nowKey = now.getFullYear() * 12 + now.getMonth();
-  for (let k = 0; k < 12; k++) {
-    const mIdx = 6 + k; // 6=Jul(0-idx) ... 17=Jun of the next year
-    const year = closedFYStartYear + Math.floor(mIdx / 12);
-    const month = (mIdx % 12) + 1;
-    if (year * 12 + (month - 1) > nowKey) continue; // never fetch future months
-    if (have.has(`${year}-${month}`)) continue;
+  const first = new Date(currentFYStartYear - 1, 6, 1);
+  const months: { year: number; month: number }[] = [];
+  for (let d = new Date(first); d <= now; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+    months.push({ year: d.getFullYear(), month: d.getMonth() + 1 });
+  }
+
+  const failed: string[] = [];
+  let rowsTotal = 0;
+  for (const { year, month } of months) {
     const from = new Date(year, month - 1, 1);
     const to = new Date(year, month, 0);
     try {
@@ -246,20 +145,45 @@ async function syncProfitAndLoss(supabase: any, accessToken: string, tenantId: s
         accessToken,
         tenantId,
       ))?.Reports?.[0];
-      if (rep) collectSingleMonth(rep, year, month, upserts);
+      if (!rep) throw new Error('no report in the response');
+      // The value column's header must be this month (e.g. "31 Oct 26").
+      const headerRow = rep.Rows?.find((r: any) => r.RowType === 'Header');
+      const cells = headerRow?.Cells ?? [];
+      const period = parseHeaderCell(String(cells[cells.length - 1]?.Value ?? ''));
+      if (!period || period.year !== year || period.month !== month) {
+        throw new Error(`report is for ${period ? `${period.year}-${period.month}` : 'an unknown period'}, not ${year}-${month}`);
+      }
+      // One row per account; a name twice in one month is summed, not overwritten.
+      const byAccount = new Map<string, { account_name: string; year: number; month: number; amount: number; section: string | null; synced_at: string }>();
+      const stamp = new Date().toISOString();
+      const walk = (rows: any[], section: string) => {
+        for (const row of rows ?? []) {
+          if (row.RowType === 'Section') { walk(row.Rows, String(row.Title ?? section ?? '').trim()); continue; }
+          if (row.RowType !== 'Row') continue; // skip SummaryRow (totals)
+          const c = row.Cells ?? [];
+          const accountName = String(c[0]?.Value ?? '').trim();
+          if (!accountName) continue;
+          const amount = parseFloat(String(c[c.length - 1]?.Value ?? '0')) || 0;
+          const cur = byAccount.get(accountName);
+          if (cur) cur.amount += amount;
+          else byAccount.set(accountName, { account_name: accountName, year, month, amount, section: section || null, synced_at: stamp });
+        }
+      };
+      walk(rep.Rows, '');
+      const rows = [...byAccount.values()].map((r) => ({ ...r, amount: Math.round(r.amount * 100) / 100 }));
+      const { error } = await supabase.rpc('xero_pl_replace_month', { p_year: year, p_month: month, p_rows: rows });
+      if (error) throw new Error(`replace: ${error.message}`);
+      rowsTotal += rows.length;
     } catch (e) {
-      windowErrors.push(`${year}-${month}: ${e instanceof Error ? e.message : e}`);
+      failed.push(`${year}-${month}: ${e instanceof Error ? e.message : e}`);
     }
   }
-  if (windowErrors.length) console.warn('P&L single-month errors:', windowErrors.join(' | '));
-
-  for (let i = 0; i < upserts.length; i += 500) {
-    const { error } = await supabase
-      .from('xero_pl_monthly')
-      .upsert(upserts.slice(i, i + 500), { onConflict: 'account_name,year,month' });
-    if (error) throw new Error(`xero_pl_monthly upsert failed: ${error.message}`);
+  if (failed.length) {
+    // Loud: the months that worked are stored; the step still fails so the
+    // run is red and nobody reads a P&L with holes as if it were whole.
+    throw new Error(`P&L: ${failed.length} of ${months.length} months failed — ${failed.join(' | ')}`);
   }
-  return { rows: upserts.length, windowErrors };
+  return { months: months.length, rows: rowsTotal, failed };
 }
 
 // ─── Step: BankTransactions (watched accounts only, If-Modified-Since) ──────

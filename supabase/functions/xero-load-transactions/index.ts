@@ -141,14 +141,22 @@ Deno.serve(async (req: Request) => {
       delete l._key;
     }
 
-    // Full replace for the accounts present in the file.
+    // Replace ONLY what this file owns: rows with source 'csv', of each account
+    // in the file, inside the file's own date range for that account. Until
+    // 27-Oct-2026 this deleted the whole account, API rows included, and the
+    // API rows could never come back (their watermark had already passed) —
+    // docs/AUDIT-XERO-SYNC-2026-10-27.md, finding I. The delete and the insert
+    // run in one transaction (xero_lines_replace_range): a failure leaves the
+    // old rows. Same table, never recreated: the MRD reads it.
+    const replaced: Record<string, unknown> = {};
     for (const acct of accountsFound) {
-      const { error } = await supabase.from('xero_account_lines').delete().eq('account_name', acct);
-      if (error) return json({ success: false, message: `delete ${acct}: ${error.message}` }, 500);
-    }
-    for (let i = 0; i < lines.length; i += 500) {
-      const { error } = await supabase.from('xero_account_lines').upsert(lines.slice(i, i + 500), { onConflict: 'journal_line_id' });
-      if (error) return json({ success: false, message: `insert: ${error.message}` }, 500);
+      const mine = lines.filter((l) => l.account_name === acct);
+      const dates = mine.map((l) => l.journal_date as string).sort();
+      const { data, error } = await supabase.rpc('xero_lines_replace_range', {
+        p_accounts: [acct], p_from: dates[0], p_to: dates[dates.length - 1], p_sources: ['csv'], p_rows: mine,
+      });
+      if (error) return json({ success: false, message: `replace ${acct}: ${error.message}` }, 500);
+      replaced[acct] = { from: dates[0], to: dates[dates.length - 1], ...(data as object) };
     }
 
     const byAccount: Record<string, { count: number; total: number }> = {};
@@ -157,7 +165,7 @@ Deno.serve(async (req: Request) => {
       b.count++; b.total += l.net_amount; byAccount[l.account_name] = b;
     }
 
-    return json({ success: true, file, accounts: [...accountsFound], inserted: lines.length, byAccount });
+    return json({ success: true, file, accounts: [...accountsFound], inserted: lines.length, byAccount, replaced });
   } catch (e) {
     return json({ success: false, message: e instanceof Error ? e.message : 'Unknown error' }, 500);
   }
