@@ -9,7 +9,7 @@ Fecha: 27-oct-2026 · Estado: **aprobado por Mario el 27-oct-2026; en ejecución
 | Fase 0–1 (seguridad, P0 P&L mes por mes) | Hecho | 610b179. Mar y may-2026 = Xero al centavo; MRD `xero_costs` = P&L. |
 | Fase 2–3 (lectura completa, neto de GST, reemplazo por documento, credit notes, cuentas por código, reread, reconcile nocturno) | Hecho | ab3e6a1. Jul–oct, ambas cuentas = P&L (máx −0,01). 11 documentos de la auditoría presentes. AusPost sep = 50.418,35. Corte forzado (`maxPages=1`) → `partial`, la corrida siguiente retomó y terminó. "all" completo: 17 s. MRD: dependencias iguales, `xero_costs` = P&L jul–oct. |
 | P5 vigilante | Hecho | ba28be5. Chequeo "Xero · freight & rates = P&L"; prueba con A$5 de más en agosto + 3 cortes → rojo con ambas razones (revertida). |
-| P6 By Channel sin escalado | **Código listo, sin publicar** | Espera validación visual de Mario (login). Hoy sólo may-2026 tiene diferencia: líneas A$1.862,59 por encima del P&L. |
+| P6 By Channel sin escalado | **Live (8124d20)** | Función de costos desplegada primero; pantalla publicada tras el OK visual de Mario (27-oct). Mayo-2026: Over-captured −A$1.862,59; ago-2026: Unreconciled A$0,01. |
 | P7 verificación mensual independiente | Hecho | 556f108 + tarea agendada `xero-monthly-verification` (día 2, 08:00). Primera corrida 2-nov. |
 | 4b S1 | Hecho | Ver corrección abajo. Prueba negativa: reemplazo con fila duplicada → error y la orden conserva sus filas. |
 | 4b S2 re-lectura jul-2025 → oct-2026 | Hecho | Órdenes por mes = `ordersCount` de Shopify (todas las órdenes, días Brisbane) en los 16 meses. Recuperadas: jul-25 14, ago-25 39, sep-25 31, oct-25 31, nov-25 35, dic-25 133, ene-26 89, feb-26 90, ago-26 3, sep-26 69, oct-26 16+. |
