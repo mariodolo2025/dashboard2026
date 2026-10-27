@@ -41,12 +41,12 @@ const COMMON_EXCLUDED: Record<string, boolean> = {
   'Stock purchased': true,
   // Plain 'Rates & Taxes' only exists in xlsx-fallback mode; the live API path
   // splits it into virtual accounts (see parse-xero-costs SPLIT_RULES). The
-  // remittances/review/unclassified parts are never operating costs; the
-  // Property & Compliance part is assigned per profile below.
+  // remittances/review parts are never operating costs; the Property &
+  // Compliance part is assigned per profile below. The "— Unreconciled" /
+  // "— Over-captured" rows cannot be excluded (costsCalculator.ts, P6).
   'Rates & Taxes': true,
   'Rates & Taxes — Tax remittances': true,
   'Rates & Taxes — Review': true,
-  'Rates & Taxes — Unclassified': true,
   'Unrealised Currency Gains': true,
   'Realised Currency Gains': true,
   'Bank Revaluations': true,
@@ -70,7 +70,6 @@ const FREIGHT_VARIABLE: Record<string, number> = {
   'Freight & Courier — Outbound — B2B': 100,
   'Freight & Courier — Outbound — B2C USA': 0,
   'Freight & Courier — Review': 25,
-  'Freight & Courier — Unclassified': 25,
 };
 const FREIGHT_ACCOUNTS = Object.keys(FREIGHT_VARIABLE);
 

@@ -37,6 +37,9 @@ import {
   saveCostsConfig,
   saveCostsConfigToSupabase,
   CostsConfig,
+  isReconciliationRow,
+  reconciliationPlacement,
+  reconciliationRowTitle,
 } from '@/lib/costsCalculator';
 import {
   fetchCostProfiles,
@@ -260,7 +263,7 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
       const config = loadCostsConfig();
       const excludedMap = new Map<string, ExcludedItem>();
       Object.keys(config.excluded).forEach((itemName) => {
-        if (config.excluded[itemName]) {
+        if (config.excluded[itemName] && !isReconciliationRow(itemName)) {
           const matchingItem = data.items.find(i => i.name === itemName);
           if (matchingItem) {
             excludedMap.set(itemName, {
@@ -279,15 +282,19 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
       });
 
       const itemsWithBoard: CostItemWithBoard[] = data.items
-        .filter((item) => !config.excluded[item.name])
-        .map((item) => ({
-          ...item,
-          board: assignments[item.name] || 'pool',
-          sliderValue: sliders[item.name] !== undefined ? sliders[item.name] : 50,
-          adjustmentPercent: adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
-          notes: notes[item.name] || '',
-          id: item.name,
-        }));
+        .filter((item) => isReconciliationRow(item.name) || !config.excluded[item.name])
+        .map((item) => {
+          // Reconciliation rows: always counted (costsCalculator.ts, P6).
+          const rec = isReconciliationRow(item.name) ? reconciliationPlacement(item.name, assignments, sliders) : null;
+          return {
+            ...item,
+            board: rec ? rec.board : assignments[item.name] || 'pool',
+            sliderValue: rec ? rec.slider : sliders[item.name] !== undefined ? sliders[item.name] : 50,
+            adjustmentPercent: rec ? 100 : adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
+            notes: notes[item.name] || '',
+            id: item.name,
+          };
+        });
 
       setExcludedItems(excludedMap);
       setItems(itemsWithBoard);
@@ -383,15 +390,16 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
     const excludedMap = new Map<string, ExcludedItem>();
     const nextItems: CostItemWithBoard[] = [];
     xeroData.items.forEach((item) => {
+      const rec = isReconciliationRow(item.name) ? reconciliationPlacement(item.name, config.boards, config.sliders) : null;
       const withBoard: CostItemWithBoard = {
         ...item,
-        board: config.boards[item.name] || 'pool',
-        sliderValue: config.sliders[item.name] !== undefined ? config.sliders[item.name] : 50,
-        adjustmentPercent: adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
+        board: rec ? rec.board : config.boards[item.name] || 'pool',
+        sliderValue: rec ? rec.slider : config.sliders[item.name] !== undefined ? config.sliders[item.name] : 50,
+        adjustmentPercent: rec ? 100 : adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
         notes: notes[item.name] || '',
         id: item.name,
       };
-      if (config.excluded[item.name]) {
+      if (config.excluded[item.name] && !rec) {
         excludedMap.set(item.name, { item: withBoard, originalBoard: withBoard.board });
       } else {
         nextItems.push(withBoard);
@@ -483,10 +491,12 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
     // universe of accounts (everything currently visible: columns + trash).
     // Each account maps to [state, slider], where state is its board, 'pool',
     // or 'excluded'. Comparing sorted signatures is robust to key order.
+    // Reconciliation rows are counted whatever the profile says, so they are
+    // not part of a profile's identity (same rule as By Channel).
     const universe = new Set<string>([
       ...items.map((i) => i.name),
       ...Array.from(excludedItems.keys()),
-    ]);
+    ].filter((n) => !isReconciliationRow(n)));
 
     const canvasSig = Array.from(universe).sort().map((name) => {
       const state = cfg.excluded[name] ? 'excluded' : (cfg.boards[name] ?? 'pool');
@@ -551,6 +561,9 @@ function CostsCanvas({ dateRange, setDateRange }: { dateRange: DateRange; setDat
 
     const itemId = active.id as string;
     const targetBoard = over.id as string;
+
+    // A reconciliation row can change board but never leave the numbers.
+    if (isReconciliationRow(itemId) && (targetBoard === 'trash' || targetBoard === 'pool')) return;
 
     if (targetBoard === 'trash') {
       const itemToRemove = items.find((item) => item.id === itemId);
@@ -1115,7 +1128,12 @@ function ItemCard({
       <div className="space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2 flex-1">
-            <h4 className="font-medium text-sm leading-tight">{item.name}</h4>
+            <h4
+              className={cn('font-medium text-sm leading-tight', isReconciliationRow(item.name) && 'cursor-help underline decoration-dotted')}
+              title={isReconciliationRow(item.name) ? reconciliationRowTitle(item.name) : undefined}
+            >
+              {item.name}
+            </h4>
             {isComputed && (
               <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700" title="Computed from a transaction-level split">
                 split

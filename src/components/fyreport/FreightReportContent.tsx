@@ -1,7 +1,7 @@
 // =============================================================================
 // Freight by Category report — Xero Freight & Courier split into virtual
 // accounts (Inbound Container / Inbound DHL / Outbound B2C AU / Outbound B2B /
-// Outbound US / Subscription / Review / Unclassified), reconciled to the P&L.
+// Outbound US / Subscription / Review / Unreconciled / Over-captured), reconciled to the P&L.
 //
 // Rolling 12 months from the live Xero API tables (parse-xero-costs). Market-
 // level split (AU vs US) needs the Starshipit connector — noted in-report.
@@ -44,7 +44,13 @@ const REALLOCATED = new Set(['Outbound — B2C AU', 'Outbound — B2C USA']);
 
 // Not a useful spend channel — hidden from the summary cards + pie (still in the
 // table/chart for reconciliation).
-const HIDDEN_FROM_SUMMARY = new Set(['Review', 'Unclassified']);
+const HIDDEN_FROM_SUMMARY = new Set(['Review', 'Unclassified', 'Unreconciled', 'Over-captured']);
+
+// The P&L remainder rows have no transaction lines behind them, so no drill-down.
+// 'Unclassified' is the name used until 27-Oct-2026 (still in older FY snapshots);
+// since then 'Unreconciled' (P&L spend no line explains) and 'Over-captured'
+// (negative: lines above the P&L) — parse-xero-costs, plan P6.
+const REMAINDER = new Set(['Unclassified', 'Unreconciled', 'Over-captured']);
 
 const fmtAUD2 = (v: number) => `$${v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -65,6 +71,8 @@ const CATEGORY_ORDER = [
   'Outbound — B2C USA',
   'Review',
   'Unclassified',
+  'Unreconciled',
+  'Over-captured',
 ];
 const COLORS: Record<string, string> = {
   'Inbound — Container': '#0ea5e9',
@@ -75,6 +83,8 @@ const COLORS: Record<string, string> = {
   'Outbound — B2C USA': '#f59e0b',
   'Review': '#94a3b8',
   'Unclassified': '#cbd5e1',
+  'Unreconciled': '#cbd5e1',
+  'Over-captured': '#fca5a5',
 };
 
 const fmtAUD = (v: number) => `$${Math.round(v).toLocaleString('en-AU')}`;
@@ -92,8 +102,7 @@ export function FreightReportContent() {
   const [detailSearch, setDetailSearch] = useState('');
 
   const openDetail = (bucket: string, m?: MonthMeta) => {
-    // Unclassified has no transaction lines (it's the P&L remainder), so skip.
-    if (bucket === 'Unclassified') return;
+    if (REMAINDER.has(bucket)) return;
     setDetailBucket(bucket);
     setDetailMonthLabel(m ? m.label : null);
     setDetail(null);
@@ -141,7 +150,7 @@ export function FreightReportContent() {
 
   const grandTotal = categories.reduce((s, c) => s + c.total, 0);
 
-  // The cards + pie show only the useful channels; Review and Unclassified are
+  // The cards + pie show only the useful channels; Review and the remainder rows are
   // kept out (they aren't a spend category worth surfacing), but stay in the
   // table + monthly chart so the grand total still reconciles to the P&L.
   const mainCategories = categories.filter((c) => !HIDDEN_FROM_SUMMARY.has(c.name));
@@ -201,7 +210,8 @@ export function FreightReportContent() {
                     <li><b>Outbound — B2B</b>: One Freight, Star Track, Interparcel, TFM, Regional Express, Interflow.</li>
                     <li><b>Outbound — B2C USA</b>: UPS, ZONOS (US import taxes we pay to ship there), Hoon Choi (US returns/replacements).</li>
                     <li><b>Review</b>: not tied to a channel — e.g. Mavam LLC (freight of a trade-show stand to Belgium).</li>
-                    <li><b>Unclassified</b>: a month's P&amp;L total not covered by uploaded lines (e.g. the current month before you re-export).</li>
+                    <li><b>Unreconciled</b>: P&amp;L spend for the month that no transaction line explains (shown as <b>Unclassified</b> in reports frozen before 27 Oct 2026).</li>
+                    <li><b>Over-captured</b>: negative — the lines add up to more than the P&amp;L for the month; it brings the total back to the P&amp;L.</li>
                   </ul>
                   <p className="mt-1 text-xs text-muted-foreground">The Starshipit software subscription is booked in this account but excluded from the freight view (it isn't shipping).</p>
                 </div>
@@ -263,7 +273,7 @@ export function FreightReportContent() {
                     <p className="mt-1 text-3xl font-bold tabular-nums text-[#0f1115]">{fmtAUD(grandTotal)}</p>
                     <p className="mt-1 text-[11px] text-muted-foreground">
                       reconciled to the Xero P&amp;L · 6 channels shown below
-                      {hiddenTotal > 0 && <> · Review + Unclassified {fmtAUD(hiddenTotal)} excluded</>}
+                      {Math.abs(hiddenTotal) >= 0.5 && <> · Review + P&amp;L remainder {fmtAUD(hiddenTotal)} excluded</>}
                     </p>
                   </CardContent>
                 </Card>
@@ -298,7 +308,7 @@ export function FreightReportContent() {
               {/* KPI cards */}
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
                 {mainCategories.map((c) => {
-                  const clickable = c.name !== 'Unclassified';
+                  const clickable = !REMAINDER.has(c.name);
                   return (
                     <Card
                       key={c.name}
@@ -370,7 +380,7 @@ export function FreightReportContent() {
                       {categories.map((c) => (
                         <tr
                           key={c.name}
-                          className={cn('border-b last:border-0', c.name !== 'Unclassified' && 'cursor-pointer hover:bg-[#faf9f7]')}
+                          className={cn('border-b last:border-0', !REMAINDER.has(c.name) && 'cursor-pointer hover:bg-[#faf9f7]')}
                           onClick={() => openDetail(c.name)}
                         >
                           <td className="px-2 py-1.5">
@@ -384,9 +394,9 @@ export function FreightReportContent() {
                               key={i}
                               className={cn(
                                 'px-2 py-1.5 text-right tabular-nums text-muted-foreground',
-                                v && c.name !== 'Unclassified' && 'cursor-pointer hover:bg-blue-50 hover:text-blue-700',
+                                v && !REMAINDER.has(c.name) && 'cursor-pointer hover:bg-blue-50 hover:text-blue-700',
                               )}
-                              onClick={(e) => { if (v && c.name !== 'Unclassified') { e.stopPropagation(); openDetail(c.name, months[i]); } }}
+                              onClick={(e) => { if (v && !REMAINDER.has(c.name)) { e.stopPropagation(); openDetail(c.name, months[i]); } }}
                             >
                               {v ? fmtAUD(v) : '·'}
                             </td>

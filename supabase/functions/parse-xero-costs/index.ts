@@ -272,21 +272,19 @@ async function loadFromDatabase(supabase: any): Promise<CostsResponse | null> {
       coveredByLines[idx] += amt;
     }
 
-    // Reconcile each month to the authoritative P&L total.
+    // Reconcile each month to the authoritative P&L total, never by scaling
+    // (docs/PLAN-XERO-DETAIL-SYNC-2026-10-27-v2.md, P6). Until 27-Oct-2026 a
+    // month whose lines over-counted the P&L was scaled down inside every
+    // bucket, which hid the gap. Now the difference is its own row:
+    // "Unreconciled" (P&L spend no line explains; always present, usually 0)
+    // and "Over-captured" (negative: lines above the P&L). Buckets + these
+    // rows = P&L. The canvas and By Channel count both whatever the profile
+    // says (src/lib/costsCalculator.ts). This replaces "Unclassified".
+    const unreconciled = ensure('Unreconciled');
     for (let i = 0; i < months.length; i++) {
-      const covered = coveredByLines[i];
-      const pl = plMonthly[i];
-      if (covered > pl + 0.01) {
-        // Lines over-count the P&L (GST-inclusive amounts, or an expense
-        // booked as both a bill and a direct payment). Scale the buckets down
-        // proportionally so they sum exactly to the P&L for the month.
-        const factor = covered > 0 ? pl / covered : 0;
-        for (const monthly of buckets.values()) monthly[i] *= factor;
-      } else if (pl - covered > 0.01) {
-        // Lines under-count: the gap is spend not captured by transaction
-        // lines (e.g. accountant manual journals). Surface it, never estimate.
-        ensure('Unclassified')[i] += pl - covered;
-      }
+      const gap = Math.round((plMonthly[i] - coveredByLines[i]) * 100) / 100;
+      if (gap > 0) unreconciled[i] += gap;
+      else if (gap < 0) ensure('Over-captured')[i] += gap;
     }
 
     byAccount.delete(account);

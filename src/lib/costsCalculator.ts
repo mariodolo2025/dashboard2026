@@ -40,6 +40,41 @@ export interface DateRange {
   to?: Date;
 }
 
+// ─── Reconciliation rows (plan P6, 27-Oct-2026) ─────────────────────────────
+// parse-xero-costs splits Freight & Courier and Rates & Taxes into buckets from
+// their transaction lines. What the lines do not explain is its own row:
+// "<account> — Unreconciled" (P&L spend no line covers) and "<account> —
+// Over-captured" (negative: lines above the P&L). Until 27-Oct an over-count
+// was scaled away inside every bucket. No profile can exclude these rows or
+// leave them in the Pool: a gap stays in the numbers until the lines are fixed.
+// They count on the board the profile gives them; with none (or Pool), on the
+// board and B2B slider of the same account's "— Review" row, else Fixed.
+
+export const isReconciliationRow = (name: string) => / — (Unreconciled|Over-captured)$/.test(name);
+
+export const reconciliationRowTitle = (name: string) => {
+  const account = name.replace(/ — (Unreconciled|Over-captured)$/, '');
+  return name.endsWith('Over-captured')
+    ? `${account}: the transaction lines add up to MORE than the Xero P&L for the month; this negative amount brings the total back to the P&L. ` +
+      'Source: xero_account_lines vs xero_pl_monthly, AUD ex-GST, per month. Cannot be excluded by a profile.'
+    : `${account}: P&L spend for the month that no transaction line explains (lines missing or not yet synced). ` +
+      'Source: xero_pl_monthly minus xero_account_lines, AUD ex-GST, per month. Cannot be excluded by a profile.';
+};
+
+export function reconciliationPlacement(
+  name: string,
+  boards: CostsConfig['boards'],
+  sliders: CostsConfig['sliders'],
+): { board: 'fixed' | 'variable' | 'andrea'; slider: number } {
+  const own = boards[name];
+  const review = `${name.replace(/ — (Unreconciled|Over-captured)$/, '')} — Review`;
+  const board = own && own !== 'pool' ? own
+    : boards[review] && boards[review] !== 'pool' ? boards[review] as 'fixed' | 'variable' | 'andrea'
+    : 'fixed';
+  const slider = sliders[name] ?? sliders[review] ?? 50;
+  return { board, slider };
+}
+
 export interface BoardTotals {
   b2c: number;
   b2b: number;
@@ -347,16 +382,22 @@ export const computeCostsSnapshot = (
     const excludedSet = new Set(Object.keys(config.excluded));
 
     const itemsWithBoard: CostItemWithBoard[] = xeroData.items
-      .filter((item) => !excludedSet.has(item.name))
-      .map((item) => ({
-        ...item,
-        // Unknown accounts (e.g. new in Xero, not yet classified in any
-        // profile) land in the Pool — visible but NOT counted — instead of
-        // silently inflating fixed costs.
-        board: assignments[item.name] || 'pool',
-        sliderValue: sliders[item.name] !== undefined ? sliders[item.name] : 50,
-        adjustmentPercent: adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
-      }));
+      .filter((item) => isReconciliationRow(item.name) || !excludedSet.has(item.name))
+      .map((item) => {
+        if (isReconciliationRow(item.name)) {
+          const { board, slider } = reconciliationPlacement(item.name, assignments, sliders);
+          return { ...item, board, sliderValue: slider, adjustmentPercent: 100 };
+        }
+        return {
+          ...item,
+          // Unknown accounts (e.g. new in Xero, not yet classified in any
+          // profile) land in the Pool — visible but NOT counted — instead of
+          // silently inflating fixed costs.
+          board: assignments[item.name] || 'pool',
+          sliderValue: sliders[item.name] !== undefined ? sliders[item.name] : 50,
+          adjustmentPercent: adjustments[item.name] !== undefined ? adjustments[item.name] : 100,
+        };
+      });
 
     const totals: CostsSnapshot['totals'] = {
       fixed: { b2c: 0, b2b: 0 },

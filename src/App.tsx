@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { cn, downloadCSV, CSVColumn } from '@/lib/utils';
 import { signOut } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
-import { XeroData, computeCostsSnapshot, calculateItemAmount, loadCostsConfigFromSupabase, saveCostsConfig, loadCostsConfig, saveCostsConfigToSupabase } from '@/lib/costsCalculator';
+import { XeroData, computeCostsSnapshot, calculateItemAmount, loadCostsConfigFromSupabase, saveCostsConfig, loadCostsConfig, saveCostsConfigToSupabase, isReconciliationRow, reconciliationRowTitle } from '@/lib/costsCalculator';
 import { CostsSnapshot } from '@/lib/utils';
 import { fetchCostProfiles, profileToConfig, type CostProfile } from '@/lib/costsProfiles';
 // Every module below opens from a pill or a button — none is needed for first
@@ -1099,7 +1099,9 @@ function App() {
     if (!xeroData || costProfiles.length === 0) return null;
     const cfg = loadCostsConfig();
     if (!cfg) return null;
-    const names = xeroData.items.map((i) => i.name).sort();
+    // Reconciliation rows are counted whatever the profile says
+    // (costsCalculator.ts), so they are not part of a profile's identity.
+    const names = xeroData.items.map((i) => i.name).filter((n) => !isReconciliationRow(n)).sort();
     const sig = (boards: Record<string, string>, sliders: Record<string, number>, excluded: Record<string, boolean>) =>
       names.map((n) => `${n}|${excluded[n] ? 'excluded' : (boards[n] ?? 'pool')}|${sliders[n] ?? 50}`).join('~');
     const live = sig(cfg.boards, cfg.sliders, cfg.excluded);
@@ -1463,6 +1465,14 @@ function App() {
     if (metaSwap.mode === 'before-cutover') return `${lag}\n\nThese dates are before ${metaSwap.cutover}: Meta was recorded in the month it was spent, so the Xero figure already matches these dates.`;
     return `${lag}\n\nThe Meta bills from Xero have not loaded, so this is the figure as booked.`;
   };
+
+  /** Hover text for a cost row in By Channel: Advertising and the
+   *  reconciliation rows (" — Unreconciled" / " — Over-captured") explain
+   *  where their number comes from; other rows have none. */
+  const costRowTitle = (name: string): string | undefined =>
+    name === ADVERTISING_ACCOUNT ? advertisingTitle()
+      : isReconciliationRow(name) ? reconciliationRowTitle(name)
+      : undefined;
 
   // Calculate B2B estimated revenue
   const estimatedRevenueB2B = useMemo(() => {
@@ -3622,8 +3632,8 @@ function App() {
                             {expandedB2CVariableCost && bcCosts.items.filter(item => item.board === 'variable').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
                                 <TableCell
-                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
-                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                  className={cn('pl-12 text-sm text-gray-600', costRowTitle(item.name) && 'cursor-help underline decoration-dotted')}
+                                  title={costRowTitle(item.name)}
                                 >
                                   {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
                                 </TableCell>
@@ -3672,8 +3682,8 @@ function App() {
                             {expandedB2CFixedCost && bcCosts.items.filter(item => item.board === 'fixed').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
                                 <TableCell
-                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
-                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                  className={cn('pl-12 text-sm text-gray-600', costRowTitle(item.name) && 'cursor-help underline decoration-dotted')}
+                                  title={costRowTitle(item.name)}
                                 >
                                   {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
                                 </TableCell>
@@ -3709,8 +3719,8 @@ function App() {
                                 {expandedB2CAndreaCost && bcCosts.items.filter(item => item.board === 'andrea').map((item, idx) => (
                                   <TableRow key={idx} className="bg-gray-50">
                                     <TableCell
-                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
-                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                  className={cn('pl-12 text-sm text-gray-600', costRowTitle(item.name) && 'cursor-help underline decoration-dotted')}
+                                  title={costRowTitle(item.name)}
                                 >
                                   {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
                                 </TableCell>
@@ -3869,8 +3879,8 @@ function App() {
                             {expandedB2BVariableCost && bcCosts.items.filter(item => item.board === 'variable').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
                                 <TableCell
-                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
-                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                  className={cn('pl-12 text-sm text-gray-600', costRowTitle(item.name) && 'cursor-help underline decoration-dotted')}
+                                  title={costRowTitle(item.name)}
                                 >
                                   {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
                                 </TableCell>
@@ -3916,8 +3926,8 @@ function App() {
                             {expandedB2BFixedCost && bcCosts.items.filter(item => item.board === 'fixed').map((item, idx) => (
                               <TableRow key={idx} className="bg-gray-50">
                                 <TableCell
-                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
-                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                  className={cn('pl-12 text-sm text-gray-600', costRowTitle(item.name) && 'cursor-help underline decoration-dotted')}
+                                  title={costRowTitle(item.name)}
                                 >
                                   {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
                                 </TableCell>
@@ -3951,8 +3961,8 @@ function App() {
                                 {expandedB2BAndreaCost && bcCosts.items.filter(item => item.board === 'andrea').map((item, idx) => (
                                   <TableRow key={idx} className="bg-gray-50">
                                     <TableCell
-                                  className={cn('pl-12 text-sm text-gray-600', item.name === ADVERTISING_ACCOUNT && 'cursor-help underline decoration-dotted')}
-                                  title={item.name === ADVERTISING_ACCOUNT ? advertisingTitle() : undefined}
+                                  className={cn('pl-12 text-sm text-gray-600', costRowTitle(item.name) && 'cursor-help underline decoration-dotted')}
+                                  title={costRowTitle(item.name)}
                                 >
                                   {item.name}{item.name === ADVERTISING_ACCOUNT && metaSwap?.mode === 'swapped' ? ' · actual Meta spend' : ''}
                                 </TableCell>
