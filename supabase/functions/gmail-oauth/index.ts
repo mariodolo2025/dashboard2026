@@ -19,14 +19,11 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 
 const SCOPES = 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email';
 
+// Plain text: Supabase serves function responses on *.supabase.co as text, so
+// an HTML page showed up as raw markup (seen 27-Oct-2026).
 const page = (title: string, body: string, status = 200) =>
-  new Response(
-    `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head>` +
-      `<body style="font-family:system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 16px;color:#1f2937">` +
-      `<h2>${title}</h2><p>${body}</p></body></html>`,
-    { status, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
-  );
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+  new Response(`${title}\n\n${body}\n`, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+const esc = (s: string) => s;
 
 Deno.serve(async (req: Request) => {
   try {
@@ -88,7 +85,7 @@ Deno.serve(async (req: Request) => {
     }).eq('id', 1);
     if (upErr) throw new Error(`store: ${upErr.message}`);
 
-    return page('Gmail conectado', `El informe semanal se va a enviar desde <b>${esc(email)}</b>. Ya podés cerrar esta pestaña.`);
+    return page('Gmail conectado', `El informe semanal se va a enviar desde ${esc(email)}. Ya podés cerrar esta pestaña.`);
   } catch (e) {
     console.error('gmail-oauth error:', e);
     return page('Error', esc(e instanceof Error ? e.message : 'Unknown error'), 500);
