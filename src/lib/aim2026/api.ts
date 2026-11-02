@@ -1532,16 +1532,14 @@ export interface ShopifySkuStats {
   }>;
 }
 
+/** Runs a database function as the logged-in user. Not with headers(): that
+ * sends the public key, and since 8-Oct-2026 no function in public runs for it. */
 async function callRpc<T>(fn: string, body: Record<string, unknown>): Promise<T> {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new Error(`${fn} failed (${response.status}): ${await response.text()}`);
+  const { data, error, status } = await supabase.rpc(fn, body);
+  if (error) {
+    throw new Error(`${fn} failed (${status}): ${error.message}`);
   }
-  return (await response.json()) as T;
+  return data as T;
 }
 
 /** Every SKU that has ever sold on Shopify, busiest first — feeds the search box. */
@@ -1579,13 +1577,10 @@ export async function fetchShopifySkuStats(
  * shows up in the filter without a code change. */
 export async function fetchDemandChannels(from?: string, to?: string): Promise<string[]> {
   try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/aim2026_demand_channels`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({ p_from: from ?? null, p_to: to ?? null }),
+    const rows = await callRpc<Array<{ channel: string; units: number }>>('aim2026_demand_channels', {
+      p_from: from ?? null,
+      p_to: to ?? null,
     });
-    if (!response.ok) return [];
-    const rows = (await response.json()) as Array<{ channel: string; units: number }>;
     return rows
       .filter((r) => r.channel && r.channel !== '(no data)' && Number(r.units) > 0)
       .map((r) => r.channel);
